@@ -1,0 +1,15 @@
+services:
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Local_Dev_Pass123!"
+    ports: ["1433:1433"]
+  api:
+    build: { context: ., dockerfile: src/Sms.Api/Dockerfile }
+    depends_on: [db]
+    environment:
+      ConnectionStrings__Sql: "Server=db;Database=Sms;User Id=sa;Password=Local_Dev_Pass123!;TrustServerCertificate=True;Encrypt=False"
+      Jwt__SigningKey: "compose-dev-signing-key-at-least-32-bytes!!"
+      ASPNETCORE_ENVIRONMENT: "Development"
+    ports: ["5080:8080"]

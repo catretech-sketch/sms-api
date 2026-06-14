@@ -7,13 +7,22 @@ namespace Sms.Tests.Integration;
 
 public sealed class SqlServerFixture : IAsyncLifetime
 {
+    private readonly string? _overrideCs =
+        Environment.GetEnvironmentVariable("SMS_TEST_SQL_CONNECTION");
     private readonly string _server =
         Environment.GetEnvironmentVariable("SMS_TEST_SQL_SERVER") ?? "DESKTOP-TJL4SG6";
     private readonly string _dbName = "Sms_Test_" + Guid.NewGuid().ToString("N");
     public string ConnectionString { get; private set; } = "";
 
     private string MasterCs =>
-        $"Server={_server};Database=master;Trusted_Connection=True;TrustServerCertificate=True;Encrypt=False";
+        !string.IsNullOrEmpty(_overrideCs)
+            ? new SqlConnectionStringBuilder(_overrideCs) { InitialCatalog = "master" }.ConnectionString
+            : $"Server={_server};Database=master;Trusted_Connection=True;TrustServerCertificate=True;Encrypt=False";
+
+    private string DbCs(string db) =>
+        !string.IsNullOrEmpty(_overrideCs)
+            ? new SqlConnectionStringBuilder(_overrideCs) { InitialCatalog = db }.ConnectionString
+            : $"Server={_server};Database={db};Trusted_Connection=True;TrustServerCertificate=True;Encrypt=False";
 
     public async Task InitializeAsync()
     {
@@ -22,9 +31,8 @@ public sealed class SqlServerFixture : IAsyncLifetime
             await master.OpenAsync();
             await master.ExecuteAsync($"CREATE DATABASE [{_dbName}];");
         }
-        ConnectionString =
-            $"Server={_server};Database={_dbName};Trusted_Connection=True;TrustServerCertificate=True;Encrypt=False";
-        MigrationRunner.Run(ConnectionString); // tables + RLS + procs
+        ConnectionString = DbCs(_dbName);
+        MigrationRunner.Run(ConnectionString);
     }
 
     public async Task DisposeAsync()
