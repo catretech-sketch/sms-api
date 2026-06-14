@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Sms.Api/Sms.Api.csproj" />
+    <Project Path="src/Sms.Shared.Kernel/Sms.Shared.Kernel.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Sms.Tests.Unit/Sms.Tests.Unit.csproj" />
+  </Folder>
+</Solution>
