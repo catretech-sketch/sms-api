@@ -74,6 +74,7 @@ app.UseAuthorization();
 
 app.MapHealth();
 app.MapAuth();
+Sms.Modules.Tenancy.ModuleEndpoints.MapTenancyModule(app);
 
 app.Run();
 
