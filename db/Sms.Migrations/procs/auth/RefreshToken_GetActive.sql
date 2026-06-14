@@ -3,9 +3,10 @@ CREATE OR ALTER PROCEDURE dbo.RefreshToken_GetActive
 AS
 BEGIN
     SET NOCOUNT ON;
-    SELECT rt.UserId
+    SELECT TOP 1 rt.UserId
     FROM dbo.RefreshTokens rt
     WHERE rt.TokenHash = @TokenHash
       AND rt.RevokedAt IS NULL
-      AND rt.ExpiresAt > SYSUTCDATETIME();
+      AND rt.ExpiresAt > SYSUTCDATETIME()
+    ORDER BY rt.CreatedAt DESC;
 END
