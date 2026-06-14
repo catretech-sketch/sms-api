@@ -18,6 +18,9 @@ public sealed class M0003_Procs_Auth : Migration
         Execute.Sql("DROP PROCEDURE IF EXISTS dbo.RefreshToken_Insert;");
         Execute.Sql("DROP PROCEDURE IF EXISTS dbo.RefreshToken_GetActive;");
         Execute.Sql("DROP PROCEDURE IF EXISTS dbo.RefreshToken_Revoke;");
+        Execute.Sql("DROP PROCEDURE IF EXISTS dbo.User_GetByStudentId;");
+        Execute.Sql("DROP PROCEDURE IF EXISTS dbo.Otp_Insert;");
+        Execute.Sql("DROP PROCEDURE IF EXISTS dbo.Otp_GetActive;");
     }
 
     internal static IEnumerable<string> EmbeddedProcs(string namespaceFragment)
