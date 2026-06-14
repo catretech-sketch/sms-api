@@ -2041,12 +2041,17 @@ public static class AuthEndpoints
         var g = app.MapGroup("/v1/auth");
 
         g.MapPost("/login", async (LoginRequest req, AuthRepository users, IPasswordHasher hasher,
-            IJwtTokenService jwt, IRefreshTokenStore tokens) =>
+            IJwtTokenService jwt, IRefreshTokenStore tokens, ITenantContext tenant) =>
         {
             if (req.Email is null || req.Password is null)
                 return Results.Json(ErrorEnvelope.From(new("invalid_credentials", "email and password required")),
                     statusCode: 422);
 
+            // Credential lookup runs as a SYSTEM (platform) session: the caller's tenant is unknown
+            // until the user is identified, and the Users table is RLS-protected — without this, the
+            // row would be filtered out and every login would fail. The token issued below still
+            // reflects the *user's* real tenant/platform from the DB, not this lookup context.
+            tenant.Set(null, null, isPlatform: true);
             var user = await users.GetByEmailAsync(req.Email);
             if (user?.PasswordHash is null || !hasher.Verify(req.Password, user.PasswordHash))
                 return Results.Json(ErrorEnvelope.From(new("invalid_credentials", "bad email or password")),
@@ -2149,6 +2154,9 @@ builder.Services.AddScoped<IRefreshTokenStore, RefreshTokenStore>();
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(o =>
     {
+        // Keep raw JWT claim names ("sub", "tenant_id", "role", "is_platform") instead of the
+        // default SOAP-URI remapping — the tenant middleware and /me read them by these exact names.
+        o.MapInboundClaims = false;
         o.TokenValidationParameters = new TokenValidationParameters
         {
             ValidIssuer = jwtOptions.Issuer,
@@ -2409,15 +2417,34 @@ on: [push, pull_request]
 jobs:
   build-test:
     runs-on: ubuntu-latest
+    services:
+      sql:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "Ci_Dev_Pass123!"
+        ports: ["1433:1433"]
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P 'Ci_Dev_Pass123!' -No -Q 'SELECT 1' || exit 1"
+          --health-interval 10s --health-timeout 5s --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: '10.0.x' }
       - run: dotnet build --configuration Release
       - run: dotnet test tests/Sms.Tests.Unit --configuration Release
-      # Integration tests use Testcontainers; the GitHub runner has Docker available.
+      # Integration tests run against the SQL Server service container above.
+      # The fixture honors SMS_TEST_SQL_CONNECTION (full connection string) when set,
+      # else falls back to SMS_TEST_SQL_SERVER + Windows auth (local dev on DESKTOP-TJL4SG6).
       - run: dotnet test tests/Sms.Tests.Integration --configuration Release
+        env:
+          SMS_TEST_SQL_CONNECTION: "Server=localhost,1433;Database=master;User Id=sa;Password=Ci_Dev_Pass123!;TrustServerCertificate=True;Encrypt=False"
 ```
+
+> The fixture must support an optional full-connection-string override (`SMS_TEST_SQL_CONNECTION`)
+> so CI can use a SA-auth Linux SQL container while local dev uses Windows auth against
+> `DESKTOP-TJL4SG6`. Task 19 adds this small override to `SqlServerFixture`. If CI is not yet set up,
+> this is harmless — local runs ignore the unset env var.
 
 - [ ] **Step 4: Build to verify nothing broke**
 
