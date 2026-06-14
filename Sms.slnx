@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/db/">
+    <Project Path="db/Sms.Migrations/Sms.Migrations.csproj" />
+  </Folder>
   <Folder Name="/src/">
     <Project Path="src/Sms.Api/Sms.Api.csproj" />
     <Project Path="src/Sms.Shared.Kernel/Sms.Shared.Kernel.csproj" />
