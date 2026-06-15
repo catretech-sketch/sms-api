@@ -7,10 +7,10 @@ namespace Sms.Tests.Unit.Auth;
 public class ConsoleOtpSenderTests
 {
     [Fact]
-    public async Task Generates_six_digit_code_and_reports_sent()
+    public async Task Generates_a_six_digit_code_for_any_channel()
     {
         var sender = new ConsoleOtpSender();
-        var code = await sender.SendAsync("+919999999999");
+        var code = await sender.SendAsync("user@x.com", "email");
         code.Should().MatchRegex("^[0-9]{6}$");
     }
 }
