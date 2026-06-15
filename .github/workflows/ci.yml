@@ -22,3 +22,13 @@ jobs:
       - run: dotnet test tests/Sms.Tests.Integration --configuration Release
         env:
           SMS_TEST_SQL_CONNECTION: "Server=localhost,1433;Database=master;User Id=sa;Password=Ci_Dev_Pass123!;TrustServerCertificate=True;Encrypt=False"
+      - name: Install sqlcmd (go-sqlcmd)
+        run: |
+          curl -sSLo sqlcmd.tar.bz2 https://github.com/microsoft/go-sqlcmd/releases/download/v1.8.0/sqlcmd-linux-amd64.tar.bz2
+          tar xjf sqlcmd.tar.bz2 && sudo mv sqlcmd /usr/local/bin/
+      - name: Production migration CLI is idempotent (migrate twice)
+        run: |
+          sqlcmd -S localhost,1433 -U sa -P 'Ci_Dev_Pass123!' -C -Q "IF DB_ID('SmsCli') IS NULL CREATE DATABASE SmsCli;"
+          CONN="Server=localhost,1433;Database=SmsCli;User Id=sa;Password=Ci_Dev_Pass123!;TrustServerCertificate=True;Encrypt=False"
+          dotnet run --project db/Sms.Migrations --configuration Release -- "$CONN"
+          dotnet run --project db/Sms.Migrations --configuration Release -- "$CONN"

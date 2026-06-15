@@ -1,13 +1,20 @@
 using System.Text;
+using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
 using OpenTelemetry.Trace;
 using Serilog;
 using Sms.Api.Endpoints;
+using Sms.Api.Http;
 using Sms.Migrations;
 using Sms.Shared.Kernel.Auth;
+using Sms.Shared.Kernel.Configuration;
 using Sms.Shared.Kernel.Data;
 using Sms.Shared.Kernel.Http;
+using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
 using Sms.Shared.Kernel.Time;
 
@@ -15,8 +22,11 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Host.UseSerilog((ctx, cfg) => cfg.ReadFrom.Configuration(ctx.Configuration).WriteTo.Console());
 
-var conn = builder.Configuration.GetConnectionString("Sql")!;
-var jwtOptions = builder.Configuration.GetSection("Jwt").Get<JwtOptions>()!;
+var conn = builder.Configuration.GetConnectionString("Sql");
+var jwtOptions = builder.Configuration.GetSection("Jwt").Get<JwtOptions>() ?? new JwtOptions();
+
+// Fail-fast: refuse to boot with a missing connection string or a missing/placeholder/weak signing key.
+SecretsValidator.Validate(jwtOptions.SigningKey, conn);
 
 DapperSnakeCaseConfig.Apply();
 
@@ -34,7 +44,7 @@ builder.Services.AddSingleton<IOtpSender, ConsoleOtpSender>();
 
 builder.Services.AddScoped<ITenantContext, TenantContext>();
 builder.Services.AddScoped<IDbConnectionFactory>(sp =>
-    new SqlConnectionFactory(conn, sp.GetRequiredService<ITenantContext>()));
+    new SqlConnectionFactory(conn!, sp.GetRequiredService<ITenantContext>()));
 builder.Services.AddScoped<AuthRepository>();
 builder.Services.AddScoped<IRefreshTokenStore, RefreshTokenStore>();
 
@@ -58,21 +68,82 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddOpenTelemetry()
     .WithTracing(t => t.AddAspNetCoreInstrumentation().AddConsoleExporter());
 
+// Standard error-envelope handler for any unhandled exception (no internals leaked).
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddProblemDetails();
+
+// Readiness: real DB probe on /health/ready (tagged "ready"); /health stays a static liveness check.
+builder.Services.AddHealthChecks().AddCheck("sql", new SqlHealthCheck(conn!), tags: ["ready"]);
+
+// CORS — allowed origins from config (dev: the five frontend localhost ports; prod: env).
+var corsOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>() ?? [];
+builder.Services.AddCors(o => o.AddPolicy("sms", p =>
+{
+    if (corsOrigins.Length > 0)
+        p.WithOrigins(corsOrigins).AllowAnyHeader().AllowAnyMethod().AllowCredentials();
+    else
+        p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod();
+}));
+
+// Rate limiting — global per-IP sliding window + a stricter fixed window on /v1/auth/*. Config-tunable.
+var globalPermit = builder.Configuration.GetValue<int?>("RateLimiting:GlobalPermitPerWindow") ?? 100;
+var globalWindow = builder.Configuration.GetValue<int?>("RateLimiting:GlobalWindowSeconds") ?? 10;
+var authPermit = builder.Configuration.GetValue<int?>("RateLimiting:AuthPermitPerMinute") ?? 5;
+builder.Services.AddRateLimiter(o =>
+{
+    o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    o.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(http =>
+        RateLimitPartition.GetSlidingWindowLimiter(
+            http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new SlidingWindowRateLimiterOptions
+            {
+                PermitLimit = globalPermit, Window = TimeSpan.FromSeconds(globalWindow),
+                SegmentsPerWindow = 2, QueueLimit = 0
+            }));
+    o.AddPolicy("auth", http =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = authPermit, Window = TimeSpan.FromMinutes(1), QueueLimit = 0
+            }));
+    o.OnRejected = async (ctx, ct) =>
+    {
+        ctx.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        await ctx.HttpContext.Response.WriteAsJsonAsync(
+            ErrorEnvelope.From(new Error("rate_limited", "Too many requests.")), ct);
+    };
+});
+
 var app = builder.Build();
+
+app.UseExceptionHandler();
 
 if (app.Environment.IsDevelopment())
 {
-    MigrationRunner.Run(conn); // tables + RLS + procs on startup in dev
+    MigrationRunner.Run(conn!); // dev convenience; prod migrates via the Sms.Migrations CLI in CI/CD
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
 app.UseSerilogRequestLogging();
+app.UseCors("sms");
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseMiddleware<TenantResolutionMiddleware>(); // after auth: needs ClaimsPrincipal
 app.UseAuthorization();
 
 app.MapHealth();
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = r => r.Tags.Contains("ready"),
+    ResponseWriter = async (ctx, report) =>
+    {
+        ctx.Response.ContentType = "application/json";
+        var status = report.Status == HealthStatus.Healthy ? "ready" : "unavailable";
+        await ctx.Response.WriteAsJsonAsync(new { status });
+    }
+});
 app.MapAuth();
 Sms.Modules.Tenancy.ModuleEndpoints.MapTenancyModule(app);
 
