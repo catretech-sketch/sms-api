@@ -1,178 +1,196 @@
 # SMS Backend — Track B: SaaS Foundation (Design Spec)
 
-> **Status:** Approved design (2026-06-15). Makes the multi-tenant platform genuinely usable as a
-> SaaS: a provisioned school can log in, the plan tier gates features, and billing state gates access.
-> Builds on the green Phase 0 foundation + Phase 0.5 hardening. **Sibling tracks (separate specs):**
-> Track A (finish the ~55 missing per-app endpoints) and Track C (Redis backplane, blob storage,
-> real OTP/SMS/email/payment providers, observability). This spec is Track B only.
+> **Status:** Approved design (2026-06-15, rev. 2). Makes the multi-tenant platform genuinely usable as
+> a SaaS: provisioned/imported people can log in (password **or** OTP), the plan tier gates features,
+> and billing state gates access. Builds on the green Phase 0 foundation + Phase 0.5 hardening.
+> **Sibling tracks (separate specs):** Track A (finish the ~55 missing per-app endpoints) and Track C
+> (real SMS/email/push + payment providers, Redis backplane, blob storage, observability).
 
 ## Context
 
 An end-to-end audit (2026-06-15) of the implemented backend (32 migrations, ~100 endpoints, 82 tests
 green, per-app Swagger) found the platform **hardened but not yet a usable SaaS**:
 
-- **No real login path.** `POST /v1/clients` provisions a tenant with **no user account**, and nothing
-  sets a school user's password. No school can authenticate.
+- **No usable login path.** `POST /v1/clients` provisions a tenant with **no user account**; the only
+  login is email+password, but nothing sets a school user's password, and there is no OTP login despite
+  the staff/student apps expecting it. OTP scaffolding exists but is wired to nothing.
 - **Feature gating is dead scaffolding.** `ITenantFeatureSet`, `RequiresFeatureAttribute`, and
-  `Policies` exist in `Sms.Shared.Kernel/Authz` but have **no implementation, no DI registration, and
-  are wired to nothing**. There is no tier→feature mapping.
-- **Billing state is inert.** `Tenants.Status` is stored but enforced nowhere; a `past_due` or
-  `suspended` tenant has full access.
+  `Policies` exist in `Sms.Shared.Kernel/Authz` with **no implementation, no DI, wired to nothing**.
+- **Billing state is inert.** `Tenants.Status` is stored but enforced nowhere.
+- **No way to load people in bulk** — every user would have to be created one by one.
 
-Track B closes these three gaps and adds in-tenant user invites, turning the foundation into a
-sign-inable, plan-aware, billing-aware multi-tenant SaaS.
+Track B closes these gaps: dual login (password **and** OTP), tier→feature gating (wires the dead
+scaffold), a per-request billing-state gate, single + bulk user provisioning.
+
+**Existing groundwork to build on (not rebuild):** `OtpCodes` table + `Otp_Insert`/`Otp_GetActive`
+procs + `IOtpSender`/`ConsoleOtpSender` (all present, unused); `Users` already has `Email`, `Phone`,
+`StudentId`, nullable `PasswordHash`, `Status`; `User_GetByEmail`/`User_GetByStudentId` procs;
+`Subscriptions.Seats`; `POST /v1/clients/{id}/status` lifecycle endpoint.
 
 **Decisions locked during brainstorming (2026-06-15):**
-- **First-admin login:** **activation-token flow** (no email dependency). Provisioning creates a
-  *pending* admin user and a one-time activation token (logged via the existing `IOtpSender` in dev);
-  the admin sets their password via `POST /v1/auth/activate`.
+- **Login = password OR OTP.** Keep the existing email+password login. **Add OTP login** (email *or*
+  mobile): a user whose email/phone is **already in the DB** requests a one-time code and logs in.
+  OTP is the passwordless first-login for provisioned/imported users; any user may additionally **set a
+  password** (authenticated) to enable password login. **No activation-token flow** — OTP covers it.
+- **OTP delivery** is via the existing `IOtpSender` (console/log in dev). Real SMS/email is **Track C**;
+  the OTP mechanism (generate, store hashed, verify) is fully built now.
 - **Feature gating:** **tier→features code map** (version-controlled). `silver|gold|platinum →
   feature keys`. No schema change. `RequiresFeature("x")` checks the current tenant's set.
 - **Billing gate:** `active`/`trial` = full; **`past_due` = read-only** (writes → `402`);
-  **`suspended` = blocked** except `/v1/auth/*` and billing endpoints. **Platform (Catre) users exempt.**
-- **User management:** a generic **`POST /v1/users` invite** (school admin) reusing the activation
-  flow, one user at a time, with role(s).
+  **`suspended` = blocked** except `/v1/auth/*`. **Platform (Catre) users exempt.** Status transitions
+  use the existing `POST /v1/clients/{id}/status`.
+- **User provisioning:** `admin_email` on client creation seeds the school admin; **`POST /v1/users`**
+  invites one user; **`POST /v1/users/import`** bulk-loads teachers/students/staff. All create
+  **login-capable Users + roles only** (domain profiles are Track A); imported users log in via OTP.
 - **Tenant plan/status is read fresh per request** (not baked into the JWT), so billing/suspension
-  takes effect immediately rather than lingering until token expiry.
+  takes effect immediately.
 
-**Non-goals (explicitly out of this track):**
-- No email/SMS/push delivery — activation tokens are returned/logged, not emailed (Track C).
-- No bulk CSV user import (Track A — School Admin app).
-- **No seat-limit enforcement** — `Subscriptions.Seats` exists; gating on it is a deferred fast-follow.
-- No new business endpoints beyond auth/activation, client-provisioning extension, and `POST /v1/users`.
+**Non-goals (out of this track):** real SMS/email/push delivery (Track C); domain-record enrichment in
+import (Student/Teacher/Staff profile tables — Track A); seat-limit *enforcement* (deferred fast-follow,
+`Subscriptions.Seats` already exists); no other new business endpoints.
 
 ---
 
 ## Items
 
-### Item 1 — Activation tokens + pending users (schema + procs)
+### Item 1 — OTP login mechanism (email + mobile) over known users
 
 **Design.**
-- New migration **`M0033_SaaS_Foundation_Tables`**: create `ActivationTokens`
-  (`Id` PK, `UserId`, `TokenHash varchar(128)`, `ExpiresAt datetime2`, `ConsumedAt datetime2 null`,
-  `CreatedAt datetime2`), index on `TokenHash`. Mirrors the `RefreshTokens` pattern.
-- Reuse existing columns — **no new columns**: a *pending* user is `Users.Status = 'pending'` with
-  `PasswordHash = NULL`; activation sets the hash and flips `Status = 'active'`.
-- New migration **`M0034_Procs_Saas`** embeds (CREATE OR ALTER) procs:
-  - `User_Create @TenantId, @Email, @IsPlatform` → inserts `Status='pending'`, returns `Id`.
-  - `UserRole_Add @UserId, @Role`.
-  - `ActivationToken_Insert @UserId, @TokenHash, @ExpiresAt`.
-  - `ActivationToken_GetActive @TokenHash` → `UserId` where not consumed and not expired.
-  - `ActivationToken_Consume @TokenHash` → sets `ConsumedAt`.
-  - `User_Activate @UserId, @PasswordHash` → sets hash + `Status='active'`.
-  - `Tenant_GetTierAndStatus @TenantId` → `Tier, Status` (read directly; `Tenants` is **not** RLS-scoped).
+- New migration **`M0033_Saas_Auth`** generalises `OtpCodes` for email *or* phone: add
+  `Identifier varchar(256)` (the email/phone the code was issued to) and `Channel varchar(10)`
+  (`sms`|`email`); make the legacy `Phone` column nullable. Index `Identifier`.
+- Procs (CREATE OR ALTER in **`M0034_Procs_Saas`**):
+  - `User_GetByPhone @Phone` → same shape as `User_GetByEmail` (new; mirrors existing lookup).
+  - `Otp_Insert @Identifier, @Channel, @CodeHash, @ExpiresAt` (replaces the phone-keyed version).
+  - `Otp_GetActive @Identifier, @CodeHash` → row when not consumed and not expired.
+  - `Otp_Consume @Identifier, @CodeHash` → sets `ConsumedAt`.
+- `IOtpSender` generalised to `SendAsync(string identifier, string channel, string code)`;
+  `ConsoleOtpSender` logs it. (Real providers = Track C.)
 
-**RLS note.** `Users` carries the tenant RLS filter+block predicate. `User_Create` therefore runs under
-a session whose `TenantId` equals the new user's `TenantId` (admin invites within their own tenant) or
-under a platform session (Catre seeding the first admin) — both satisfy the block predicate.
+**Acceptance.** Migrations apply idempotently; `Otp_GetActive` returns nothing for consumed/expired
+codes; a code issued to an email validates only for that email.
 
-**Acceptance.** Migrations apply idempotently on the throwaway test DB; a pending user has no usable
-password; `ActivationToken_GetActive` returns nothing for consumed/expired tokens.
+### Item 2 — Auth endpoints: OTP request/verify + set-password
 
-### Item 2 — Activation endpoint + provisioning + invites
+**Design.** `AuthRepository` gains `GetByPhoneAsync`, `SetPasswordAsync(userId, hash)`, and OTP helpers
+(`IssueOtpAsync(identifier, channel)`, `VerifyOtpAsync(identifier, code)`).
+- **`POST /v1/auth/otp/request`** `{ identifier }` (public, `auth` rate-limit): classify `identifier`
+  as email or phone; look up the user (`GetByEmail`/`GetByPhone`). **Always returns `200`** (never
+  leaks whether the account exists). If found, generate a 6-digit code, store its hash via `Otp_Insert`
+  (short TTL), and `IOtpSender.SendAsync`.
+- **`POST /v1/auth/otp/verify`** `{ identifier, code }` (public, `auth` rate-limit): `Otp_GetActive` →
+  on match, `Otp_Consume` and **issue access + refresh** with the user's real tenant/roles/platform
+  (same token path as `/login`). Invalid/expired → `401 invalid_code`.
+- **`POST /v1/auth/set-password`** `{ password }` (**authenticated**): hashes and stores via
+  `SetPasswordAsync` so the caller can thereafter use email+password login. Existing `/login` unchanged.
+
+**Acceptance.** A user with an email in the DB completes request→verify and receives valid tokens with
+correct claims; a non-existent identifier still returns `200` on request and `401` on verify; after
+`set-password`, `/login` works for that user.
+
+### Item 3 — User provisioning: admin seed, single invite, bulk import
+
+**Design.** Procs in `M0034`: `User_Create @TenantId, @Email, @Phone, @IsPlatform` → inserts
+`Status='active'` with `PasswordHash NULL` (login-ready via OTP), returns `Id`; `UserRole_Add
+@UserId, @Role`; `Users_BulkCreate @TenantId, @Rows` (**table-valued parameter**) for bulk insert of
+`(Email, Phone, Role)` rows in one round-trip (the established TVP pattern).
+- **`POST /v1/clients`** (Catre) extended with `admin_email`: after creating the tenant, create a
+  `school.admin` user in it (the admin then OTP-logs-in to that email). Existing fields unchanged.
+- **`POST /v1/users`** (requires `school.admin`) `{ email?, phone?, roles[] }`: create one login user in
+  the caller's tenant with the given roles (must be in `Policies.All` minus `platform.only`; at least
+  one of email/phone required).
+- **`POST /v1/users/import`** (requires `school.admin`) `{ rows: [{ email?, phone?, role }] }`: validate
+  rows, bulk-insert via the TVP proc, return a summary `{ created, skipped, errors[] }`. Rows are
+  login users + roles only (teacher/student/staff per `role`); **domain profiles are Track A.**
+  CSV/XLSX parsing happens in the frontend, which posts JSON rows.
+
+**Acceptance.** Provision client with `admin_email` → that email completes OTP login as `school.admin`
+with the right `tenant_id`. `/v1/users` invite → invitee OTP-logs-in with assigned role; non-admin →
+`403`. `/v1/users/import` with N valid rows creates N login users (idempotent on duplicate
+email/phone → counted in `skipped`), each able to OTP-login.
+
+### Item 4 — Tier→feature set + RequiresFeature enforcement
 
 **Design.**
-- `AuthRepository` (or a new `UserProvisioningRepository`) gains: `CreatePendingUserAsync(tenantId,
-  email, roles, isPlatform)` returning `(userId, rawToken)`; `ActivateAsync(rawToken, passwordHash)`
-  returning the activated user or null.
-- **`POST /v1/auth/activate`** `{ token, password }` (public, `auth` rate-limit): validates the token
-  via `ActivationToken_GetActive`, hashes the password, calls `User_Activate`, consumes the token, then
-  **auto-logs-in** (issues access + refresh exactly as `/login` does, with the user's real
-  tenant/roles/platform). Invalid/expired/consumed token → `401 invalid_token`.
-- **`POST /v1/clients`** (Catre, platform policy) extended: accepts `admin_email`. After creating the
-  tenant it creates a pending `school.admin` user + activation token and returns the token in the
-  response (dev also logs it via `IOtpSender`). Existing client fields unchanged.
-- **`POST /v1/users`** (requires `school.admin`) `{ email, roles[] }`: creates a pending user in the
-  **caller's tenant** (from `ITenantContext.TenantId`) with the given roles + activation token; returns
-  the token. Rejects empty/unknown roles (roles must be in `Policies.All` minus `platform.only`).
-
-**Acceptance.** Provision a client with `admin_email` → activation token issued → `/auth/activate`
-sets the password → `/login` succeeds with the `school.admin` role and correct `tenant_id`. Invite via
-`/v1/users` → activate → `/login` carries the assigned role. A non-admin calling `/v1/users` → `403`.
-
-### Item 3 — Tier→feature set + RequiresFeature enforcement
-
-**Design.**
-- `TierFeatures` (static, in `Sms.Shared.Kernel/Authz`): a map `tier → string[]` of feature keys. Seed
-  set (illustrative, finalised in the plan): `silver` = core (sis, attendance, exams, fees, comms.chat);
-  `gold` = silver + `transport.gps`, `exams.datesheet`, `reports.csv`; `platinum` = gold +
-  `analytics.advanced`, `comms.announcements.targeted`. Unknown/empty tier → core set only.
-  (Platform-only capabilities such as tenant impersonation are RBAC `platform.only`, **not** tier
-  features.)
-- `TierFeatureSet : ITenantFeatureSet` — `Has(feature)` looks up the **current tenant's tier** (from the
-  per-request `ITenantPlan`, Item 4) against `TierFeatures`. Registered scoped in DI.
+- `TierFeatures` (static, `Sms.Shared.Kernel/Authz`): map `tier → string[]` feature keys. Seed
+  (finalised in the plan): `silver` = core (sis, attendance, exams, fees, `comms.chat`); `gold` =
+  silver + `transport.gps`, `exams.datesheet`, `reports.csv`; `platinum` = gold + `analytics.advanced`,
+  `comms.announcements.targeted`. Unknown/empty tier → core. (Platform-only capabilities are RBAC
+  `platform.only`, **not** tier features.)
+- `TierFeatureSet : ITenantFeatureSet` — `Has(feature)` resolves the current tenant's tier (from the
+  per-request `ITenantPlan`, Item 5) against `TierFeatures`. Scoped DI registration.
 - `RequiresFeatureFilter : IEndpointFilter` — reads the endpoint's `RequiresFeatureAttribute` metadata
-  (existing scaffold) and returns `403 { code: "feature_locked" }` via the standard envelope when
-  `ITenantFeatureSet.Has(feature)` is false. Applied through a route-group convention helper so an
-  endpoint opts in with `.RequiresFeature("transport.gps")`.
+  (existing scaffold) → `403 { code: "feature_locked" }` via the standard envelope when absent. Opt-in
+  per endpoint via a `.RequiresFeature("transport.gps")` route-group helper. Platform users bypass.
 
-**Acceptance.** A `silver` tenant hitting an endpoint marked `RequiresFeature` for a gold/platinum
-feature gets `403 feature_locked`; a `platinum` tenant gets through; platform users bypass.
+**Acceptance.** A `silver` tenant hitting a `RequiresFeature`-marked gold/platinum endpoint → `403
+feature_locked`; a `platinum` tenant → `200`; platform users bypass.
 
-### Item 4 — Per-request tenant plan + billing-state gate
+### Item 5 — Per-request tenant plan + billing-state gate
 
 **Design.**
 - `ITenantPlan` (scoped): `{ Guid? TenantId, string Tier, string Status }`, default empty.
-- `TenantResolutionMiddleware` (already runs after auth): after populating `ITenantContext`, for a
-  tenant (non-platform) caller it loads `Tenant_GetTierAndStatus` **once** and fills `ITenantPlan`. The
-  read runs under a platform session (Tenants is not RLS-scoped) and is skipped for platform users and
-  anonymous requests.
-- `BillingStateMiddleware` (new, immediately after tenant resolution, before authorization):
-  - Platform users and `/v1/auth/*` → always pass (so a blocked tenant can still log in and read its
-    own suspended/past-due state).
-  - `suspended` → `403 { code: "tenant_suspended" }` for everything except `/v1/auth/*`.
+- `TenantResolutionMiddleware` (already runs after auth): for a non-platform caller, load
+  `Tenant_GetTierAndStatus @TenantId` **once** and fill `ITenantPlan`. Read runs under a platform
+  session (`Tenants` is not RLS-scoped); skipped for platform/anonymous.
+- `BillingStateMiddleware` (new, after tenant resolution, before authorization):
+  - Platform users and `/v1/auth/*` → always pass (a blocked tenant can still log in / read its state).
+  - `suspended` → `403 { code: "tenant_suspended" }` except `/v1/auth/*`.
   - `past_due` → safe methods (GET/HEAD/OPTIONS) pass; mutating methods → `402 { code:
     "payment_required" }`.
   - `active`/`trial`/unknown → pass.
-  - **Status transitions are out of this track's scope** (no dunning automation): a tenant is moved to
-    `past_due`/`suspended`/`active` via the **existing** Catre endpoint `POST /v1/clients/{id}/status`
-    (platform). Track B only *enforces* the gate; tests set status via that endpoint or seed it directly.
-    A school-facing self-serve payment endpoint is deferred (Track A/C), so the gate exempts
-    `/v1/auth/*` only.
-- **Middleware order** becomes: `UseExceptionHandler → Serilog → UseCors → UseRateLimiter →
-  UseAuthentication → TenantResolution(+plan) → BillingStateGate → UseAuthorization → endpoints`.
+  - Status transitions are out of scope (no dunning automation): use the existing
+    `POST /v1/clients/{id}/status` (platform). Tests set status via that endpoint or seed it.
+- **Middleware order:** `UseExceptionHandler → Serilog → UseCors → UseRateLimiter → UseAuthentication →
+  TenantResolution(+plan) → BillingStateGate → UseAuthorization → endpoints`.
 
-**Acceptance.** `past_due` tenant: GET `200`, POST `402`; billing endpoints still reachable.
-`suspended` tenant: all `403` except `/v1/auth/*` and billing. Platform user: unaffected in every state.
+**Acceptance.** `past_due`: GET `200`, POST `402`. `suspended`: all `403` except `/v1/auth/*`. Platform
+user unaffected in every state.
 
 ---
 
 ## Architecture impact
 
-- **Schema:** one new table (`ActivationTokens`); no other tables; no column changes (statuses are
-  existing string columns). New procs in `M0034`.
-- **`Sms.Shared.Kernel`:** `TierFeatures`, `TierFeatureSet`, `ITenantPlan`/`TenantPlan`,
-  `RequiresFeatureFilter`, `BillingStateMiddleware`; `TenantResolutionMiddleware` extended to load plan.
-- **`Sms.Api`:** `POST /v1/auth/activate`; `POST /v1/clients` extended with `admin_email`;
-  `POST /v1/users`; new middleware + feature-filter wiring in `Program.cs`; DI registrations.
-- **Per-app Swagger:** `/v1/auth/activate` → all apps (auth resource); `/v1/users` → school-admin.
-  Add to `ApiAudienceMap`.
-- **No change** to existing business endpoints' surface; they gain billing/feature gating transparently
-  via middleware/filters.
+- **Schema:** generalise `OtpCodes` (`Identifier`, `Channel`; `Phone` nullable); **no new tables, no new
+  columns elsewhere** (statuses are existing string columns; passwordless users are created `active`
+  with the existing nullable `PasswordHash` left `NULL` and log in via OTP). New procs in `M0034`
+  (incl. a `Users` TVP type for bulk import).
+- **`Sms.Shared.Kernel`:** generalised `IOtpSender`; `AuthRepository` gains phone lookup, OTP helpers,
+  set-password; `TierFeatures`, `TierFeatureSet`, `ITenantPlan`/`TenantPlan`, `RequiresFeatureFilter`,
+  `BillingStateMiddleware`; `TenantResolutionMiddleware` loads plan.
+- **`Sms.Api`:** `POST /v1/auth/otp/request`, `/otp/verify`, `/set-password`; `admin_email` on
+  `POST /v1/clients`; `POST /v1/users`, `POST /v1/users/import`; middleware + feature-filter wiring + DI.
+- **Per-app Swagger (`ApiAudienceMap`):** `/v1/auth/*` (incl. new OTP) → all apps; `/v1/users*` →
+  school-admin.
+- Existing business endpoints gain billing/feature gating transparently; their surface is unchanged.
 
 ## Testing
 
-All TDD (failing test → implement → green), matching existing discipline.
+All TDD (failing test → implement → green).
 
 **Unit (`Sms.Tests.Unit`):**
+- Identifier classification (email vs phone); OTP code generation/format.
 - `TierFeatures`/`TierFeatureSet`: silver lacks a gold feature; platinum has all; unknown tier → core.
-- `RequiresFeatureFilter`: returns `403 feature_locked` when the feature is absent, passes otherwise.
-- `BillingStateMiddleware` logic: `past_due` blocks mutations / allows reads; `suspended` blocks all but
-  auth+billing; platform bypass; method classification correct.
+- `RequiresFeatureFilter`: `403 feature_locked` when absent, pass otherwise.
+- `BillingStateMiddleware`: `past_due` blocks mutations / allows reads; `suspended` blocks all but
+  `/v1/auth/*`; platform bypass; method classification.
 
 **Integration (`Sms.Tests.Integration`, real SQL, throwaway DB):**
-- Provision client with `admin_email` → token → `/auth/activate` → `/login` works as `school.admin`
-  with correct `tenant_id`.
-- `/v1/users` invite → activate → `/login` carries assigned role; non-admin → `403`.
-- Feature gate end-to-end: silver tenant → `403 feature_locked`; platinum tenant → `200` on a
-  `RequiresFeature`-marked endpoint.
-- Billing gate end-to-end: `past_due` GET `200` / POST `402`; `suspended` `403` except auth+billing;
-  platform user unaffected.
+- OTP login: seed a user with an email → request (non-leaking `200`) → verify → tokens with correct
+  claims; wrong/expired code → `401`. Phone path likewise.
+- `set-password` then email+password `/login` succeeds.
+- Provision client with `admin_email` → OTP login as `school.admin`, correct `tenant_id`.
+- `/v1/users` invite → OTP login with assigned role; non-admin → `403`.
+- `/v1/users/import` N rows → N OTP-capable users; duplicates → `skipped`.
+- Feature gate: silver → `403 feature_locked`; platinum → `200`.
+- Billing gate: `past_due` GET `200` / POST `402`; `suspended` `403` except `/v1/auth/*`; platform
+  unaffected.
 
 ## Definition of done
 
 Build clean (warnings-as-errors); all existing + new unit and integration tests green against
-`DESKTOP-TJL4SG6`; a freshly provisioned school can activate and log in; tier gating returns
+`DESKTOP-TJL4SG6`; a provisioned school admin can OTP-log-in; password and OTP login both work; a user
+can set a password; single + bulk user import create OTP-capable users with roles; tier gating returns
 `feature_locked` for locked features; billing gate enforces read-only (`past_due`) and block
-(`suspended`) with platform exemption; `POST /v1/users` invites work. **Seat enforcement, email/SMS
-delivery, and bulk import remain out of scope** (Tracks B-fast-follow / C / A respectively).
+(`suspended`) with platform exemption. **Real SMS/email delivery, domain-profile import, and seat
+enforcement remain out of scope** (Track C / Track A / deferred fast-follow).
