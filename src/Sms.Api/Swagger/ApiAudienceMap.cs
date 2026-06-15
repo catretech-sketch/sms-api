@@ -1,0 +1,96 @@
+namespace Sms.Api.Swagger;
+
+/// Single source of truth for which frontend app(s) consume each API route.
+/// Drives the per-app Swagger documents: an endpoint appears in every app listed for its route.
+/// Edit THIS table when an endpoint's audience changes — no module files need touching.
+///
+/// Matching is by ordered, segment-aware route prefix (most specific first), because some
+/// prefixes are shared: e.g. "/v1/staff/trips" is the Staff app, but "/v1/staff" (HR records)
+/// is School Admin.
+public static class ApiAudienceMap
+{
+    public const string CatreAdmin = "catre-admin";
+    public const string SchoolAdmin = "school-admin";
+    public const string Teacher = "teacher";
+    public const string Student = "student";
+    public const string Staff = "staff";
+
+    /// The five Swagger documents, in dropdown order.
+    public static readonly IReadOnlyList<(string Key, string Title)> Apps =
+    [
+        (CatreAdmin, "Catre Super-Admin API"),
+        (SchoolAdmin, "School Admin API"),
+        (Teacher, "Teacher App API"),
+        (Student, "Student & Parent App API"),
+        (Staff, "Staff App API"),
+    ];
+
+    private static readonly string[] All = [CatreAdmin, SchoolAdmin, Teacher, Student, Staff];
+
+    // Ordered route-prefix -> consuming apps. MOST SPECIFIC FIRST (first match wins).
+    private static readonly (string Prefix, string[] Apps)[] Rules =
+    [
+        ("v1/auth",          All),
+        ("health",           All),
+
+        // Catre platform admin
+        ("v1/tenancy",       [CatreAdmin]),
+        ("v1/clients",       [CatreAdmin]),
+        ("v1/plans",         [CatreAdmin]),
+        ("v1/invoices",      [CatreAdmin]),
+        ("v1/subscriptions", [CatreAdmin]),
+        ("v1/dashboard",     [CatreAdmin]),
+        ("v1/onboarding",    [CatreAdmin]),
+        ("v1/tickets",       [CatreAdmin]),
+        ("v1/team",          [CatreAdmin]),
+        ("v1/audit",         [CatreAdmin]),
+        ("v1/reports",       [CatreAdmin]),
+
+        // Staff mobile app lives under /v1/staff/trips|trip — list these BEFORE /v1/staff (HR).
+        ("v1/staff/trips",   [Staff]),
+        ("v1/staff/trip",    [Staff]),
+        ("v1/staff",         [SchoolAdmin]),               // HR staff records
+
+        ("v1/students",      [SchoolAdmin, Teacher, Student]),
+        ("v1/teachers",      [SchoolAdmin, Student]),
+        ("v1/classes",       [SchoolAdmin, Teacher]),
+        ("v1/subjects",      [SchoolAdmin, Teacher, Student]),
+        ("v1/exam-papers",   [SchoolAdmin, Teacher, Student]),
+        ("v1/exams",         [SchoolAdmin]),
+        ("v1/grades",        [SchoolAdmin, Teacher, Student]),
+        ("v1/homework",      [Teacher, Student]),
+        ("v1/fees",          [SchoolAdmin, Student]),
+        ("v1/payslips",      [SchoolAdmin, Teacher, Staff]),
+        ("v1/approvals",     [SchoolAdmin]),
+        ("v1/leave",         [SchoolAdmin, Staff, Student]),
+        ("v1/announcements", [SchoolAdmin, Teacher, Student]),
+        ("v1/threads",       [SchoolAdmin, Teacher, Student]),
+        ("v1/complaints",    [SchoolAdmin]),
+        ("v1/notifications", [SchoolAdmin, Student]),
+        ("v1/me/attendance", [Teacher, Staff]),            // geofenced self check-in
+    ];
+
+    private static (string Prefix, string[] Apps)? Match(string? relativePath)
+    {
+        var path = relativePath?.Trim('/') ?? "";
+        foreach (var rule in Rules)
+            if (path.Equals(rule.Prefix, StringComparison.OrdinalIgnoreCase) ||
+                path.StartsWith(rule.Prefix + "/", StringComparison.OrdinalIgnoreCase))
+                return rule;
+        return null;
+    }
+
+    /// The apps that should list this route; empty if unmapped (excluded from all docs).
+    public static IReadOnlyCollection<string> AppsFor(string? relativePath) =>
+        Match(relativePath)?.Apps ?? [];
+
+    /// Swagger tag for in-document grouping — the last segment of the matched route prefix
+    /// (e.g. "/v1/staff/trips" -> "trips", "/v1/me/attendance" -> "attendance").
+    public static string TagFor(string? relativePath)
+    {
+        var prefix = Match(relativePath)?.Prefix;
+        if (string.IsNullOrEmpty(prefix)) return "general";
+        var segs = prefix.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        return segs[^1];
+    }
+}

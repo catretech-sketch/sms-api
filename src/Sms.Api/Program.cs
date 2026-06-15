@@ -5,9 +5,11 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi;
 using OpenTelemetry.Trace;
 using Serilog;
 using Sms.Api.Endpoints;
+using Sms.Api.Swagger;
 using Sms.Api.Http;
 using Sms.Migrations;
 using Sms.Modules.Academics;
@@ -82,7 +84,15 @@ builder.Services.AddAttendanceModule();
 builder.Services.AddTransportModule();
 builder.Services.AddCommsModule();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+// One Swagger document per frontend app (Catre Admin / School Admin / Teacher / Student / Staff).
+// An endpoint is included in every app that consumes it (ApiAudienceMap); tag = its resource.
+builder.Services.AddSwaggerGen(c =>
+{
+    foreach (var (key, title) in ApiAudienceMap.Apps)
+        c.SwaggerDoc(key, new OpenApiInfo { Title = title, Version = "v1" });
+    c.DocInclusionPredicate((docName, api) => ApiAudienceMap.AppsFor(api.RelativePath).Contains(docName));
+    c.TagActionsBy(api => [ApiAudienceMap.TagFor(api.RelativePath)]);
+});
 
 builder.Services.AddOpenTelemetry()
     .WithTracing(t => t.AddAspNetCoreInstrumentation().AddConsoleExporter());
@@ -142,7 +152,11 @@ if (app.Environment.IsDevelopment())
 {
     MigrationRunner.Run(conn!); // dev convenience; prod migrates via the Sms.Migrations CLI in CI/CD
     app.UseSwagger();
-    app.UseSwaggerUI();
+    app.UseSwaggerUI(c =>
+    {
+        foreach (var (key, title) in ApiAudienceMap.Apps)
+            c.SwaggerEndpoint($"/swagger/{key}/swagger.json", title);
+    });
 }
 
 app.UseSerilogRequestLogging();
