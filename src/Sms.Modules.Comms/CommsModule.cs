@@ -19,10 +19,44 @@ public sealed record AnnouncementResponse(
     Guid Id, Guid TenantId, string Title, string? Body, DateTime Date, string? From, string? Role,
     string Type, bool Pinned, string? Audience);
 public sealed record CreateAnnouncementRequest(string Title, string Body, string? Type, string? Audience);
+public sealed record ComplaintResponse(
+    Guid Id, Guid TenantId, string Subject, string? From, string? Category, string Priority, string Status,
+    string? Age, string? Assignee, string? Body);
+public sealed record CreateComplaintRequest(string Subject, string? From, string? Category, string? Priority, string? Body);
+public sealed record UpdateComplaintRequest(string? Status, string? Assignee);
+public sealed record NotificationResponse(
+    Guid Id, Guid TenantId, string? Icon, string? Tone, string Title, string? Body, string? Time, bool Unread);
+public sealed record CreateNotificationRequest(string? Icon, string? Tone, string Title, string? Body);
 
 public sealed class CommsRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
     private sealed record MessageRow(Guid Id, Guid ThreadId, Guid? SenderId, string Text, DateTime SentAt);
+
+    private const string ComplaintCols = "Id, TenantId, Subject, [From], Category, Priority, Status, Age, Assignee, Body";
+    private const string NotificationCols = "Id, TenantId, Icon, Tone, Title, Body, [Time], Unread";
+
+    public Task<IReadOnlyList<ComplaintResponse>> ListComplaintsAsync(string? status, CancellationToken ct = default) =>
+        QueryInlineAsync<ComplaintResponse>(
+            $"SELECT {ComplaintCols} FROM dbo.Complaints WHERE (@status IS NULL OR Status = @status) ORDER BY Priority",
+            new { status }, ct);
+
+    public Task<ComplaintResponse?> CreateComplaintAsync(Guid tenantId, CreateComplaintRequest r, CancellationToken ct = default) =>
+        QuerySingleProcAsync<ComplaintResponse>("dbo.Complaint_Create",
+            new { TenantId = tenantId, r.Subject, r.From, r.Category, r.Priority, r.Body }, ct);
+
+    public async Task<ComplaintResponse?> GetComplaintAsync(Guid id, CancellationToken ct = default) =>
+        (await QueryInlineAsync<ComplaintResponse>($"SELECT {ComplaintCols} FROM dbo.Complaints WHERE Id = @id", new { id }, ct))
+        .FirstOrDefault();
+
+    public Task<ComplaintResponse?> UpdateComplaintAsync(Guid id, string? status, string? assignee, CancellationToken ct = default) =>
+        QuerySingleProcAsync<ComplaintResponse>("dbo.Complaint_Update", new { Id = id, Status = status, Assignee = assignee }, ct);
+
+    public Task<IReadOnlyList<NotificationResponse>> ListNotificationsAsync(CancellationToken ct = default) =>
+        QueryInlineAsync<NotificationResponse>($"SELECT {NotificationCols} FROM dbo.Notifications ORDER BY Unread DESC", null, ct);
+
+    public Task<NotificationResponse?> CreateNotificationAsync(Guid tenantId, CreateNotificationRequest r, CancellationToken ct = default) =>
+        QuerySingleProcAsync<NotificationResponse>("dbo.Notification_Create",
+            new { TenantId = tenantId, r.Icon, r.Tone, r.Title, r.Body }, ct);
 
     public Task<IReadOnlyList<ChatThreadResponse>> ListThreadsAsync(CancellationToken ct = default) =>
         QueryInlineAsync<ChatThreadResponse>(
@@ -71,6 +105,9 @@ public static class CommsModule
     private static IResult Forbidden(string message) =>
         Results.Json(ErrorEnvelope.From(new Error("forbidden", message)), statusCode: 403);
 
+    private static IResult NotFound() =>
+        Results.Json(ErrorEnvelope.From(new Error("not_found", "resource not found")), statusCode: 404);
+
     /// Canonical messaging + announcements (§3C): /v1/threads, /v1/announcements. Tenant-scoped.
     public static IEndpointRouteBuilder MapCommsModule(this IEndpointRouteBuilder app)
     {
@@ -104,6 +141,32 @@ public static class CommsModule
             var role = http.User.FindFirst("role")?.Value;
             return Results.Json(new DataEnvelope<AnnouncementResponse>(
                 (await repo.CreateAnnouncementAsync(tid, req, role, role))!), statusCode: 201);
+        });
+
+        // ---- Complaints ----
+        g.MapGet("/complaints", async (CommsRepository repo, string? status) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<ComplaintResponse>>(await repo.ListComplaintsAsync(status))));
+
+        g.MapPost("/complaints", async (CreateComplaintRequest req, CommsRepository repo, ITenantContext tenant) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            return Results.Json(new DataEnvelope<ComplaintResponse>((await repo.CreateComplaintAsync(tid, req))!), statusCode: 201);
+        });
+
+        g.MapPatch("/complaints/{id:guid}", async (Guid id, UpdateComplaintRequest req, CommsRepository repo) =>
+        {
+            if (await repo.GetComplaintAsync(id) is null) return NotFound();
+            return Results.Ok(new DataEnvelope<ComplaintResponse>((await repo.UpdateComplaintAsync(id, req.Status, req.Assignee))!));
+        });
+
+        // ---- Notifications ----
+        g.MapGet("/notifications", async (CommsRepository repo) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<NotificationResponse>>(await repo.ListNotificationsAsync())));
+
+        g.MapPost("/notifications", async (CreateNotificationRequest req, CommsRepository repo, ITenantContext tenant) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            return Results.Json(new DataEnvelope<NotificationResponse>((await repo.CreateNotificationAsync(tid, req))!), statusCode: 201);
         });
 
         return app;

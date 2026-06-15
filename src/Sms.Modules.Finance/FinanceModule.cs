@@ -62,12 +62,32 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
             new { studentId }, ct);
 }
 
+// ---- Payslips (HR/payroll) ----
+public sealed record PayslipResponse(
+    Guid Id, Guid TenantId, Guid UserId, string? Month, int Year, decimal Gross, decimal Deductions, decimal Net, string Status);
+public sealed record CreatePayslipRequest(Guid UserId, string? Month, int Year, decimal Gross, decimal Deductions, decimal Net);
+
+public sealed class PayslipRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+{
+    private const string Cols = "Id, TenantId, UserId, Month, Year, Gross, Deductions, Net, Status";
+
+    public Task<PayslipResponse?> CreateAsync(Guid tenantId, CreatePayslipRequest r, CancellationToken ct = default) =>
+        QuerySingleProcAsync<PayslipResponse>("dbo.Payslip_Create",
+            new { TenantId = tenantId, r.UserId, r.Month, r.Year, r.Gross, r.Deductions, r.Net }, ct);
+
+    public Task<IReadOnlyList<PayslipResponse>> ListAsync(Guid? userId, CancellationToken ct = default) =>
+        QueryInlineAsync<PayslipResponse>(
+            $"SELECT {Cols} FROM dbo.Payslips WHERE (@userId IS NULL OR UserId = @userId) ORDER BY Year DESC, Month DESC",
+            new { userId }, ct);
+}
+
 public static class FinanceModule
 {
     public static IServiceCollection AddFinanceModule(this IServiceCollection services)
     {
         services.AddScoped<FeeRepository>();
         services.AddScoped<FeeInvoiceRepository>();
+        services.AddScoped<PayslipRepository>();
         return services;
     }
 
@@ -113,6 +133,16 @@ public static class FinanceModule
             var result = await gateway.ChargeAsync(inv.Amount, "INR");
             if (!result.Success) return Conflict("payment failed");
             return Results.Ok(new DataEnvelope<FeeInvoiceResponse>((await repo.MarkPaidAsync(id, result.Method))!));
+        });
+
+        // ---- Payslips ----
+        g.MapGet("/payslips", async (PayslipRepository repo, [FromQuery(Name = "user_id")] Guid? userId, ITenantContext tenant) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<PayslipResponse>>(await repo.ListAsync(userId ?? tenant.UserId))));
+
+        g.MapPost("/payslips", async (CreatePayslipRequest req, PayslipRepository repo, ITenantContext tenant) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            return Results.Json(new DataEnvelope<PayslipResponse>((await repo.CreateAsync(tid, req))!), statusCode: 201);
         });
 
         return app;
