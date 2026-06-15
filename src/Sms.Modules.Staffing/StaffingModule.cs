@@ -16,6 +16,7 @@ public static class StaffingModule
     {
         services.AddScoped<TeacherRepository>();
         services.AddScoped<StaffRepository>();
+        services.AddScoped<LeaveRepository>();
         return services;
     }
 
@@ -72,6 +73,25 @@ public static class StaffingModule
         {
             if (await repo.GetAsync(id) is null) return NotFound();
             return Results.Ok(new DataEnvelope<StaffResponse>((await repo.UpdateAsync(id, req))!));
+        });
+
+        // ---- Leave (file) + Approvals (inbox) ----
+        g.MapGet("/leave", async (LeaveRepository repo, ITenantContext tenant) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<LeaveResponse>>(await repo.ListMineAsync(tenant.UserId))));
+
+        g.MapPost("/leave", async (CreateLeaveRequest req, LeaveRepository repo, ITenantContext tenant) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            return Results.Json(new DataEnvelope<LeaveResponse>((await repo.CreateAsync(tid, tenant.UserId, req))!), statusCode: 201);
+        });
+
+        g.MapGet("/approvals", async (LeaveRepository repo, string? status) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<LeaveResponse>>(await repo.ListByStatusAsync(status ?? "pending"))));
+
+        g.MapPatch("/approvals/{id:guid}", async (Guid id, DecideLeaveRequest req, LeaveRepository repo, ITenantContext tenant) =>
+        {
+            if (await repo.GetAsync(id) is null) return NotFound();
+            return Results.Ok(new DataEnvelope<LeaveResponse>((await repo.DecideAsync(id, req.Status, tenant.UserId, req.DecidedNote))!));
         });
 
         return app;
