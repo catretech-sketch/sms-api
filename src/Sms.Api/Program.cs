@@ -10,6 +10,7 @@ using Serilog;
 using Sms.Api.Endpoints;
 using Sms.Api.Http;
 using Sms.Migrations;
+using Sms.Modules.Sis;
 using Sms.Modules.Tenancy;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Configuration;
@@ -65,6 +66,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddAuthorization(o =>
     o.AddPolicy("platform", p => p.RequireClaim("is_platform", "1")));
 builder.Services.AddTenancyModule();
+builder.Services.AddSisModule();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -149,6 +151,7 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
 });
 app.MapAuth();
 Sms.Modules.Tenancy.ModuleEndpoints.MapTenancyModule(app);
+app.MapSisModule();
 
 app.Run();
 
