@@ -21,6 +21,7 @@ using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Configuration;
 using Sms.Shared.Kernel.Data;
 using Sms.Shared.Kernel.Http;
+using Sms.Shared.Kernel.Payments;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
 using Sms.Shared.Kernel.Time;
@@ -48,6 +49,7 @@ builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 builder.Services.AddSingleton<IOtpSender, ConsoleOtpSender>();
+builder.Services.AddSingleton<IPaymentGateway, StubPaymentGateway>();
 
 builder.Services.AddScoped<ITenantContext, TenantContext>();
 builder.Services.AddScoped<IDbConnectionFactory>(sp =>

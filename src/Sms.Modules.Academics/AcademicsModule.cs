@@ -19,6 +19,7 @@ public static class AcademicsModule
         services.AddScoped<SubjectRepository>();
         services.AddScoped<AttendanceRepository>();
         services.AddScoped<ExamRepository>();
+        services.AddScoped<HomeworkRepository>();
         return services;
     }
 
@@ -124,6 +125,35 @@ public static class AcademicsModule
         {
             if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
             return Results.Ok(new DataEnvelope<GradeResponse>((await repo.UpsertGradeAsync(tid, req))!));
+        });
+
+        // ---- Homework (student) ----
+        g.MapGet("/homework", async (HomeworkRepository repo,
+            [FromQuery(Name = "student_id")] Guid? studentId, string? status) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<HomeworkResponse>>(await repo.ListAsync(studentId, status))));
+
+        g.MapGet("/homework/{id:guid}", async (Guid id, HomeworkRepository repo) =>
+        {
+            var h = await repo.GetAsync(id);
+            return h is null ? NotFound() : Results.Ok(new DataEnvelope<HomeworkResponse>(h));
+        });
+
+        g.MapPost("/homework", async (CreateHomeworkRequest req, HomeworkRepository repo, ITenantContext tenant) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            return Results.Json(new DataEnvelope<HomeworkResponse>((await repo.CreateAsync(tid, req))!), statusCode: 201);
+        });
+
+        g.MapPatch("/homework/{id:guid}", async (Guid id, SetHomeworkStatusRequest req, HomeworkRepository repo) =>
+        {
+            if (await repo.GetAsync(id) is null) return NotFound();
+            return Results.Ok(new DataEnvelope<HomeworkResponse>((await repo.SetStatusAsync(id, req.Status))!));
+        });
+
+        g.MapPost("/homework/{id:guid}/submit", async (Guid id, HomeworkRepository repo) =>
+        {
+            if (await repo.GetAsync(id) is null) return NotFound();
+            return Results.Ok(new DataEnvelope<HomeworkResponse>((await repo.SetStatusAsync(id, "submitted"))!));
         });
 
         return app;
