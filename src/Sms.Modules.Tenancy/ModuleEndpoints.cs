@@ -20,6 +20,11 @@ public static class ModuleEndpoints
         services.AddScoped<InvoiceRepository>();
         services.AddScoped<SubscriptionRepository>();
         services.AddScoped<DashboardRepository>();
+        services.AddScoped<OnboardingRepository>();
+        services.AddScoped<TicketRepository>();
+        services.AddScoped<TeamRepository>();
+        services.AddScoped<AuditRepository>();
+        services.AddScoped<ReportRepository>();
         return services;
     }
 
@@ -28,6 +33,14 @@ public static class ModuleEndpoints
 
     private static IResult Conflict(string message) =>
         Results.Json(ErrorEnvelope.From(new Error("conflict", message)), statusCode: 409);
+
+    private static string Csv(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return "";
+        return value.Contains(',') || value.Contains('"') || value.Contains('\n')
+            ? "\"" + value.Replace("\"", "\"\"") + "\""
+            : value;
+    }
 
     /// Catre Phase 1: /v1/clients + /v1/plans. Platform-scoped (Catre staff bypass tenant RLS).
     public static IEndpointRouteBuilder MapTenancyModule(this IEndpointRouteBuilder app)
@@ -128,6 +141,94 @@ public static class ModuleEndpoints
         // ---- Dashboard ----
         g.MapGet("/dashboard/overview", async (DashboardRepository repo) =>
             Results.Ok(new DataEnvelope<DashboardOverview>(await repo.OverviewAsync())));
+
+        // ---- Onboarding ----
+        g.MapGet("/onboarding", async (OnboardingRepository repo, string? stage) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<OnboardingItemResponse>>(await repo.ListAsync(stage))));
+
+        g.MapPost("/onboarding", async (CreateOnboardingRequest req, OnboardingRepository repo) =>
+        {
+            var id = await repo.CreateAsync(req);
+            return Results.Json(new DataEnvelope<OnboardingItemResponse>((await repo.GetAsync(id))!), statusCode: 201);
+        });
+
+        g.MapPost("/onboarding/{id:guid}/advance", async (Guid id, AdvanceRequest req, OnboardingRepository repo) =>
+        {
+            if (await repo.GetAsync(id) is null) return NotFound();
+            await repo.AdvanceAsync(id, req.Stage);
+            return Results.Ok(new DataEnvelope<OnboardingItemResponse>((await repo.GetAsync(id))!));
+        });
+
+        g.MapPatch("/onboarding/{id:guid}/checklist", async (Guid id, ChecklistRequest req, OnboardingRepository repo) =>
+        {
+            if (await repo.GetAsync(id) is null) return NotFound();
+            await repo.SetChecklistAsync(id, req.Label, req.Done);
+            return Results.Ok(new DataEnvelope<OnboardingItemResponse>((await repo.GetAsync(id))!));
+        });
+
+        // ---- Support tickets ----
+        g.MapGet("/tickets", async (TicketRepository repo, string? status, string? q) =>
+            Results.Ok(new CursorPage<TicketResponse>(await repo.ListAsync(status, q), null)));
+
+        g.MapGet("/tickets/{id:guid}", async (Guid id, TicketRepository repo) =>
+        {
+            var detail = await repo.GetDetailAsync(id);
+            return detail is null ? NotFound() : Results.Ok(new DataEnvelope<TicketDetailResponse>(detail));
+        });
+
+        g.MapPost("/tickets", async (CreateTicketRequest req, TicketRepository repo) =>
+        {
+            var id = await repo.CreateAsync(req);
+            return Results.Json(new DataEnvelope<TicketDetailResponse>((await repo.GetDetailAsync(id))!), statusCode: 201);
+        });
+
+        g.MapPatch("/tickets/{id:guid}", async (Guid id, UpdateTicketRequest req, TicketRepository repo) =>
+        {
+            if (await repo.GetDetailAsync(id) is null) return NotFound();
+            return Results.Ok(new DataEnvelope<TicketResponse>((await repo.UpdateAsync(id, req.Status, req.Assignee))!));
+        });
+
+        g.MapPost("/tickets/{id:guid}/messages", async (Guid id, AddMessageRequest req, HttpContext http, TicketRepository repo) =>
+        {
+            if (await repo.GetDetailAsync(id) is null) return NotFound();
+            var who = http.User.FindFirst("sub")?.Value ?? "agent";
+            await repo.AddMessageAsync(id, who, req.Text);
+            return Results.Json(new DataEnvelope<TicketDetailResponse>((await repo.GetDetailAsync(id))!), statusCode: 201);
+        });
+
+        // ---- Team ----
+        g.MapGet("/team", async (TeamRepository repo) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<TeamMemberResponse>>(await repo.ListAsync())));
+
+        g.MapPost("/team", async (InviteTeamRequest req, TeamRepository repo) =>
+            Results.Json(new DataEnvelope<TeamMemberResponse>((await repo.InviteAsync(req))!), statusCode: 201));
+
+        g.MapPatch("/team/{id:guid}", async (Guid id, UpdateTeamRequest req, TeamRepository repo) =>
+        {
+            var updated = await repo.UpdateAsync(id, req.Role, req.Status);
+            return updated is null ? NotFound() : Results.Ok(new DataEnvelope<TeamMemberResponse>(updated));
+        });
+
+        // ---- Audit ----
+        g.MapGet("/audit", async (AuditRepository repo, string? kind,
+            [FromQuery(Name = "actor_id")] Guid? actorId, [FromQuery(Name = "tenant_id")] Guid? tenantId) =>
+            Results.Ok(new CursorPage<AuditEntry>(await repo.ListAsync(kind, actorId, tenantId), null)));
+
+        // ---- Reports ----
+        g.MapGet("/reports/revenue", async (ReportRepository repo) =>
+            Results.Ok(new DataEnvelope<RevenueReport>(await repo.RevenueAsync())));
+
+        g.MapGet("/reports/clients.csv", async (ClientRepository repo, HttpResponse resp) =>
+        {
+            var rows = await repo.ListAsync(null, null, null);
+            var sb = new System.Text.StringBuilder("client,status,plan,mrr,students,staff,country,created\n");
+            foreach (var r in rows)
+                sb.Append(Csv(r.Name)).Append(',').Append(r.Status).Append(',').Append(Csv(r.PlanName)).Append(',')
+                  .Append(r.Mrr).Append(',').Append(r.StudentsCount).Append(',').Append(r.StaffCount).Append(',')
+                  .Append(Csv(r.Country)).Append(',').Append(r.CreatedAt.ToString("yyyy-MM-dd")).Append('\n');
+            resp.Headers.ContentDisposition = "attachment; filename=\"catre-clients.csv\"";
+            return Results.Text(sb.ToString(), "text/csv");
+        });
 
         return app;
     }
