@@ -16,6 +16,7 @@ using Sms.Modules.Finance;
 using Sms.Modules.Sis;
 using Sms.Modules.Staffing;
 using Sms.Modules.Tenancy;
+using Sms.Modules.Transport;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Configuration;
 using Sms.Shared.Kernel.Data;
@@ -75,6 +76,7 @@ builder.Services.AddStaffingModule();
 builder.Services.AddAcademicsModule();
 builder.Services.AddFinanceModule();
 builder.Services.AddAttendanceModule();
+builder.Services.AddTransportModule();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -164,6 +166,7 @@ app.MapStaffingModule();
 app.MapAcademicsModule();
 app.MapFinanceModule();
 app.MapAttendanceModule();
+app.MapTransportModule();
 
 app.Run();
 
