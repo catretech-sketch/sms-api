@@ -61,6 +61,58 @@ public static class AuthEndpoints
             return Results.Ok(new DataEnvelope<TokenResponse>(new TokenResponse(access, newRefresh)));
         });
 
+        g.MapPost("/otp/request", async (OtpRequest req, AuthRepository users, IOtpSender otp,
+            ITenantContext tenant) =>
+        {
+            // Lookups run as a system (platform) session — Users is RLS-protected and the caller is anon.
+            tenant.Set(null, null, isPlatform: true);
+            var isEmail = req.Identifier.Contains('@');
+            var channel = isEmail ? "email" : "sms";
+            var user = isEmail
+                ? await users.GetByEmailAsync(req.Identifier)
+                : await users.GetByPhoneAsync(req.Identifier);
+            if (user is not null)
+            {
+                var code = await otp.SendAsync(req.Identifier, channel);
+                await users.OtpInsertAsync(req.Identifier, channel, Sha256(code),
+                    DateTime.UtcNow.AddMinutes(10));
+            }
+            // Always 200 — never leak whether the account exists.
+            return Results.Ok(new DataEnvelope<object>(new { sent = true }));
+        });
+
+        g.MapPost("/otp/verify", async (OtpVerifyRequest req, AuthRepository users,
+            IJwtTokenService jwt, IRefreshTokenStore tokens, ITenantContext tenant) =>
+        {
+            tenant.Set(null, null, isPlatform: true);
+            var activeHash = await users.OtpActiveHashAsync(req.Identifier);
+            if (activeHash is null || activeHash != Sha256(req.Code))
+                return Results.Json(ErrorEnvelope.From(new("invalid_code", "code invalid or expired")),
+                    statusCode: 401);
+            await users.OtpConsumeAsync(req.Identifier, activeHash);
+
+            var user = req.Identifier.Contains('@')
+                ? await users.GetByEmailAsync(req.Identifier)
+                : await users.GetByPhoneAsync(req.Identifier);
+            if (user is null)
+                return Results.Json(ErrorEnvelope.From(new("invalid_code", "user not found")),
+                    statusCode: 401);
+
+            var roles = await users.GetRolesAsync(user.Id);
+            var access = jwt.IssueAccess(user.Id, user.TenantId, roles, user.IsPlatform);
+            var refresh = jwt.NewRefreshToken();
+            await tokens.SaveAsync(user.Id, Sha256(refresh), DateTime.UtcNow.AddDays(30));
+            return Results.Ok(new DataEnvelope<TokenResponse>(new TokenResponse(access, refresh)));
+        });
+
+        g.MapPost("/set-password", async (SetPasswordRequest req, AuthRepository users,
+            IPasswordHasher hasher, ITenantContext tenant) =>
+        {
+            if (tenant.UserId is not { } uid) return Results.Unauthorized();
+            await users.SetPasswordAsync(uid, hasher.Hash(req.Password));
+            return Results.NoContent();
+        }).RequireAuthorization();
+
         g.MapGet("/me", (HttpContext http) =>
         {
             var sub = http.User.FindFirst("sub")?.Value;

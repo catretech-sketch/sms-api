@@ -5,3 +5,6 @@ public sealed record LoginRequest(
 
 public sealed record TokenResponse(string AccessToken, string RefreshToken);
 public sealed record RefreshRequest(string RefreshToken);
+public sealed record OtpRequest(string Identifier);
+public sealed record OtpVerifyRequest(string Identifier, string Code);
+public sealed record SetPasswordRequest(string Password);
