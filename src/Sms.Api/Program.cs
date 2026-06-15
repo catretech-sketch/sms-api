@@ -10,6 +10,7 @@ using Serilog;
 using Sms.Api.Endpoints;
 using Sms.Api.Http;
 using Sms.Migrations;
+using Sms.Modules.Academics;
 using Sms.Modules.Sis;
 using Sms.Modules.Staffing;
 using Sms.Modules.Tenancy;
@@ -69,6 +70,7 @@ builder.Services.AddAuthorization(o =>
 builder.Services.AddTenancyModule();
 builder.Services.AddSisModule();
 builder.Services.AddStaffingModule();
+builder.Services.AddAcademicsModule();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -155,6 +157,7 @@ app.MapAuth();
 Sms.Modules.Tenancy.ModuleEndpoints.MapTenancyModule(app);
 app.MapSisModule();
 app.MapStaffingModule();
+app.MapAcademicsModule();
 
 app.Run();
 
