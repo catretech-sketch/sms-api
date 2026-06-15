@@ -12,6 +12,7 @@ using Sms.Api.Http;
 using Sms.Migrations;
 using Sms.Modules.Academics;
 using Sms.Modules.Attendance;
+using Sms.Modules.Comms;
 using Sms.Modules.Finance;
 using Sms.Modules.Sis;
 using Sms.Modules.Staffing;
@@ -79,6 +80,7 @@ builder.Services.AddAcademicsModule();
 builder.Services.AddFinanceModule();
 builder.Services.AddAttendanceModule();
 builder.Services.AddTransportModule();
+builder.Services.AddCommsModule();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -169,6 +171,7 @@ app.MapAcademicsModule();
 app.MapFinanceModule();
 app.MapAttendanceModule();
 app.MapTransportModule();
+app.MapCommsModule();
 
 app.Run();
 
