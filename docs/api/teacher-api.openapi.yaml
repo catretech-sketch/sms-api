@@ -1,0 +1,296 @@
+openapi: 3.1.0
+info:
+  title: Teacher + Principal API (sms-teacher-app)
+  version: "1.0.0-phase3-contract"
+  description: >
+    Forward contract for the teacher/principal app. Phase-3 deliverable; backend currently implements
+    only Phase 0. snake_case DTOs mirror sms-teacher-app/src/data/http/mappers.ts. Dates YYYY-MM-DD,
+    times HH:MM, timestamps ISO-8601. See markdown twin for envelope/reconciliation notes.
+servers:
+  - url: "{apiBaseUrl}/v1"
+    variables: { apiBaseUrl: { default: https://api.catre.io } }
+security:
+  - bearerAuth: []
+
+tags: [{name: auth},{name: classes},{name: attendance},{name: timetable},{name: exams},{name: grades},{name: assignments},{name: chat},{name: content},{name: dashboard},{name: checkin},{name: leave},{name: bus},{name: principal}]
+
+paths:
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [email, password], properties: { email: {type: string}, password: {type: string} } } } } }
+      responses: { "200": { $ref: "#/components/responses/Session" }, "401": { $ref: "#/components/responses/Error" } }
+  /auth/refresh:
+    post:
+      tags: [auth]
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [refresh_token], properties: { refresh_token: {type: string} } } } } }
+      responses: { "200": { $ref: "#/components/responses/Session" } }
+  /auth/me:
+    get:
+      tags: [auth]
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/User" } } } } }
+  /auth/logout:
+    post: { tags: [auth], responses: { "204": { description: ok } } }
+
+  /classes:
+    get: { tags: [classes], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Class" } } } } } } }
+  /classes/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get: { tags: [classes], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Class" } } } } } }
+  /classes/{classId}/students:
+    parameters: [{ name: classId, in: path, required: true, schema: {type: string} }]
+    get: { tags: [classes], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Student" } } } } } } }
+  /students/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get: { tags: [classes], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Student" } } } } } }
+
+  /classes/{classId}/attendance:
+    parameters: [{ name: classId, in: path, required: true, schema: {type: string} }]
+    get:
+      tags: [attendance]
+      parameters: [{ name: date, in: query, required: true, schema: {type: string, format: date} }]
+      responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/AttendanceRecord" } } } } } }
+    post:
+      tags: [attendance]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [date, records], properties: { date: {type: string, format: date}, records: { type: array, items: { $ref: "#/components/schemas/AttendanceRecord" } } } } } } }
+      responses: { "204": { description: saved } }
+
+  /timetable:
+    get: { tags: [timetable], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/TimetableSlot" } } } } } } }
+
+  /exam-papers:
+    get: { tags: [exams], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/ExamPaper" } } } } } } }
+    post:
+      tags: [exams]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ExamPaper" } } } }
+      responses: { "201": { description: created, content: { application/json: { schema: { $ref: "#/components/schemas/ExamPaper" } } } } }
+  /exam-papers/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get: { tags: [exams], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/ExamPaper" } } } } } }
+    patch:
+      tags: [exams]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/ExamPaper" } } } }
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/ExamPaper" } } } } }
+    delete: { tags: [exams], responses: { "204": { description: deleted } } }
+  /exam-papers/{examId}/grades:
+    parameters: [{ name: examId, in: path, required: true, schema: {type: string} }]
+    get: { tags: [grades], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Grade" } } } } } } }
+  /grades:
+    put:
+      tags: [grades]
+      summary: Upsert one grade
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [student_id, exam_paper_id, marks], properties: { student_id: {type: string}, exam_paper_id: {type: string}, marks: {type: number} } } } } }
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Grade" } } } } }
+
+  /assignments:
+    get: { tags: [assignments], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Assignment" } } } } } } }
+    post:
+      tags: [assignments]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [title, class_id, due_date], properties: { title: {type: string}, class_id: {type: string}, due_date: {type: string, format: date}, description: {type: string}, image_uri: {type: string} } } } } }
+      responses: { "201": { description: created, content: { application/json: { schema: { $ref: "#/components/schemas/Assignment" } } } } }
+
+  /threads:
+    get: { tags: [chat], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/ChatContact" } } } } } } }
+  /threads/{id}/messages:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get: { tags: [chat], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/ChatMessage" } } } } } } }
+    post:
+      tags: [chat]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [text], properties: { text: {type: string} } } } } }
+      responses: { "201": { description: created, content: { application/json: { schema: { $ref: "#/components/schemas/ChatMessage" } } } } }
+
+  /announcements:
+    get: { tags: [content], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Announcement" } } } } } } }
+    post:
+      tags: [principal]
+      summary: Broadcast (principal)
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [title, body, type], properties: { title: {type: string}, body: {type: string}, type: {type: string, enum: [info, warning, event, urgent]} } } } } }
+      responses: { "201": { description: created, content: { application/json: { schema: { $ref: "#/components/schemas/Announcement" } } } } }
+  /calendar:
+    get: { tags: [content], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/CalendarEvent" } } } } } } }
+  /library:
+    get: { tags: [content], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/LibraryBook" } } } } } } }
+  /payslips:
+    get: { tags: [content], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/PayslipEntry" } } } } } } }
+
+  /dashboard/stats:
+    get: { tags: [dashboard], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/DashboardStats" } } } } } }
+
+  /me/attendance/school-location:
+    get: { tags: [checkin], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/SchoolLocation" } } } } } }
+  /me/attendance/today:
+    get: { tags: [checkin], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/TeacherAttendanceDay" } } } } } }
+  /me/attendance/history:
+    get:
+      tags: [checkin]
+      parameters: [{ name: limit, in: query, schema: {type: integer, default: 30} }]
+      responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/TeacherAttendanceDay" } } } } } }
+  /me/attendance/summary:
+    get:
+      tags: [checkin]
+      parameters: [{ name: month, in: query, required: true, schema: {type: string} }]
+      responses: { "200": { description: ok, content: { application/json: { schema: { type: object, properties: { days_present: {type: integer}, days_flagged: {type: integer}, total_hours: {type: number} } } } } } }
+  /me/attendance/punch:
+    post:
+      tags: [checkin]
+      requestBody: { required: true, content: { application/json: { schema: { $ref: "#/components/schemas/CheckEvent" } } } }
+      responses: { "201": { description: created, content: { application/json: { schema: { $ref: "#/components/schemas/TeacherAttendanceDay" } } } } }
+
+  /leave:
+    get: { tags: [leave], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/LeaveRequest" } } } } } } }
+    post:
+      tags: [leave]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [type, from_date, to_date, reason], properties: { type: {type: string, enum: [casual, sick, earned, medical, maternity, emergency, other]}, from_date: {type: string, format: date}, to_date: {type: string, format: date}, reason: {type: string}, substitute: {type: string} } } } } }
+      responses: { "201": { description: created, content: { application/json: { schema: { $ref: "#/components/schemas/LeaveRequest" } } } } }
+
+  /bus/assigned:
+    get: { tags: [bus], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Bus" } } } } } }
+  /bus/{busId}/position:
+    parameters: [{ name: busId, in: path, required: true, schema: {type: string} }]
+    get: { tags: [bus], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/BusPosition" } } } } } }
+  /bus/{busId}/roster:
+    parameters: [{ name: busId, in: path, required: true, schema: {type: string} }]
+    get: { tags: [bus], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/BoardingRecord" } } } } } } }
+  /bus/{busId}/boarding:
+    parameters: [{ name: busId, in: path, required: true, schema: {type: string} }]
+    post:
+      tags: [bus]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { records: { type: array, items: { $ref: "#/components/schemas/BoardingRecord" } } } } } } }
+      responses: { "204": { description: saved } }
+
+  /approvals:
+    get: { tags: [principal], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/ApprovalRequest" } } } } } } }
+  /approvals/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [principal]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [status], properties: { status: {type: string, enum: [approved, rejected]}, decided_note: {type: string} } } } } }
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/ApprovalRequest" } } } } }
+  /principal/overview:
+    get: { tags: [principal], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/PrincipalOverview" } } } } } }
+  /principal/attendance:
+    get: { tags: [principal], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/SchoolAttendance" } } } } } }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string } }
+  responses:
+    Error: { description: error, content: { application/json: { schema: { type: object, properties: { error: { type: object, properties: { code: {type: string}, message: {type: string} } } } } } } }
+    Session: { description: session, content: { application/json: { schema: { $ref: "#/components/schemas/Session" } } } }
+  schemas:
+    Session:
+      type: object
+      properties:
+        access_token: {type: string}
+        refresh_token: {type: string}
+        user: { $ref: "#/components/schemas/User" }
+        tenant: { type: object, properties: { id: {type: string}, name: {type: string} } }
+    User:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, initials: {type: string}, title: {type: string}, email: {type: string}, phone: {type: string}, employee: {type: string}, classroom: {type: string}, joined: {type: string}, role: {type: string, enum: [teacher, principal]} }
+    Class:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, section: {type: string}, subject: {type: string}, student_count: {type: integer}, room: {type: string}, next_period: {type: string} }
+    Student:
+      type: object
+      properties: { id: {type: string}, admission_no: {type: string}, name: {type: string}, initials: {type: string}, gender: {type: string, enum: [M, F]}, class_id: {type: string}, grade: {type: string}, section: {type: string}, class_label: {type: string}, roll: {type: string}, guardian_name: {type: string}, guardian_phone: {type: string}, attendance_pct: {type: number}, fee_status: {type: string, enum: [paid, partial, due]}, fee_due: {type: number}, house: {type: string}, avatar_hue: {type: integer}, status: {type: string, enum: [active, inactive]} }
+    AttendanceRecord:
+      type: object
+      properties: { student_id: {type: string}, status: {type: string, enum: [present, absent, late, leave, holiday]}, date: {type: string, format: date} }
+    TimetableSlot:
+      type: object
+      properties: { id: {type: string}, day: {type: string, enum: [Mon, Tue, Wed, Thu, Fri]}, period: {type: integer}, subject: {type: string}, class_id: {type: string}, class_name: {type: string}, room: {type: string}, start_time: {type: string}, end_time: {type: string} }
+    ExamPaper:
+      type: object
+      properties: { id: {type: string}, exam_id: {type: string}, name: {type: string}, class_id: {type: string}, class_name: {type: string}, subject: {type: string}, date: {type: string, format: date}, start_time: {type: string}, duration_min: {type: integer}, max_marks: {type: number}, room: {type: string}, invigilator1: {type: string}, invigilator2: {type: string}, topics: {type: array, items: {type: string}}, status: {type: string, enum: [upcoming, completed, draft]} }
+    Grade:
+      type: object
+      properties: { id: {type: string}, student_id: {type: string}, student_name: {type: string}, exam_paper_id: {type: string}, marks: {type: number}, max_marks: {type: number}, grade: {type: string}, gpa: {type: number}, pass: {type: boolean}, date: {type: string} }
+    Assignment:
+      type: object
+      properties: { id: {type: string}, title: {type: string}, class_id: {type: string}, class_name: {type: string}, subject: {type: string}, due_date: {type: string, format: date}, submissions_count: {type: integer}, total_students: {type: integer}, status: {type: string, enum: [active, due_soon, overdue, closed]}, description: {type: string}, image_uri: {type: string} }
+    ChatContact:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, role: {type: string}, initials: {type: string}, last_message: {type: string}, last_at: {type: string}, unread: {type: integer}, online: {type: boolean} }
+    ChatMessage:
+      type: object
+      properties: { id: {type: string}, thread_id: {type: string}, sender_id: {type: string}, text: {type: string}, sent_at: {type: string}, is_mine: {type: boolean} }
+    Announcement:
+      type: object
+      properties: { id: {type: string}, title: {type: string}, body: {type: string}, date: {type: string}, from: {type: string}, role: {type: string}, type: {type: string, enum: [info, warning, event, urgent]}, pinned: {type: boolean}, audience: {type: string} }
+    CalendarEvent:
+      type: object
+      properties: { id: {type: string}, title: {type: string}, date: {type: string, format: date}, time: {type: string}, type: {type: string, enum: [exam, holiday, meeting, event, deadline]}, description: {type: string} }
+    LibraryBook:
+      type: object
+      properties: { id: {type: string}, title: {type: string}, author: {type: string}, subject: {type: string}, issued_to: {type: string}, due_date: {type: string}, status: {type: string, enum: [available, issued, overdue]} }
+    PayslipEntry:
+      type: object
+      properties: { id: {type: string}, month: {type: string}, year: {type: integer}, gross: {type: number}, deductions: {type: number}, net: {type: number}, status: {type: string, enum: [paid, pending]} }
+    DashboardStats:
+      type: object
+      properties: { total_students: {type: integer}, total_classes: {type: integer}, attendance_today: {type: number}, pending_assignments: {type: integer}, upcoming_exams: {type: integer} }
+    SchoolLocation:
+      type: object
+      properties: { lat: {type: number}, lng: {type: number}, radius_meters: {type: number}, name: {type: string} }
+    CheckEvent:
+      type: object
+      properties: { kind: {type: string, enum: [in, out]}, at: {type: string}, lat: {type: number}, lng: {type: number}, accuracy_meters: {type: number}, distance_meters: {type: number}, verified: {type: boolean} }
+    TeacherAttendanceDay:
+      type: object
+      properties: { date: {type: string, format: date}, check_in: { $ref: "#/components/schemas/CheckEvent" }, check_out: { $ref: "#/components/schemas/CheckEvent" } }
+    LeaveRequest:
+      type: object
+      properties: { id: {type: string}, requester_id: {type: string}, type: {type: string, enum: [casual, sick, earned, medical, maternity, emergency, other]}, from_date: {type: string, format: date}, to_date: {type: string, format: date}, reason: {type: string}, substitute: {type: string}, status: {type: string, enum: [approved, pending, rejected]}, applied_on: {type: string}, decided_note: {type: string} }
+    Bus:
+      type: object
+      properties:
+        id: {type: string}
+        bus_no: {type: string}
+        route_name: {type: string}
+        driver: {type: string}
+        driver_phone: {type: string}
+        stops:
+          type: array
+          items:
+            type: object
+            properties: { id: {type: string}, name: {type: string}, time: {type: string}, seq: {type: integer}, lat: {type: number}, lng: {type: number} }
+    BusPosition:
+      type: object
+      properties: { bus_id: {type: string}, current_stop_index: {type: integer}, progress: {type: number}, lat: {type: number}, lng: {type: number}, next_stop_name: {type: string}, eta_minutes: {type: number} }
+    BoardingRecord:
+      type: object
+      properties: { student_id: {type: string}, student_name: {type: string}, initials: {type: string}, stop_id: {type: string}, status: {type: string, enum: [pending, boarded, absent]} }
+    ApprovalRequest:
+      type: object
+      properties: { id: {type: string}, type: {type: string, enum: [leave, attendance_correction]}, requester_id: {type: string}, requester_name: {type: string}, requester_initials: {type: string}, title: {type: string}, detail: {type: string}, from: {type: string}, to: {type: string}, reason: {type: string}, substitute: {type: string}, priority: {type: string, enum: [high, medium, low]}, status: {type: string, enum: [approved, pending, rejected]}, applied_on: {type: string}, decided_note: {type: string} }
+    PrincipalOverview:
+      type: object
+      properties:
+        kpis: { type: object, properties: { students_present_pct: {type: number}, staff_present: {type: integer}, staff_total: {type: integer}, pending_approvals: {type: integer} } }
+        staff:
+          type: array
+          items:
+            type: object
+            properties: { teacher_id: {type: string}, name: {type: string}, initials: {type: string}, subject: {type: string}, phone: {type: string}, checked_in: {type: boolean}, check_in_at: {type: string}, role: {type: string} }
+    SchoolAttendance:
+      type: object
+      properties:
+        date: {type: string, format: date}
+        present_total: {type: integer}
+        student_total: {type: integer}
+        overall_pct: {type: number}
+        classes:
+          type: array
+          items:
+            type: object
+            properties: { class_id: {type: string}, class_name: {type: string}, present: {type: integer}, total: {type: integer}, pct: {type: number} }
+        staff:
+          type: array
+          items:
+            type: object
+            properties: { teacher_id: {type: string}, name: {type: string}, initials: {type: string}, subject: {type: string}, phone: {type: string}, checked_in: {type: boolean}, check_in_at: {type: string}, role: {type: string} }

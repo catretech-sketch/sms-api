@@ -1,0 +1,237 @@
+openapi: 3.1.0
+info:
+  title: Student + Parent API (sms-student)
+  version: "1.0.0-phase5-contract"
+  description: >
+    Forward contract for the student/parent app. Phase-5 deliverable; backend currently implements only
+    Phase 0. snake_case DTOs mirror sms-student/src/services/types.ts. Two roles (student, parent).
+    Session carries refresh_token (app currently discards it). See markdown twin for reconciliation notes.
+servers:
+  - url: "{apiBaseUrl}/v1"
+    variables: { apiBaseUrl: { default: https://api.catre.io } }
+security:
+  - bearerAuth: []
+
+tags: [{name: auth},{name: student},{name: academics},{name: communication},{name: parent},{name: fees},{name: transport}]
+
+paths:
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [email, password, role], properties: { email: {type: string}, password: {type: string}, role: {type: string, enum: [student, parent]} } } } } }
+      responses: { "200": { $ref: "#/components/responses/Session" }, "401": { $ref: "#/components/responses/Error" } }
+  /auth/refresh:
+    post:
+      tags: [auth]
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [refresh_token], properties: { refresh_token: {type: string} } } } } }
+      responses: { "200": { $ref: "#/components/responses/Session" } }
+  /auth/me:
+    get: { tags: [auth], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/SessionUser" } } } } } }
+  /auth/logout:
+    post: { tags: [auth], responses: { "204": { description: ok } } }
+  /school:
+    get: { tags: [auth], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/School" } } } } } }
+
+  /students/me:
+    get: { tags: [student], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Student" } } } } } }
+  /students/me/today:
+    get: { tags: [student], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/TodayBlock" } } } } } } }
+  /students/me/peers:
+    get: { tags: [student], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Peer" } } } } } } }
+  /students/me/achievements:
+    get: { tags: [student], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Achievement" } } } } } } }
+
+  /subjects:
+    get: { tags: [academics], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Subject" } } } } } } }
+  /subjects/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get: { tags: [academics], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Subject" } } } } } }
+  /homework:
+    get: { tags: [academics], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Homework" } } } } } } }
+  /homework/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get: { tags: [academics], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Homework" } } } } } }
+    patch:
+      tags: [academics]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [status], properties: { status: {type: string, enum: [todo, progress, submitted, graded]} } } } } }
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Homework" } } } } }
+  /homework/{id}/submit:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    post: { tags: [academics], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Homework" } } } } } }
+  /grades:
+    get: { tags: [academics], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Grade" } } } } } } }
+  /exam-papers:
+    get: { tags: [academics], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Exam" } } } } } } }
+
+  /announcements:
+    get:
+      tags: [communication]
+      parameters: [{ name: audience, in: query, schema: {type: string, enum: [student, parent]} }]
+      responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Announcement" } } } } } }
+  /teachers:
+    get: { tags: [communication], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Teacher" } } } } } } }
+  /threads:
+    get:
+      tags: [communication]
+      parameters: [{ name: audience, in: query, schema: {type: string, enum: [student, parent]} }]
+      responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/ChatThread" } } } } } }
+  /threads/{id}/messages:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    get: { tags: [communication], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/ChatMessage" } } } } } } }
+    post:
+      tags: [communication]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [text], properties: { text: {type: string} } } } } }
+      responses: { "201": { description: created, content: { application/json: { schema: { $ref: "#/components/schemas/ChatMessage" } } } } }
+
+  /parents/me:
+    get: { tags: [parent], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Parent" } } } } } }
+  /parents/me/children:
+    get: { tags: [parent], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Child" } } } } } } }
+  /children/{childId}/today:
+    parameters: [{ name: childId, in: path, required: true, schema: {type: string} }]
+    get: { tags: [parent], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/ChildToday" } } } } } }
+  /children/{childId}/fees:
+    parameters: [{ name: childId, in: path, required: true, schema: {type: string} }]
+    get: { tags: [fees], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Fee" } } } } } } }
+  /fees/{feeId}/pay:
+    parameters: [{ name: feeId, in: path, required: true, schema: {type: string} }]
+    post:
+      tags: [fees]
+      summary: Initiate online payment (IPaymentGateway)
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Fee" } } } } }
+  /ptm:
+    get: { tags: [parent], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/PTMMeeting" } } } } } } }
+  /ptm/{id}:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    patch:
+      tags: [parent]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [status], properties: { status: {type: string, enum: [confirmed, pending]} } } } } }
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/PTMMeeting" } } } } }
+  /children/{childId}/transport:
+    parameters: [{ name: childId, in: path, required: true, schema: {type: string} }]
+    get: { tags: [transport], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Transport" } } } } } }
+  /children/{childId}/attendance:
+    parameters: [{ name: childId, in: path, required: true, schema: {type: string} }]
+    get: { tags: [parent], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/AttendanceMonth" } } } } } }
+  /children/{childId}/leave:
+    parameters: [{ name: childId, in: path, required: true, schema: {type: string} }]
+    get: { tags: [parent], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/LeaveRequest" } } } } } } }
+  /leave:
+    post:
+      tags: [parent]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [child_id, from_date, to_date, reason], properties: { child_id: {type: string}, from_date: {type: string, format: date}, to_date: {type: string, format: date}, reason: {type: string}, note: {type: string} } } } } }
+      responses: { "201": { description: created, content: { application/json: { schema: { $ref: "#/components/schemas/LeaveRequest" } } } } }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string } }
+  responses:
+    Error: { description: error, content: { application/json: { schema: { type: object, properties: { error: { type: object, properties: { code: {type: string}, message: {type: string} } } } } } } }
+    Session: { description: session, content: { application/json: { schema: { $ref: "#/components/schemas/Session" } } } }
+  schemas:
+    Session:
+      type: object
+      properties:
+        access_token: {type: string}
+        refresh_token: {type: string}
+        user: { $ref: "#/components/schemas/SessionUser" }
+        tenant: { type: object, properties: { id: {type: string}, name: {type: string} } }
+    SessionUser:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, email: {type: string}, role: {type: string, enum: [student, parent]} }
+    School:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, short_name: {type: string}, logo_url: {type: string} }
+    Student:
+      type: object
+      properties: { id: {type: string}, admission_no: {type: string}, name: {type: string}, initials: {type: string}, grade: {type: string}, class_label: {type: string}, school: {type: string}, house: {type: string}, email: {type: string}, attendance_pct: {type: number}, overall_avg: {type: number}, rank: {type: integer}, rank_of: {type: integer} }
+    TodayBlock:
+      type: object
+      properties: { t: {type: string}, d: {type: integer}, label: {type: string}, subject_id: {type: string}, kind: {type: string, enum: [class, break, meeting, club]}, room: {type: string}, teacher: {type: string} }
+    Peer:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, initials: {type: string}, subject: {type: string} }
+    Achievement:
+      type: object
+      properties: { id: {type: string}, title: {type: string}, date: {type: string}, icon: {type: string, enum: [award, star, check, flag]}, hue: {type: string, enum: [pink, coral, teal, blue, amber, mint]} }
+    Subject:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, short: {type: string}, teacher: {type: string}, avg: {type: number}, trend: {type: number}, color: {type: string, enum: [pink, coral, teal, blue, amber, mint]} }
+    Homework:
+      type: object
+      properties: { id: {type: string}, assignment_id: {type: string}, title: {type: string}, subject_id: {type: string}, due_date: {type: string}, due_time: {type: string}, status: {type: string, enum: [todo, progress, submitted, graded]}, priority: {type: string, enum: [low, med, high]}, grade: {type: string} }
+    Grade:
+      type: object
+      properties: { id: {type: string}, subject_id: {type: string}, title: {type: string}, score: {type: number}, max_marks: {type: number}, grade: {type: string}, date: {type: string} }
+    Exam:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, subject_id: {type: string}, date: {type: string}, start_time: {type: string}, duration_min: {type: integer}, status: {type: string, enum: [upcoming, graded]}, max_marks: {type: number}, score: {type: number}, grade: {type: string} }
+    Announcement:
+      type: object
+      properties: { id: {type: string}, from: {type: string}, role: {type: string}, date: {type: string}, title: {type: string}, body: {type: string}, type: {type: string}, pinned: {type: boolean} }
+    Teacher:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, initials: {type: string}, subject: {type: string}, online: {type: boolean} }
+    ChatThread:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, role: {type: string}, last_message: {type: string}, last_at: {type: string}, unread: {type: integer}, child_id: {type: [string, "null"]}, group: {type: boolean} }
+    ChatMessage:
+      type: object
+      properties: { id: {type: string}, thread_id: {type: string}, sender_id: {type: string}, text: {type: string}, is_mine: {type: boolean}, sent_at: {type: string} }
+    Parent:
+      type: object
+      properties: { name: {type: string}, initials: {type: string}, relation: {type: string}, email: {type: string}, phone: {type: string} }
+    Child:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, initials: {type: string}, grade: {type: string}, school: {type: string}, avg: {type: number}, attn: {type: number}, fee: {type: string}, unread: {type: integer}, hue: {type: string} }
+    ChildToday:
+      type: object
+      properties:
+        classes:
+          type: array
+          items: { type: object, properties: { t: {type: string}, label: {type: string}, done: {type: boolean}, attn: {type: [string, "null"], enum: [present, late, null]} } }
+        meals: { type: object, properties: { breakfast: {type: string}, lunch: {type: string} } }
+        pickup: {type: string}
+    Fee:
+      type: object
+      properties:
+        id: {type: string}
+        period: {type: string}
+        due_date: {type: string}
+        amount: {type: number}
+        status: {type: string, enum: [due, paid]}
+        items:
+          type: array
+          items: { type: object, properties: { label: {type: string}, amount: {type: number} } }
+        paid_on: {type: string}
+        method: {type: string}
+    PTMMeeting:
+      type: object
+      properties: { id: {type: string}, date: {type: string}, time: {type: string}, teacher: {type: string}, subject: {type: string}, child: {type: string}, mode: {type: string}, status: {type: string, enum: [confirmed, pending]} }
+    Transport:
+      type: object
+      properties:
+        bus_no: {type: string}
+        driver: {type: string}
+        plate: {type: string}
+        eta: {type: string}
+        pickup_stop: {type: string}
+        next_stops:
+          type: array
+          items: { type: object, properties: { stop: {type: string}, eta: {type: string}, done: {type: boolean}, you: {type: boolean} } }
+    AttendanceMonth:
+      type: object
+      properties:
+        days:
+          type: array
+          items: { type: object, properties: { d: {type: integer}, kind: {type: string, enum: [present, absent, late, off, future]} } }
+        flags:
+          type: array
+          items: { type: object, properties: { id: {type: string}, tone: {type: string, enum: [absent, late]}, date: {type: string}, reason: {type: string}, action: {type: string} } }
+    LeaveRequest:
+      type: object
+      properties: { id: {type: string}, child_id: {type: string}, type: {type: string, enum: [casual, sick, earned, medical, maternity, emergency, other]}, from_date: {type: string, format: date}, to_date: {type: string, format: date}, reason: {type: string}, note: {type: string}, status: {type: string, enum: [pending, approved, rejected]} }
