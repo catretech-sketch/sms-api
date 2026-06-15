@@ -34,8 +34,9 @@ procs + `IOtpSender`/`ConsoleOtpSender` (all present, unused); `Users` already h
   password** (authenticated) to enable password login. **No activation-token flow** — OTP covers it.
 - **OTP delivery** is via the existing `IOtpSender` (console/log in dev). Real SMS/email is **Track C**;
   the OTP mechanism (generate, store hashed, verify) is fully built now.
-- **Feature gating:** **tier→features code map** (version-controlled). `silver|gold|platinum →
-  feature keys`. No schema change. `RequiresFeature("x")` checks the current tenant's set.
+- **Feature gating:** **tier→features code map** (version-controlled), mechanism fully wired. **All
+  tiers currently grant all features** ("all level") — nothing is locked yet; the map is the single
+  place to tighten a tier later with no endpoint changes. No schema change.
 - **Billing gate:** `active`/`trial` = full; **`past_due` = read-only** (writes → `402`);
   **`suspended` = blocked** except `/v1/auth/*`. **Platform (Catre) users exempt.** Status transitions
   use the existing `POST /v1/clients/{id}/status`.
@@ -76,8 +77,8 @@ codes; a code issued to an email validates only for that email.
 (`IssueOtpAsync(identifier, channel)`, `VerifyOtpAsync(identifier, code)`).
 - **`POST /v1/auth/otp/request`** `{ identifier }` (public, `auth` rate-limit): classify `identifier`
   as email or phone; look up the user (`GetByEmail`/`GetByPhone`). **Always returns `200`** (never
-  leaks whether the account exists). If found, generate a 6-digit code, store its hash via `Otp_Insert`
-  (short TTL), and `IOtpSender.SendAsync`.
+  leaks whether the account exists). If found, generate a **6-digit** code, store its hash via
+  `Otp_Insert` with a **10-minute TTL**, and `IOtpSender.SendAsync`.
 - **`POST /v1/auth/otp/verify`** `{ identifier, code }` (public, `auth` rate-limit): `Otp_GetActive` →
   on match, `Otp_Consume` and **issue access + refresh** with the user's real tenant/roles/platform
   (same token path as `/login`). Invalid/expired → `401 invalid_code`.
@@ -112,19 +113,23 @@ email/phone → counted in `skipped`), each able to OTP-login.
 ### Item 4 — Tier→feature set + RequiresFeature enforcement
 
 **Design.**
-- `TierFeatures` (static, `Sms.Shared.Kernel/Authz`): map `tier → string[]` feature keys. Seed
-  (finalised in the plan): `silver` = core (sis, attendance, exams, fees, `comms.chat`); `gold` =
-  silver + `transport.gps`, `exams.datesheet`, `reports.csv`; `platinum` = gold + `analytics.advanced`,
-  `comms.announcements.targeted`. Unknown/empty tier → core. (Platform-only capabilities are RBAC
-  `platform.only`, **not** tier features.)
+- `FeatureCatalog` (static, `Sms.Shared.Kernel/Authz`): the full set of known feature keys (e.g.
+  `transport.gps`, `exams.datesheet`, `reports.csv`, `analytics.advanced`, `comms.announcements.targeted`).
+- `TierFeatures` (static): map `tier → string[]`. **Decision: all tiers (`silver`/`gold`/`platinum`,
+  and unknown/empty) currently grant the FULL `FeatureCatalog`** — no feature is locked in this track.
+  This single map is the one place to tighten a tier later (remove keys), with **zero endpoint changes**.
+  (Platform-only capabilities are RBAC `platform.only`, **not** tier features.)
 - `TierFeatureSet : ITenantFeatureSet` — `Has(feature)` resolves the current tenant's tier (from the
   per-request `ITenantPlan`, Item 5) against `TierFeatures`. Scoped DI registration.
 - `RequiresFeatureFilter : IEndpointFilter` — reads the endpoint's `RequiresFeatureAttribute` metadata
-  (existing scaffold) → `403 { code: "feature_locked" }` via the standard envelope when absent. Opt-in
-  per endpoint via a `.RequiresFeature("transport.gps")` route-group helper. Platform users bypass.
+  (existing scaffold) → `403 { code: "feature_locked" }` via the standard envelope when the current
+  tenant's set lacks it. Opt-in per endpoint via a `.RequiresFeature("transport.gps")` route-group
+  helper. Platform users bypass. The mechanism is fully wired and tested even though no tier locks a
+  feature today — so tightening a tier later is a one-line map edit, already enforced.
 
-**Acceptance.** A `silver` tenant hitting a `RequiresFeature`-marked gold/platinum endpoint → `403
-feature_locked`; a `platinum` tenant → `200`; platform users bypass.
+**Acceptance.** The filter returns `403 feature_locked` whenever the current feature set lacks the
+required key (proven with a feature set that omits it); with the shipped all-tiers map, a
+`RequiresFeature`-marked endpoint returns `200` for every tier; platform users bypass.
 
 ### Item 5 — Per-request tenant plan + billing-state gate
 
@@ -170,8 +175,8 @@ All TDD (failing test → implement → green).
 
 **Unit (`Sms.Tests.Unit`):**
 - Identifier classification (email vs phone); OTP code generation/format.
-- `TierFeatures`/`TierFeatureSet`: silver lacks a gold feature; platinum has all; unknown tier → core.
-- `RequiresFeatureFilter`: `403 feature_locked` when absent, pass otherwise.
+- `TierFeatures`/`TierFeatureSet`: every tier grants the full `FeatureCatalog`; `Has(unknownKey)` false.
+- `RequiresFeatureFilter`: `403 feature_locked` when the set omits the key (stub set), pass otherwise.
 - `BillingStateMiddleware`: `past_due` blocks mutations / allows reads; `suspended` blocks all but
   `/v1/auth/*`; platform bypass; method classification.
 
@@ -182,7 +187,8 @@ All TDD (failing test → implement → green).
 - Provision client with `admin_email` → OTP login as `school.admin`, correct `tenant_id`.
 - `/v1/users` invite → OTP login with assigned role; non-admin → `403`.
 - `/v1/users/import` N rows → N OTP-capable users; duplicates → `skipped`.
-- Feature gate: silver → `403 feature_locked`; platinum → `200`.
+- Feature gate: a `RequiresFeature`-marked endpoint returns `200` for a normal tenant (all tiers grant
+  all features today); the `403 feature_locked` path is proven at unit level with a set omitting the key.
 - Billing gate: `past_due` GET `200` / POST `402`; `suspended` `403` except `/v1/auth/*`; platform
   unaffected.
 
@@ -190,7 +196,8 @@ All TDD (failing test → implement → green).
 
 Build clean (warnings-as-errors); all existing + new unit and integration tests green against
 `DESKTOP-TJL4SG6`; a provisioned school admin can OTP-log-in; password and OTP login both work; a user
-can set a password; single + bulk user import create OTP-capable users with roles; tier gating returns
-`feature_locked` for locked features; billing gate enforces read-only (`past_due`) and block
+can set a password; single + bulk user import create OTP-capable users with roles; the feature-gating
+mechanism is wired and tested (all tiers grant all features today; `feature_locked` enforced whenever a
+set omits a key); billing gate enforces read-only (`past_due`) and block
 (`suspended`) with platform exemption. **Real SMS/email delivery, domain-profile import, and seat
 enforcement remain out of scope** (Track C / Track A / deferred fast-follow).
