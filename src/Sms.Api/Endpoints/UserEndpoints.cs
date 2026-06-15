@@ -9,6 +9,8 @@ namespace Sms.Api.Endpoints;
 public sealed record InviteUserRequest(string? Email, string? Phone, string[] Roles);
 public sealed record ImportUsersRequest(ImportRowDto[] Rows);
 public sealed record ImportRowDto(string? Email, string? Phone, string? Role);
+public sealed record ImportError(int Row, string Reason);
+public sealed record ImportResponse(int Created, int Skipped, IReadOnlyList<ImportError> Errors);
 
 public static class UserEndpoints
 {
@@ -39,13 +41,23 @@ public static class UserEndpoints
             if (!IsSchoolAdmin(http)) return Forbidden("school admin only");
             if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
 
-            var rows = req.Rows
-                .Where(r => (r.Email is not null || r.Phone is not null)
-                            && (r.Role is null || AssignableRoles.Contains(r.Role)))
-                .Select(r => new ImportRow(r.Email, r.Phone, r.Role))
-                .ToList();
-            var result = await repo.BulkCreateAsync(tid, rows);
-            return Results.Ok(new DataEnvelope<ImportResult>(result));
+            // Validate each row; rejected rows are reported in errors[] (with their index), valid rows
+            // go to the TVP bulk insert. created/skipped come from the proc (skipped = in-batch/existing dupes).
+            var valid = new List<ImportRow>();
+            var errors = new List<ImportError>();
+            for (var i = 0; i < req.Rows.Length; i++)
+            {
+                var r = req.Rows[i];
+                if (r.Email is null && r.Phone is null)
+                    errors.Add(new ImportError(i, "email or phone required"));
+                else if (r.Role is not null && !AssignableRoles.Contains(r.Role))
+                    errors.Add(new ImportError(i, $"invalid role '{r.Role}'"));
+                else
+                    valid.Add(new ImportRow(r.Email, r.Phone, r.Role));
+            }
+            var result = await repo.BulkCreateAsync(tid, valid);
+            return Results.Ok(new DataEnvelope<ImportResponse>(
+                new ImportResponse(result.Created, result.Skipped, errors)));
         });
     }
 

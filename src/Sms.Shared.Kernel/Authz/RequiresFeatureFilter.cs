@@ -6,8 +6,9 @@ using KernelResults = Sms.Shared.Kernel.Results;
 
 namespace Sms.Shared.Kernel.Authz;
 
-/// Endpoint filter enforcing a RequiresFeatureAttribute on the endpoint. Opt in with
-/// `.RequiresFeature("transport.gps")` (the route-builder helper below).
+/// Endpoint filter that blocks the request when the current tenant's plan lacks the given feature
+/// key. Opt in per endpoint via `.RequiresFeature("transport.gps")` (the helper below); platform
+/// callers bypass. Returns 403 { code: "feature_locked" }.
 public sealed class RequiresFeatureFilter(string feature) : IEndpointFilter
 {
     public async ValueTask<object?> InvokeAsync(EndpointFilterInvocationContext ctx,

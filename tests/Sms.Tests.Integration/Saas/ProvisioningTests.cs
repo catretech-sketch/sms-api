@@ -75,7 +75,7 @@ public class ProvisioningTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task Bulk_import_creates_users_and_skips_duplicates()
+    public async Task Bulk_import_creates_users_skips_duplicates_and_reports_errors()
     {
         var tid = await SeedActiveTenant();
         await using var app = App();
@@ -87,9 +87,10 @@ public class ProvisioningTests(SqlServerFixture fx)
         {
             rows = new[]
             {
-                new { email = e1, phone = (string?)null, role = "school.teacher" },
-                new { email = e2, phone = (string?)null, role = "student.parent" },
-                new { email = e1, phone = (string?)null, role = "school.teacher" }, // duplicate
+                new { email = (string?)e1, phone = (string?)null, role = "school.teacher" },
+                new { email = (string?)e2, phone = (string?)null, role = "student.parent" },
+                new { email = (string?)e1, phone = (string?)null, role = "school.teacher" },       // duplicate -> skipped
+                new { email = (string?)null, phone = (string?)null, role = "school.teacher" }, // invalid -> error
             }
         });
         res.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -97,6 +98,9 @@ public class ProvisioningTests(SqlServerFixture fx)
         var data = doc.RootElement.GetProperty("data");
         data.GetProperty("created").GetInt32().Should().Be(2);
         data.GetProperty("skipped").GetInt32().Should().Be(1);
+        var errors = data.GetProperty("errors");
+        errors.GetArrayLength().Should().Be(1);
+        errors[0].GetProperty("row").GetInt32().Should().Be(3); // the 4th row (index 3) was invalid
     }
 
     [Fact]
