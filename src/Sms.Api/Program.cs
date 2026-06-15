@@ -10,6 +10,7 @@ using Serilog;
 using Sms.Api.Endpoints;
 using Sms.Api.Http;
 using Sms.Migrations;
+using Sms.Modules.Tenancy;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Configuration;
 using Sms.Shared.Kernel.Data;
@@ -61,7 +62,9 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             RoleClaimType = "role", NameClaimType = "sub"
         };
     });
-builder.Services.AddAuthorization();
+builder.Services.AddAuthorization(o =>
+    o.AddPolicy("platform", p => p.RequireClaim("is_platform", "1")));
+builder.Services.AddTenancyModule();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
