@@ -55,6 +55,8 @@ builder.Services.AddSingleton<IOtpSender, ConsoleOtpSender>();
 builder.Services.AddSingleton<IPaymentGateway, StubPaymentGateway>();
 
 builder.Services.AddScoped<ITenantContext, TenantContext>();
+builder.Services.AddScoped<ITenantPlan, TenantPlan>();
+builder.Services.AddScoped<TenantPlanRepository>();
 builder.Services.AddScoped<IDbConnectionFactory>(sp =>
     new SqlConnectionFactory(conn!, sp.GetRequiredService<ITenantContext>()));
 builder.Services.AddScoped<AuthRepository>();
@@ -164,6 +166,7 @@ app.UseCors("sms");
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseMiddleware<TenantResolutionMiddleware>(); // after auth: needs ClaimsPrincipal
+app.UseMiddleware<BillingStateMiddleware>();       // after tenant resolution: needs ITenantPlan
 app.UseAuthorization();
 
 app.MapHealth();
