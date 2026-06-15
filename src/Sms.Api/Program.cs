@@ -11,6 +11,7 @@ using Sms.Api.Endpoints;
 using Sms.Api.Http;
 using Sms.Migrations;
 using Sms.Modules.Academics;
+using Sms.Modules.Finance;
 using Sms.Modules.Sis;
 using Sms.Modules.Staffing;
 using Sms.Modules.Tenancy;
@@ -71,6 +72,7 @@ builder.Services.AddTenancyModule();
 builder.Services.AddSisModule();
 builder.Services.AddStaffingModule();
 builder.Services.AddAcademicsModule();
+builder.Services.AddFinanceModule();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
@@ -158,6 +160,7 @@ Sms.Modules.Tenancy.ModuleEndpoints.MapTenancyModule(app);
 app.MapSisModule();
 app.MapStaffingModule();
 app.MapAcademicsModule();
+app.MapFinanceModule();
 
 app.Run();
 

@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Modules.Academics.Contracts;
@@ -17,6 +18,7 @@ public static class AcademicsModule
         services.AddScoped<ClassRepository>();
         services.AddScoped<SubjectRepository>();
         services.AddScoped<AttendanceRepository>();
+        services.AddScoped<ExamRepository>();
         return services;
     }
 
@@ -73,6 +75,55 @@ public static class AcademicsModule
             if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
             await repo.BulkUpsertAsync(tid, classId, req.Date, tenant.UserId, req.Records);
             return Results.NoContent();
+        });
+
+        // ---- Exams (term) ----
+        g.MapGet("/exams", async (ExamRepository repo) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<ExamResponse>>(await repo.ListExamsAsync())));
+
+        g.MapGet("/exams/{id:guid}", async (Guid id, ExamRepository repo) =>
+        {
+            var e = await repo.GetExamAsync(id);
+            return e is null ? NotFound() : Results.Ok(new DataEnvelope<ExamResponse>(e));
+        });
+
+        g.MapPost("/exams", async (CreateExamRequest req, ExamRepository repo, ITenantContext tenant) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            return Results.Json(new DataEnvelope<ExamResponse>((await repo.CreateExamAsync(tid, req))!), statusCode: 201);
+        });
+
+        g.MapPatch("/exams/{id:guid}", async (Guid id, UpdateExamRequest req, ExamRepository repo) =>
+        {
+            if (await repo.GetExamAsync(id) is null) return NotFound();
+            return Results.Ok(new DataEnvelope<ExamResponse>((await repo.UpdateExamAsync(id, req))!));
+        });
+
+        // ---- Exam papers (shared resource) ----
+        g.MapGet("/exam-papers", async (ExamRepository repo,
+            [FromQuery(Name = "exam_id")] Guid? examId) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<ExamPaperResponse>>(await repo.ListExamPapersAsync(examId))));
+
+        g.MapGet("/exam-papers/{id:guid}", async (Guid id, ExamRepository repo) =>
+        {
+            var p = await repo.GetExamPaperAsync(id);
+            return p is null ? NotFound() : Results.Ok(new DataEnvelope<ExamPaperResponse>(p));
+        });
+
+        g.MapPost("/exam-papers", async (CreateExamPaperRequest req, ExamRepository repo, ITenantContext tenant) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            return Results.Json(new DataEnvelope<ExamPaperResponse>((await repo.CreateExamPaperAsync(tid, req))!), statusCode: 201);
+        });
+
+        // ---- Grades ----
+        g.MapGet("/exam-papers/{examPaperId:guid}/grades", async (Guid examPaperId, ExamRepository repo) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<GradeResponse>>(await repo.ListGradesAsync(examPaperId))));
+
+        g.MapPut("/grades", async (UpsertGradeRequest req, ExamRepository repo, ITenantContext tenant) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            return Results.Ok(new DataEnvelope<GradeResponse>((await repo.UpsertGradeAsync(tid, req))!));
         });
 
         return app;
