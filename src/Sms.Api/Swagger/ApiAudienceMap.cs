@@ -51,6 +51,8 @@ public static class ApiAudienceMap
         ("v1/staff/trip",    [Staff]),
         ("v1/staff",         [SchoolAdmin]),               // HR staff records
 
+        ("v1/users",         [SchoolAdmin]),
+
         ("v1/students",      [SchoolAdmin, Teacher, Student]),
         ("v1/teachers",      [SchoolAdmin, Student]),
         ("v1/classes",       [SchoolAdmin, Teacher]),

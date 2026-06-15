@@ -61,6 +61,7 @@ builder.Services.AddScoped<Sms.Shared.Kernel.Authz.ITenantFeatureSet, Sms.Shared
 builder.Services.AddScoped<IDbConnectionFactory>(sp =>
     new SqlConnectionFactory(conn!, sp.GetRequiredService<ITenantContext>()));
 builder.Services.AddScoped<AuthRepository>();
+builder.Services.AddScoped<UserProvisioningRepository>();
 builder.Services.AddScoped<IRefreshTokenStore, RefreshTokenStore>();
 
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -182,6 +183,7 @@ app.MapHealthChecks("/health/ready", new HealthCheckOptions
     }
 });
 app.MapAuth();
+app.MapUsers();
 Sms.Modules.Tenancy.ModuleEndpoints.MapTenancyModule(app);
 app.MapSisModule();
 app.MapStaffingModule();

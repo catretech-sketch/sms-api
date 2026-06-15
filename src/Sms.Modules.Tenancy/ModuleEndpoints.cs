@@ -62,9 +62,13 @@ public static class ModuleEndpoints
             return row is null ? NotFound() : Results.Ok(new DataEnvelope<ClientResponse>(row.ToResponse()));
         });
 
-        g.MapPost("/clients", async (CreateClientRequest req, ClientRepository repo) =>
+        g.MapPost("/clients", async (CreateClientRequest req, ClientRepository repo,
+            Sms.Shared.Kernel.Auth.UserProvisioningRepository users) =>
         {
             var row = await repo.CreateAsync(req);
+            if (row is not null && (req.AdminEmail is not null || req.AdminPhone is not null))
+                await users.CreateUserAsync(row.Id, req.AdminEmail, req.AdminPhone, false,
+                    new[] { Sms.Shared.Kernel.Authz.Policies.SchoolAdmin });
             return Results.Json(new DataEnvelope<ClientResponse>(row!.ToResponse()), statusCode: 201);
         });
 
