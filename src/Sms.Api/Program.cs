@@ -57,6 +57,7 @@ builder.Services.AddSingleton<IPaymentGateway, StubPaymentGateway>();
 builder.Services.AddScoped<ITenantContext, TenantContext>();
 builder.Services.AddScoped<ITenantPlan, TenantPlan>();
 builder.Services.AddScoped<TenantPlanRepository>();
+builder.Services.AddScoped<Sms.Shared.Kernel.Authz.ITenantFeatureSet, Sms.Shared.Kernel.Authz.TierFeatureSet>();
 builder.Services.AddScoped<IDbConnectionFactory>(sp =>
     new SqlConnectionFactory(conn!, sp.GetRequiredService<ITenantContext>()));
 builder.Services.AddScoped<AuthRepository>();
