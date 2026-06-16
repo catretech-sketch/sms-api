@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Shared.Kernel.Auth;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Api.Auth;
@@ -21,23 +22,32 @@ public static class PlatformAdminSeeder
             return;
         }
 
-        await using var scope = app.Services.CreateAsyncScope();
-        var tenant = scope.ServiceProvider.GetRequiredService<ITenantContext>();
-        tenant.Set(null, null, isPlatform: true); // platform context => RLS bypass for the seed write
-        var repo = scope.ServiceProvider.GetRequiredService<UserProvisioningRepository>();
-
-        if (await repo.PlatformAdminExistsAsync())
+        try
         {
-            log.LogInformation("Platform admin present; bootstrap skipped.");
+            await using var scope = app.Services.CreateAsyncScope();
+            var tenant = scope.ServiceProvider.GetRequiredService<ITenantContext>();
+            tenant.Set(null, null, isPlatform: true); // platform context => RLS bypass for the seed write
+            var repo = scope.ServiceProvider.GetRequiredService<UserProvisioningRepository>();
+
+            if (await repo.PlatformAdminExistsAsync())
+            {
+                log.LogInformation("Platform admin present; bootstrap skipped.");
+                return;
+            }
+
+            await repo.CreateUserAsync(
+                tenantId: null,
+                email: email,
+                phone: string.IsNullOrWhiteSpace(phone) ? null : phone,
+                isPlatform: true,
+                roles: [Policies.PlatformOnly]);
+            log.LogInformation("Seeded Catre platform admin {Email}.", email);
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Platform admin bootstrap failed; continuing startup. " +
+                "The Catre admin surface may be unreachable until this is resolved.");
             return;
         }
-
-        await repo.CreateUserAsync(
-            tenantId: null,
-            email: email,
-            phone: string.IsNullOrWhiteSpace(phone) ? null : phone,
-            isPlatform: true,
-            roles: ["platform.only"]);
-        log.LogInformation("Seeded Catre platform admin {Email}.", email);
     }
 }
