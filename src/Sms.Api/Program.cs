@@ -51,7 +51,13 @@ builder.Services.AddSingleton(jwtOptions);
 builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
 builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
-builder.Services.AddSingleton<IOtpSender, ConsoleOtpSender>();
+builder.Services.AddSingleton(builder.Configuration.GetSection("Smtp").Get<SmtpOptions>() ?? new SmtpOptions());
+builder.Services.AddSingleton<IEmailQueue, EmailQueue>();
+builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
+builder.Services.AddSingleton<EmailOtpSender>();
+builder.Services.AddSingleton<ConsoleOtpSender>();
+builder.Services.AddSingleton<IOtpSender, ChannelOtpSender>(); // email -> SMTP (worker), sms -> console stub
+builder.Services.AddHostedService<EmailDispatchWorker>();
 builder.Services.AddSingleton<IPaymentGateway, StubPaymentGateway>();
 
 builder.Services.AddScoped<ITenantContext, TenantContext>();
