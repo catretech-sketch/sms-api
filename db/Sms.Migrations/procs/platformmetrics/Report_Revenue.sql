@@ -36,7 +36,7 @@ BEGIN
         FROM (VALUES (-5),(-4),(-3),(-2),(-1),(0)) v(n)
     )
     SELECT
-        FORMAT(m.M, 'MMM') AS Label,
+        FORMAT(m.M, 'MMM', 'en-US') AS Label,
         (SELECT ISNULL(SUM(Amount),0) FROM dbo.Invoices inv
          WHERE inv.Status = 'paid' AND inv.PaidOn >= m.M AND inv.PaidOn < DATEADD(MONTH, 1, m.M)) AS Revenue
     FROM Months m

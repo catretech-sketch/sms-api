@@ -11,15 +11,24 @@ public static class MetricsSnapshotWriter
     public static async Task RunAsync(WebApplication app)
     {
         var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("MetricsSnapshotWriter");
-        await using var scope = app.Services.CreateAsyncScope();
-        var tenant = scope.ServiceProvider.GetRequiredService<ITenantContext>();
-        tenant.Set(null, null, isPlatform: true);
-        var factory = scope.ServiceProvider.GetRequiredService<IDbConnectionFactory>();
 
-        await using var conn = await factory.OpenAsync();
-        await Dapper.SqlMapper.ExecuteAsync(conn, new Dapper.CommandDefinition(
-            "dbo.PlatformMetrics_UpsertCurrentMonth",
-            commandType: System.Data.CommandType.StoredProcedure));
-        log.LogInformation("Platform metrics snapshot upserted for the current month.");
+        try
+        {
+            await using var scope = app.Services.CreateAsyncScope();
+            var tenant = scope.ServiceProvider.GetRequiredService<ITenantContext>();
+            tenant.Set(null, null, isPlatform: true);
+            var factory = scope.ServiceProvider.GetRequiredService<IDbConnectionFactory>();
+
+            await using var conn = await factory.OpenAsync();
+            await Dapper.SqlMapper.ExecuteAsync(conn, new Dapper.CommandDefinition(
+                "dbo.PlatformMetrics_UpsertCurrentMonth",
+                commandType: System.Data.CommandType.StoredProcedure));
+            log.LogInformation("Platform metrics snapshot upserted for the current month.");
+        }
+        catch (Exception ex)
+        {
+            log.LogError(ex, "Metrics snapshot refresh failed; continuing startup.");
+            return;
+        }
     }
 }

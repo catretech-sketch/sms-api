@@ -53,7 +53,7 @@ BEGIN
         FROM (VALUES (-5),(-4),(-3),(-2),(-1),(0)) v(n)
     )
     SELECT
-        FORMAT(m.M, 'MMM') AS Label,
+        FORMAT(m.M, 'MMM', 'en-US') AS Label,
         ISNULL(s.Mrr, 0) AS Mrr,
         (SELECT COUNT(*) FROM dbo.Subscriptions sub
          WHERE sub.StartedAt >= m.M AND sub.StartedAt < DATEADD(MONTH, 1, m.M)) AS Signups
