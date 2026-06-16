@@ -15,9 +15,11 @@ public sealed record CreateSubscriptionRequest(Guid TenantId, Guid PlanId, int S
 public sealed record DashCounts(int Total, int Active, int Trial, int Suspended, int Cancelled);
 public sealed record PlanMixItem(string Label, int Value, string? Color);
 public sealed record SystemHealthItem(string Name, string Status, string Latency, string Uptime);
+public sealed record UsageAlertItem(string Tenant, string Metric, int Used, int Limit, int Pct);
+public sealed record RecentActivityItem(string? Actor, string? Action, string? Target, string? Kind, DateTime At);
 
 public sealed record DashboardOverview(
     DashCounts Counts, decimal Mrr, int TrialsEnding, decimal ChurnPct,
     IReadOnlyList<string> Months, IReadOnlyList<decimal> MrrSeries, IReadOnlyList<int> SignupSeries,
-    IReadOnlyList<PlanMixItem> PlanMix, IReadOnlyList<object> UsageAlerts,
-    IReadOnlyList<SystemHealthItem> SystemHealth, IReadOnlyList<object> RecentActivity);
+    IReadOnlyList<PlanMixItem> PlanMix, IReadOnlyList<UsageAlertItem> UsageAlerts,
+    IReadOnlyList<SystemHealthItem> SystemHealth, IReadOnlyList<RecentActivityItem> RecentActivity);
