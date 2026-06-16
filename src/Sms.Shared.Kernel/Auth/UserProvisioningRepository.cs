@@ -20,6 +20,10 @@ public sealed class UserProvisioningRepository(IDbConnectionFactory factory) : B
         return id;
     }
 
+    /// True if at least one active platform admin exists (bootstrap idempotency guard).
+    public async Task<bool> PlatformAdminExistsAsync(CancellationToken ct = default)
+        => await QuerySingleProcAsync<int>("dbo.PlatformAdmin_Exists", null, ct) == 1;
+
     /// Bulk-creates login users + roles in one TVP round-trip; skips duplicate email/phone in-tenant.
     public async Task<ImportResult> BulkCreateAsync(Guid tenantId, IReadOnlyList<ImportRow> rows,
         CancellationToken ct = default)
