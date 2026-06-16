@@ -169,6 +169,9 @@ if (app.Environment.IsDevelopment())
     });
 }
 
+// Bootstrap the first Catre platform admin (idempotent; no-ops once one exists).
+await Sms.Api.Auth.PlatformAdminSeeder.RunAsync(app);
+
 app.UseSerilogRequestLogging();
 app.UseCors("sms");
 app.UseRateLimiter();
