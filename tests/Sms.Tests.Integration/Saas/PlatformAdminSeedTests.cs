@@ -16,8 +16,10 @@ public class PlatformAdminSeedTests(SqlServerFixture fx)
             b.UseSetting("environment", "Production");
             b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
             b.UseSetting("Jwt:SigningKey", Key);
-            if (adminEmail is not null)
-                b.UseSetting("Catre:AdminEmail", adminEmail);
+            // Override the committed appsettings Catre:AdminEmail. Passing null means
+            // "explicitly unconfigured" (empty), so the seeder warns-and-skips rather than
+            // seeding the appsettings admin into the shared collection database.
+            b.UseSetting("Catre:AdminEmail", adminEmail ?? "");
         });
 
     private async Task<int> PlatformAdminCount(string email)
@@ -31,9 +33,20 @@ public class PlatformAdminSeedTests(SqlServerFixture fx)
             "SELECT COUNT(*) FROM dbo.Users WHERE IsPlatform = 1 AND Email = @email", new { email });
     }
 
+    private async Task ClearPlatformAdmins()
+    {
+        // Other app-booting tests in the shared "sql" collection seed the appsettings
+        // Catre admin; the seeder's idempotency guard is existence-of-ANY-admin, so start clean.
+        await using var conn = new SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'IsPlatform', @value=1");
+        await conn.ExecuteAsync("DELETE FROM dbo.Users WHERE IsPlatform = 1");
+    }
+
     [Fact]
     public async Task Boot_seeds_exactly_one_platform_admin_and_is_idempotent()
     {
+        await ClearPlatformAdmins();
         var email = $"admin-{Guid.NewGuid():N}@catre.test";
 
         // First boot seeds the admin (RunAsync executes during factory startup).
