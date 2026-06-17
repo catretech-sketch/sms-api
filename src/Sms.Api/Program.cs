@@ -54,7 +54,10 @@ builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
 builder.Services.AddSingleton(builder.Configuration.GetSection("Smtp").Get<SmtpOptions>() ?? new SmtpOptions());
 builder.Services.AddSingleton<IEmailQueue, EmailQueue>();
 builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
-builder.Services.AddSingleton<EmailOtpSender>();
+builder.Services.AddSingleton(sp => new EmailOtpSender(
+    sp.GetRequiredService<IEmailQueue>(),
+    sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<EmailOtpSender>>(),
+    builder.Environment.IsDevelopment())); // dev: log OTP code to console (no SMTP needed)
 builder.Services.AddSingleton<ConsoleOtpSender>();
 builder.Services.AddSingleton<IOtpSender, ChannelOtpSender>(); // email -> SMTP (worker), sms -> console stub
 builder.Services.AddHostedService<EmailDispatchWorker>();

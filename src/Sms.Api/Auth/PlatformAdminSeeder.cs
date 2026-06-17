@@ -1,6 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Shared.Kernel.Auth;
-using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Api.Auth;
@@ -40,7 +39,9 @@ public static class PlatformAdminSeeder
                 email: email,
                 phone: string.IsNullOrWhiteSpace(phone) ? null : phone,
                 isPlatform: true,
-                roles: [Policies.PlatformOnly]);
+                // "owner" is the Catre UI role (sms-catreadmin RBAC: owner/admin/support/sales/finance/analyst).
+                // Backend /v1 authorization is driven by the is_platform claim, not this role string.
+                roles: ["owner"]);
             log.LogInformation("Seeded Catre platform admin {Email}.", email);
         }
         catch (Exception ex)
