@@ -36,11 +36,23 @@ public class OtpLoginTests(SqlServerFixture fx)
         await using var app = App();
         var client = app.CreateClient();
 
-        // Request always returns 200 (no account-existence leak).
+        // Registered email → 200 (OTP generated).
         (await client.PostAsJsonAsync("/v1/auth/otp/request", new { identifier = email }))
             .StatusCode.Should().Be(HttpStatusCode.OK);
-        (await client.PostAsJsonAsync("/v1/auth/otp/request", new { identifier = "nobody@x.com" }))
-            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Unregistered email → 404 with "Email is not registered." and NO OTP generated.
+        var unknownEmail = await client.PostAsJsonAsync("/v1/auth/otp/request", new { identifier = "nobody@x.com" });
+        unknownEmail.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        using (var err = JsonDocument.Parse(await unknownEmail.Content.ReadAsStringAsync()))
+            err.RootElement.GetProperty("error").GetProperty("message").GetString()
+                .Should().Be("Email is not registered.");
+
+        // Unregistered phone → 404 with the phone-tailored message.
+        var unknownPhone = await client.PostAsJsonAsync("/v1/auth/otp/request", new { identifier = "+910000000000" });
+        unknownPhone.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        using (var err = JsonDocument.Parse(await unknownPhone.Content.ReadAsStringAsync()))
+            err.RootElement.GetProperty("error").GetProperty("message").GetString()
+                .Should().Be("Phone is not registered.");
 
         // Read the issued code from the DB (sha256 hash stored), brute the 6-digit space is avoided by
         // recomputing the hash for each candidate is impractical; instead overwrite with a known code.

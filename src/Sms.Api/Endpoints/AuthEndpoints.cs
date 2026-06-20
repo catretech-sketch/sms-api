@@ -71,13 +71,15 @@ public static class AuthEndpoints
             var user = isEmail
                 ? await users.GetByEmailAsync(req.Identifier)
                 : await users.GetByPhoneAsync(req.Identifier);
-            if (user is not null)
-            {
-                var code = await otp.SendAsync(req.Identifier, channel);
-                await users.OtpInsertAsync(req.Identifier, channel, Sha256(code),
-                    DateTime.UtcNow.AddMinutes(10));
-            }
-            // Always 200 — never leak whether the account exists.
+
+            // Only registered identifiers get an OTP; unregistered ones are told so (no OTP generated).
+            // Note: this intentionally reveals account existence (enumeration) for clearer admin-login UX.
+            if (user is null)
+                return Results.Json(ErrorEnvelope.From(new("not_registered",
+                    isEmail ? "Email is not registered." : "Phone is not registered.")), statusCode: 404);
+
+            var code = await otp.SendAsync(req.Identifier, channel);
+            await users.OtpInsertAsync(req.Identifier, channel, Sha256(code), DateTime.UtcNow.AddMinutes(10));
             return Results.Ok(new DataEnvelope<object>(new { sent = true }));
         });
 
