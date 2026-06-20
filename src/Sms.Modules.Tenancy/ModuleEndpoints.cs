@@ -66,12 +66,16 @@ public static class ModuleEndpoints
         });
 
         g.MapPost("/clients", async (CreateClientRequest req, ClientRepository repo,
-            Sms.Shared.Kernel.Auth.UserProvisioningRepository users) =>
+            Sms.Shared.Kernel.Auth.UserProvisioningRepository users, OnboardingRepository onboarding) =>
         {
             var row = await repo.CreateAsync(req);
             if (row is not null && (req.AdminEmail is not null || req.AdminPhone is not null))
                 await users.CreateUserAsync(row.Id, req.AdminEmail, req.AdminPhone, false,
                     new[] { Sms.Shared.Kernel.Authz.Policies.SchoolAdmin });
+            // A new client enters the onboarding pipeline as a Trial card (with the default checklist).
+            if (row is not null)
+                await onboarding.CreateAsync(new CreateOnboardingRequest(
+                    row.Name, row.Slug, row.Csm, row.Mrr, "trial", row.Id));
             return Results.Json(new DataEnvelope<ClientResponse>(row!.ToResponse()), statusCode: 201);
         });
 

@@ -5,7 +5,7 @@ public sealed record OnboardingChecklistItem(string Label, bool Done);
 public sealed record OnboardingItemResponse(
     Guid Id, Guid? TenantId, string Name, string Slug, string? Owner, decimal Value, string Stage,
     IReadOnlyList<OnboardingChecklistItem> Checklist, int Done, int Age);
-public sealed record CreateOnboardingRequest(string Name, string Slug, string? Owner, decimal Value, string? Stage);
+public sealed record CreateOnboardingRequest(string Name, string Slug, string? Owner, decimal Value, string? Stage, Guid? TenantId = null);
 public sealed record AdvanceRequest(string Stage);
 public sealed record ChecklistRequest(string Label, bool Done);
 public sealed record OnboardingItemRow(

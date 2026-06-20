@@ -7,7 +7,7 @@ public sealed class OnboardingRepository(IDbConnectionFactory factory) : BaseRep
 {
     public async Task<Guid> CreateAsync(CreateOnboardingRequest r, CancellationToken ct = default) =>
         await QuerySingleProcAsync<Guid>("dbo.Onboarding_Create",
-            new { r.Name, r.Slug, r.Owner, r.Value, r.Stage }, ct);
+            new { r.Name, r.Slug, r.Owner, r.Value, r.Stage, r.TenantId }, ct);
 
     public Task AdvanceAsync(Guid id, string stage, CancellationToken ct = default) =>
         ExecuteProcAsync("dbo.Onboarding_Advance", new { Id = id, Stage = stage }, ct);
