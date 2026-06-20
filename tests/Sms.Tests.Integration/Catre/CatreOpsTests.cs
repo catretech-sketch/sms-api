@@ -161,4 +161,79 @@ public class CatreOpsTests(SqlServerFixture fx)
         csv.Content.Headers.ContentType!.MediaType.Should().Be("text/csv");
         (await csv.Content.ReadAsStringAsync()).Should().StartWith("client,status,plan,mrr");
     }
+
+    // The Catre plan editor posts no `tier` (it carries `feature_tiers` instead, which the
+    // backend ignores). Tier must default from the name so the save succeeds — not 500.
+    [Fact]
+    public async Task Create_plan_without_tier_defaults_tier_from_name()
+    {
+        await using var app = App();
+        var client = PlatformClient(app);
+
+        var created = await Data(await client.PostAsJsonAsync("/v1/plans", new
+        {
+            name = "Sliver", pricing = "per_student", price = 0, per_student = 25, min_students = 100,
+            period = "month", audience = "all", band = "200", visibility = "draft", offer = (object?)null,
+            feature_tiers = new { }, features = new[] { "sis.students", "academics" },
+            limits = new { students = 158, staff = 39, storage_gb = 47 }
+        }), HttpStatusCode.Created);
+
+        created.GetProperty("tier").GetString().Should().Be("sliver");
+        created.GetProperty("name").GetString().Should().Be("Sliver");
+        created.GetProperty("per_student").GetDecimal().Should().Be(25);
+    }
+
+    [Fact]
+    public async Task Patch_plan_updates_existing_and_404s_unknown()
+    {
+        await using var app = App();
+        var client = PlatformClient(app);
+
+        var id = (await Data(await client.PostAsJsonAsync("/v1/plans", new
+        {
+            name = "Bronze", tier = "bronze", pricing = "flat", price = 999, period = "month",
+            limits = new { students = 100, staff = 10, storage_gb = 5 }, visibility = "draft", audience = "all"
+        }), HttpStatusCode.Created)).GetProperty("id").GetGuid();
+
+        var patched = await Data(await client.PatchAsJsonAsync($"/v1/plans/{id}", new
+        {
+            name = "Bronze", tier = "bronze", pricing = "flat", price = 1299, period = "month",
+            limits = new { students = 100, staff = 10, storage_gb = 5 }, visibility = "draft", audience = "all"
+        }), HttpStatusCode.OK);
+        patched.GetProperty("price").GetDecimal().Should().Be(1299);
+
+        var missing = await client.PatchAsJsonAsync($"/v1/plans/{Guid.NewGuid()}", new
+        {
+            name = "Ghost", tier = "ghost", pricing = "flat", price = 1, period = "month",
+            limits = new { students = 1, staff = 1, storage_gb = 1 }, visibility = "draft", audience = "all"
+        });
+        missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Publish_and_unpublish_plan_and_404s_unknown()
+    {
+        await using var app = App();
+        var client = PlatformClient(app);
+
+        var id = (await Data(await client.PostAsJsonAsync("/v1/plans", new
+        {
+            name = "Copper", tier = "copper", pricing = "flat", price = 499, period = "month",
+            limits = new { students = 50, staff = 5, storage_gb = 2 }, visibility = "draft", audience = "all"
+        }), HttpStatusCode.Created)).GetProperty("id").GetGuid();
+
+        var published = await Data(
+            await client.PostAsJsonAsync($"/v1/plans/{id}/publish", new { visibility = "published" }),
+            HttpStatusCode.OK);
+        published.GetProperty("visibility").GetString().Should().Be("published");
+
+        var unpublished = await Data(
+            await client.PostAsJsonAsync($"/v1/plans/{id}/publish", new { visibility = "draft" }),
+            HttpStatusCode.OK);
+        unpublished.GetProperty("visibility").GetString().Should().Be("draft");
+
+        var missing = await client.PostAsJsonAsync(
+            $"/v1/plans/{Guid.NewGuid()}/publish", new { visibility = "published" });
+        missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

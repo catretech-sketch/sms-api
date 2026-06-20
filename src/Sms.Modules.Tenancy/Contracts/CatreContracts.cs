@@ -32,9 +32,12 @@ public sealed record PlanResponse(
     string Visibility, string Audience, string? Band, PlanOffer? Offer, string? Color, string? Description);
 
 public sealed record PlanUpsertRequest(
-    Guid? Id, string Name, string Tier, string Pricing, decimal Price, decimal? PerStudent, int? MinStudents,
+    Guid? Id, string Name, string? Tier, string Pricing, decimal Price, decimal? PerStudent, int? MinStudents,
     string Period, IReadOnlyList<string>? Features, PlanLimits Limits, string Visibility, string Audience,
     string? Band, PlanOffer? Offer, string? Color, string? Description);
+
+// Publish/unpublish a plan: visibility is "published" or "draft".
+public sealed record PublishPlanRequest(string Visibility);
 
 public sealed record PlanRow(
     Guid Id, string Name, string Tier, string Pricing, decimal Price, decimal? PerStudent, int? MinStudents,

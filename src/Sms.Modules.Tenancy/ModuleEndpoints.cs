@@ -34,6 +34,9 @@ public static class ModuleEndpoints
     private static IResult Conflict(string message) =>
         Results.Json(ErrorEnvelope.From(new Error("conflict", message)), statusCode: 409);
 
+    private static IResult BadRequest(string message) =>
+        Results.Json(ErrorEnvelope.From(new Error("bad_request", message)), statusCode: 400);
+
     private static string Csv(string? value)
     {
         if (string.IsNullOrEmpty(value)) return "";
@@ -101,6 +104,21 @@ public static class ModuleEndpoints
         {
             var row = await repo.UpsertAsync(req);
             return Results.Json(new DataEnvelope<PlanResponse>(row!.ToResponse()), statusCode: 201);
+        });
+
+        g.MapPatch("/plans/{id:guid}", async (Guid id, PlanUpsertRequest req, PlanRepository repo) =>
+        {
+            if (await repo.GetAsync(id) is null) return NotFound();
+            var row = await repo.UpsertAsync(req with { Id = id });
+            return Results.Ok(new DataEnvelope<PlanResponse>(row!.ToResponse()));
+        });
+
+        g.MapPost("/plans/{id:guid}/publish", async (Guid id, PublishPlanRequest req, PlanRepository repo) =>
+        {
+            if (req.Visibility is not ("published" or "draft"))
+                return BadRequest("visibility must be 'published' or 'draft'");
+            var row = await repo.SetVisibilityAsync(id, req.Visibility);
+            return row is null ? NotFound() : Results.Ok(new DataEnvelope<PlanResponse>(row.ToResponse()));
         });
 
         // ---- Invoices ----
