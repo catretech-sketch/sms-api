@@ -113,11 +113,13 @@ public static class ModuleEndpoints
             return Results.Ok(new DataEnvelope<PlanResponse>(row!.ToResponse()));
         });
 
+        // Store visibility as-is (frontend vocab is "public"/"draft"; canonical doc says "published"/"draft").
+        // Matches POST /plans, which persists visibility without an enum check; we only reject empty.
         g.MapPost("/plans/{id:guid}/publish", async (Guid id, PublishPlanRequest req, PlanRepository repo) =>
         {
-            if (req.Visibility is not ("published" or "draft"))
-                return BadRequest("visibility must be 'published' or 'draft'");
-            var row = await repo.SetVisibilityAsync(id, req.Visibility);
+            if (string.IsNullOrWhiteSpace(req.Visibility))
+                return BadRequest("visibility is required");
+            var row = await repo.SetVisibilityAsync(id, req.Visibility.Trim());
             return row is null ? NotFound() : Results.Ok(new DataEnvelope<PlanResponse>(row.ToResponse()));
         });
 

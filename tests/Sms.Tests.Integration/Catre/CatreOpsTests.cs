@@ -222,18 +222,22 @@ public class CatreOpsTests(SqlServerFixture fx)
             limits = new { students = 50, staff = 5, storage_gb = 2 }, visibility = "draft", audience = "all"
         }), HttpStatusCode.Created)).GetProperty("id").GetGuid();
 
+        // Frontend's published vocab is "public" (not "published") — stored as-is so ?visibility= filtering matches.
         var published = await Data(
-            await client.PostAsJsonAsync($"/v1/plans/{id}/publish", new { visibility = "published" }),
+            await client.PostAsJsonAsync($"/v1/plans/{id}/publish", new { visibility = "public" }),
             HttpStatusCode.OK);
-        published.GetProperty("visibility").GetString().Should().Be("published");
+        published.GetProperty("visibility").GetString().Should().Be("public");
 
         var unpublished = await Data(
             await client.PostAsJsonAsync($"/v1/plans/{id}/publish", new { visibility = "draft" }),
             HttpStatusCode.OK);
         unpublished.GetProperty("visibility").GetString().Should().Be("draft");
 
+        var empty = await client.PostAsJsonAsync($"/v1/plans/{id}/publish", new { visibility = "" });
+        empty.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
         var missing = await client.PostAsJsonAsync(
-            $"/v1/plans/{Guid.NewGuid()}/publish", new { visibility = "published" });
+            $"/v1/plans/{Guid.NewGuid()}/publish", new { visibility = "public" });
         missing.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 }
