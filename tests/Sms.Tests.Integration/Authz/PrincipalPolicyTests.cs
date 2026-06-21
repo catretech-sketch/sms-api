@@ -58,4 +58,14 @@ public class PrincipalPolicyTests(SqlServerFixture fx)
             new { title = "x", body = "y", type = "info" });
         resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
+
+    [Fact]
+    public async Task Teacher_role_is_forbidden_on_patch_approval()
+    {
+        await using var app = App();
+        var client = TenantClient(app, Guid.NewGuid(), Guid.NewGuid(), [Policies.Teacher]);
+        var resp = await client.PatchAsJsonAsync($"/v1/approvals/{Guid.NewGuid()}",
+            new { status = "approved" });
+        resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
 }
