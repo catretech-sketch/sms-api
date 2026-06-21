@@ -1,9 +1,11 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Modules.Sis.Contracts;
 using Sms.Modules.Sis.Data;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Http;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
@@ -49,6 +51,15 @@ public static class SisModule
             if (await repo.GetAsync(id) is null) return NotFound();
             return Results.Ok(new DataEnvelope<StudentResponse>((await repo.UpdateAsync(id, req))!));
         });
+
+        g.MapGet("/classes/{classId:guid}/students", async (
+            Guid classId, StudentRepository repo,
+            [FromQuery] int? limit, [FromQuery] string? cursor) =>
+        {
+            var page = new PageRequest(limit ?? 50, cursor);
+            var (rows, next) = await repo.ListByClassPagedAsync(classId, page.SafeLimit, page.Cursor);
+            return Results.Ok(new CursorPage<StudentResponse>(rows, next));
+        }).RequireAuthorization(AuthorizationPolicies.TeacherApp);
 
         return app;
     }
