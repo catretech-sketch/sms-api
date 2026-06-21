@@ -8,6 +8,13 @@
 > **Source of truth for "all screens":** [`docs/api/teacher-api.md`](../../api/teacher-api.md), which is
 > derived directly from the `sms-teacher-app` domain/repo files — so it is a faithful proxy for the app's
 > screens.
+>
+> **Amendment (2026-06-21, post-Phase-1 data-layer audit):** (1) **Assignments is NOT reuse-data** —
+> `dbo.Homework` is per-student with no `ClassId`/`description`/`image_uri` and there is no class-level
+> assignments table, so `/v1/assignments` needs a **new `Assignments` table** and is reassigned from §5.4
+> to **Phase 3 (new-data)**. (2) **`classes/{id}/students`** joins students to a class by **Grade +
+> Section** (the `Students` table has no `ClassId`; matches its `(TenantId, Grade, Section)` index).
+> Phase 2 = the true reuse-data endpoints + dashboards + Swagger mapping only.
 
 ---
 
