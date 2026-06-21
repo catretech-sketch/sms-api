@@ -15,6 +15,17 @@
 > to **Phase 3 (new-data)**. (2) **`classes/{id}/students`** joins students to a class by **Grade +
 > Section** (the `Students` table has no `ClassId`; matches its `(TenantId, Grade, Section)` index).
 > Phase 2 = the true reuse-data endpoints + dashboards + Swagger mapping only.
+>
+> **Amendment (2026-06-21, Phase-3 decisions):** (a) timetable/calendar/library/assignments all live in
+> the **Academics module** (no new `Sms.Modules.Schedule` — the §3 alternative; keeps project wiring
+> simple). (b) The GET-only reference resources get a **POST create gated to principal/admin**
+> (timetable, calendar, library) so data has a source; **assignments** gets GET + POST both **teacher-app**
+> (teacher create). (c) New tables `TimetableSlots`/`CalendarEvents`/`LibraryBooks`/`Assignments` are
+> migrations **M0040–M0043** (head is M0039), each with RLS + an inline `CREATE OR ALTER PROCEDURE`
+> insert proc. (d) Assignment `total_students` = students in the class via Grade+Section;
+> `submissions_count` = `Homework` rows for the assignment marked done/submitted (0 when none);
+> `status` derived (closed if stored closed; else overdue/due_soon/active from `DueDate`). No dev seeds
+> (tests seed via HTTP POST now that create endpoints exist).
 
 ---
 
