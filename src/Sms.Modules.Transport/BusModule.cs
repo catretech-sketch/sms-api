@@ -7,6 +7,7 @@ using Sms.Shared.Kernel.Data;
 using Sms.Shared.Kernel.Http;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
+using Sms.Shared.Kernel.Time;
 
 namespace Sms.Modules.Transport;
 
@@ -14,6 +15,8 @@ public sealed record BusStopResponse(Guid Id, string Name, string? Time, int Seq
 public sealed record BusResponse(
     Guid Id, string BusNo, string? RouteName, string? Driver, string? DriverPhone, IReadOnlyList<BusStopResponse> Stops);
 public sealed record BusRosterEntry(Guid StudentId, string StudentName, string Initials, Guid? StopId, string Status);
+public sealed record BusBoardingItem(Guid StudentId, Guid? StopId, string Status, DateTime? At);
+public sealed record BusBoardingRequest(IReadOnlyList<BusBoardingItem> Records);
 
 public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
@@ -49,6 +52,24 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
               FROM dbo.Boardings bo JOIN dbo.Students s ON s.Id = bo.StudentId
               WHERE bo.TripId = @tripId ORDER BY s.Name", new { tripId }, ct);
         return rows.Select(r => new BusRosterEntry(r.StudentId, r.StudentName, Initials(r.StudentName), r.StopId, r.Status)).ToList();
+    }
+
+    public async Task<bool> UpsertBoardingAsync(
+        Guid tenantId, Guid busId, IReadOnlyList<BusBoardingItem> records, DateTime now, CancellationToken ct = default)
+    {
+        var tripId = await CurrentTripIdAsync(busId, ct);
+        if (tripId is null) return false;
+        foreach (var r in records)
+            await ExecuteProcAsync("dbo.Boarding_Upsert", new
+            {
+                TenantId = tenantId,
+                TripId = tripId.Value,
+                r.StudentId,
+                r.StopId,
+                State = r.Status,
+                At = r.At ?? now
+            }, ct);
+        return true;
     }
 
     internal static string Initials(string name)
@@ -87,6 +108,14 @@ public static class BusModule
 
         g.MapGet("/{busId:guid}/roster", async (Guid busId, BusRepository repo) =>
             Results.Ok(new DataEnvelope<IReadOnlyList<BusRosterEntry>>(await repo.GetRosterAsync(busId))));
+
+        g.MapPost("/{busId:guid}/boarding", async (Guid busId, BusBoardingRequest req, BusRepository repo, ITenantContext tenant, IClock clock) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            var ok = await repo.UpsertBoardingAsync(tid, busId, req.Records, clock.UtcNow);
+            return ok ? Results.NoContent()
+                      : Results.Json(ErrorEnvelope.From(new Error("no_active_trip", "no live trip for this bus")), statusCode: 409);
+        });
 
         return app;
     }
