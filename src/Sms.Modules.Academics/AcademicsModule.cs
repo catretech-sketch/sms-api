@@ -9,6 +9,7 @@ using Sms.Shared.Kernel.Http;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Tenancy;
+using Sms.Shared.Kernel.Time;
 
 namespace Sms.Modules.Academics;
 
@@ -23,6 +24,7 @@ public static class AcademicsModule
         services.AddScoped<HomeworkRepository>();
         services.AddScoped<TimetableRepository>();
         services.AddScoped<CalendarRepository>();
+        services.AddScoped<LibraryRepository>();
         return services;
     }
 
@@ -191,6 +193,17 @@ public static class AcademicsModule
         {
             if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
             return Results.Json(new DataEnvelope<CalendarEventResponse>((await repo.CreateAsync(tid, req))!), statusCode: 201);
+        }).RequireAuthorization(Policies.Principal);
+
+        // ---- Library ----
+        g.MapGet("/library", async (LibraryRepository repo, IClock clock) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<LibraryBookResponse>>(await repo.ListAsync(clock.UtcNow))))
+            .RequireAuthorization(AuthorizationPolicies.TeacherApp);
+
+        g.MapPost("/library", async (CreateLibraryBookRequest req, LibraryRepository repo, ITenantContext tenant) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            return Results.Json(new DataEnvelope<LibraryBookResponse>((await repo.CreateAsync(tid, req))!), statusCode: 201);
         }).RequireAuthorization(Policies.Principal);
 
         return app;

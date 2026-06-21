@@ -11,3 +11,9 @@ public sealed record CalendarEventResponse(
     Guid Id, Guid TenantId, string Title, DateTime Date, string? Time, string Type, string? Description);
 public sealed record CreateCalendarEventRequest(
     string Title, DateTime Date, string? Time, string Type, string? Description);
+
+public sealed record LibraryBookResponse(
+    Guid Id, Guid TenantId, string Title, string Author, string? Subject,
+    string? IssuedTo, DateTime? DueDate, string Status);
+public sealed record CreateLibraryBookRequest(
+    string Title, string Author, string? Subject, string? IssuedTo, DateTime? DueDate, string? Status);
