@@ -21,6 +21,7 @@ public static class AcademicsModule
         services.AddScoped<AttendanceRepository>();
         services.AddScoped<ExamRepository>();
         services.AddScoped<HomeworkRepository>();
+        services.AddScoped<TimetableRepository>();
         return services;
     }
 
@@ -168,6 +169,17 @@ public static class AcademicsModule
             if (await repo.GetAsync(id) is null) return NotFound();
             return Results.Ok(new DataEnvelope<HomeworkResponse>((await repo.SetStatusAsync(id, "submitted"))!));
         });
+
+        // ---- Timetable ----
+        g.MapGet("/timetable", async (TimetableRepository repo) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<TimetableSlotResponse>>(await repo.ListAsync())))
+            .RequireAuthorization(AuthorizationPolicies.TeacherApp);
+
+        g.MapPost("/timetable", async (CreateTimetableSlotRequest req, TimetableRepository repo, ITenantContext tenant) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            return Results.Json(new DataEnvelope<TimetableSlotResponse>((await repo.CreateAsync(tid, req))!), statusCode: 201);
+        }).RequireAuthorization(Policies.Principal);
 
         return app;
     }
