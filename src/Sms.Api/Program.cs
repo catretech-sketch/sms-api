@@ -21,6 +21,7 @@ using Sms.Modules.Staffing;
 using Sms.Modules.Tenancy;
 using Sms.Modules.Transport;
 using Sms.Shared.Kernel.Auth;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Configuration;
 using Sms.Shared.Kernel.Data;
 using Sms.Shared.Kernel.Http;
@@ -66,7 +67,7 @@ builder.Services.AddSingleton<IPaymentGateway, StubPaymentGateway>();
 builder.Services.AddScoped<ITenantContext, TenantContext>();
 builder.Services.AddScoped<ITenantPlan, TenantPlan>();
 builder.Services.AddScoped<TenantPlanRepository>();
-builder.Services.AddScoped<Sms.Shared.Kernel.Authz.ITenantFeatureSet, Sms.Shared.Kernel.Authz.TierFeatureSet>();
+builder.Services.AddScoped<ITenantFeatureSet, TierFeatureSet>();
 builder.Services.AddScoped<IDbConnectionFactory>(sp =>
     new SqlConnectionFactory(conn!, sp.GetRequiredService<ITenantContext>()));
 builder.Services.AddScoped<AuthRepository>();
@@ -86,8 +87,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             RoleClaimType = "role", NameClaimType = "sub"
         };
     });
-builder.Services.AddAuthorization(o =>
-    o.AddPolicy("platform", p => p.RequireClaim("is_platform", "1")));
+builder.Services.AddSmsAuthorization();
 builder.Services.AddTenancyModule();
 builder.Services.AddSisModule();
 builder.Services.AddStaffingModule();
