@@ -98,4 +98,15 @@ public class SwaggerPerAppTests(SqlServerFixture fx)
         catrePaths.Should().Contain("/v1/dashboard/overview",  "catre admin owns the Catre dashboard");
         teacherPaths.Should().NotContain("/v1/dashboard/overview", "catre dashboard must not leak to teacher doc");
     }
+
+    [Fact]
+    public void Teacher_doc_includes_timetable_calendar_library_and_assignments()
+    {
+        using var app = App();
+        var paths = Doc(app, "teacher").Paths.Keys;
+        paths.Should().Contain("/v1/timetable",   "timetable is a teacher-app screen");
+        paths.Should().Contain("/v1/calendar",    "calendar is a teacher-app screen");
+        paths.Should().Contain("/v1/library",     "library is a teacher-app screen");
+        paths.Should().Contain("/v1/assignments", "assignments is a teacher-app screen");
+    }
 }
