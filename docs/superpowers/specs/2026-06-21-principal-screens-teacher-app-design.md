@@ -1,5 +1,8 @@
 # Principal screens in the Teacher app — Design
 
+> **⚠️ Superseded by** [`2026-06-21-teacher-principal-app-complete-design.md`](./2026-06-21-teacher-principal-app-complete-design.md),
+> which absorbs this spec's principal `overview`/`attendance` + Swagger mapping into a larger
+> whole-app effort. Kept for history.
 > **Status:** Design (approved scope: map existing + build the two missing endpoints).
 > **Context:** The `sms-teacher-app` serves **both `teacher` and `principal`** roles (principal is a
 > superset — see [`docs/api/teacher-api.md`](../../api/teacher-api.md) §4). The principal-only screens
