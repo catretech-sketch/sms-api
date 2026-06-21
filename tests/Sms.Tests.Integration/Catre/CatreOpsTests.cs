@@ -55,7 +55,8 @@ public class CatreOpsTests(SqlServerFixture fx)
         var id = created.GetProperty("id").GetGuid();
         created.GetProperty("stage").GetString().Should().Be("lead");
         created.GetProperty("checklist").GetArrayLength().Should().Be(5);
-        created.GetProperty("done").GetInt32().Should().Be(0);
+        // "Account created" is seeded done by Onboarding_Create (account already exists)
+        created.GetProperty("done").GetInt32().Should().Be(1);
 
         var advanced = await Data(
             await client.PostAsJsonAsync($"/v1/onboarding/{id}/advance", new { stage = "trial" }), HttpStatusCode.OK);
@@ -63,7 +64,8 @@ public class CatreOpsTests(SqlServerFixture fx)
 
         var patched = await Data(await client.PatchAsJsonAsync($"/v1/onboarding/{id}/checklist",
             new { label = "Admin invited", done = true }), HttpStatusCode.OK);
-        patched.GetProperty("done").GetInt32().Should().Be(1);
+        // "Account created" (seeded done) + "Admin invited" (just ticked) = 2 done items
+        patched.GetProperty("done").GetInt32().Should().Be(2);
 
         var list = await Data(await client.GetAsync("/v1/onboarding"), HttpStatusCode.OK);
         list.EnumerateArray().Select(e => e.GetProperty("id").GetGuid()).Should().Contain(id);
