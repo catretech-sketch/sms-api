@@ -121,7 +121,7 @@ public static class AcademicsModule
         {
             if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
             return Results.Json(new DataEnvelope<ExamPaperResponse>((await repo.CreateExamPaperAsync(tid, req))!), statusCode: 201);
-        });
+        }).RequireAuthorization(AuthorizationPolicies.TeacherApp);
 
         g.MapPatch("/exam-papers/{id:guid}", async (Guid id, UpdateExamPaperRequest req, ExamRepository repo) =>
         {

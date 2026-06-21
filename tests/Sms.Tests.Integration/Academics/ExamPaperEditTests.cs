@@ -93,6 +93,18 @@ public class ExamPaperEditTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Student_cannot_create_exam_paper()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var student = Client(app, tenantId, Policies.StudentOrParent);
+
+        // POST /exam-papers with a student token must be rejected
+        var res = await student.PostAsJsonAsync("/v1/exam-papers", new { name = "X", max_marks = 100 });
+        res.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
     public async Task Student_token_gets_403_on_patch()
     {
         await using var app = App();
