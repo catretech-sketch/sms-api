@@ -109,4 +109,13 @@ public class SwaggerPerAppTests(SqlServerFixture fx)
         paths.Should().Contain("/v1/library",     "library is a teacher-app screen");
         paths.Should().Contain("/v1/assignments", "assignments is a teacher-app screen");
     }
+
+    [Fact]
+    public void Teacher_doc_includes_bus_assigned_and_roster()
+    {
+        using var app = App();
+        var paths = Doc(app, "teacher").Paths.Keys;
+        paths.Should().Contain("/v1/bus/assigned", "teacher views assigned buses");
+        paths.Should().Contain("/v1/bus/{busId}/roster", "teacher views bus roster");
+    }
 }
