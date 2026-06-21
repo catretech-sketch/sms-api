@@ -25,6 +25,7 @@ public static class AcademicsModule
         services.AddScoped<TimetableRepository>();
         services.AddScoped<CalendarRepository>();
         services.AddScoped<LibraryRepository>();
+        services.AddScoped<AssignmentRepository>();
         return services;
     }
 
@@ -205,6 +206,17 @@ public static class AcademicsModule
             if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
             return Results.Json(new DataEnvelope<LibraryBookResponse>((await repo.CreateAsync(tid, req))!), statusCode: 201);
         }).RequireAuthorization(Policies.Principal);
+
+        // ---- Assignments ----
+        g.MapGet("/assignments", async (AssignmentRepository repo, IClock clock) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<AssignmentResponse>>(await repo.ListAsync(clock.UtcNow))))
+            .RequireAuthorization(AuthorizationPolicies.TeacherApp);
+
+        g.MapPost("/assignments", async (CreateAssignmentRequest req, AssignmentRepository repo, ITenantContext tenant) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            return Results.Json(new DataEnvelope<AssignmentResponse>((await repo.CreateAsync(tid, req))!), statusCode: 201);
+        }).RequireAuthorization(AuthorizationPolicies.TeacherApp);
 
         return app;
     }
