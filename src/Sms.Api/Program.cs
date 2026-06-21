@@ -96,6 +96,7 @@ builder.Services.AddAcademicsModule();
 builder.Services.AddFinanceModule();
 builder.Services.AddAttendanceModule();
 builder.Services.AddTransportModule();
+builder.Services.AddBusModule();
 builder.Services.AddCommsModule();
 builder.Services.AddReportingModule();
 builder.Services.AddEndpointsApiExplorer();
@@ -208,6 +209,7 @@ app.MapAcademicsModule();
 app.MapFinanceModule();
 app.MapAttendanceModule();
 app.MapTransportModule();
+app.MapBusModule();
 app.MapCommsModule();
 app.MapReportingModule();
 
