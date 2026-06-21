@@ -12,6 +12,7 @@ using Sms.Shared.Kernel.Time;
 namespace Sms.Modules.Transport;
 
 public sealed record BusStopResponse(Guid Id, string Name, string? Time, int Seq, double Lat, double Lng);
+public sealed record BusPositionResponse(Guid BusId, int CurrentStopIndex, double Progress, double? Lat, double? Lng, string? NextStopName, int? EtaMinutes);
 public sealed record BusResponse(
     Guid Id, string BusNo, string? RouteName, string? Driver, string? DriverPhone, IReadOnlyList<BusStopResponse> Stops);
 public sealed record BusRosterEntry(Guid StudentId, string StudentName, string Initials, Guid? StopId, string Status);
@@ -72,6 +73,40 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
         return true;
     }
 
+    private sealed record StopRow(string Name, int Seq, double Lat, double Lng);
+    private sealed record PingRow2(double Lat, double Lng);
+
+    public async Task<BusPositionResponse> GetPositionAsync(Guid busId, CancellationToken ct = default)
+    {
+        var stops = await QueryInlineAsync<StopRow>(
+            "SELECT Name, Seq, Lat, Lng FROM dbo.BusStops WHERE BusId = @busId ORDER BY Seq", new { busId }, ct);
+        var tripId = await CurrentTripIdAsync(busId, ct);
+        PingRow2? ping = tripId is null ? null : (await QueryInlineAsync<PingRow2>(
+            "SELECT TOP 1 Lat, Lng FROM dbo.TripPings WHERE TripId = @tripId ORDER BY At DESC",
+            new { tripId }, ct)).FirstOrDefault();
+
+        if (ping is null || stops.Count == 0)
+            return new BusPositionResponse(busId, 0, 0, ping?.Lat, ping?.Lng, null, null);
+
+        int nearest = 0; double best = double.MaxValue;
+        for (int i = 0; i < stops.Count; i++)
+        {
+            var dist = Haversine(ping.Lat, ping.Lng, stops[i].Lat, stops[i].Lng);
+            if (dist < best) { best = dist; nearest = i; }
+        }
+        double progress = stops.Count > 1 ? Math.Round((double)nearest / (stops.Count - 1), 3) : 0;
+        string? next = nearest + 1 < stops.Count ? stops[nearest + 1].Name : null;
+        return new BusPositionResponse(busId, nearest, progress, ping.Lat, ping.Lng, next, null);
+    }
+
+    private static double Haversine(double lat1, double lng1, double lat2, double lng2)
+    {
+        const double r = 6371000;
+        double dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
+        double a = Math.Sin(dLat/2)*Math.Sin(dLat/2) + Math.Cos(lat1*Math.PI/180)*Math.Cos(lat2*Math.PI/180)*Math.Sin(dLng/2)*Math.Sin(dLng/2);
+        return r * 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+    }
+
     internal static string Initials(string name)
     {
         var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
@@ -108,6 +143,9 @@ public static class BusModule
 
         g.MapGet("/{busId:guid}/roster", async (Guid busId, BusRepository repo) =>
             Results.Ok(new DataEnvelope<IReadOnlyList<BusRosterEntry>>(await repo.GetRosterAsync(busId))));
+
+        g.MapGet("/{busId:guid}/position", async (Guid busId, BusRepository repo) =>
+            Results.Ok(new DataEnvelope<BusPositionResponse>(await repo.GetPositionAsync(busId))));
 
         g.MapPost("/{busId:guid}/boarding", async (Guid busId, BusBoardingRequest req, BusRepository repo, ITenantContext tenant, IClock clock) =>
         {
