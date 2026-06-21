@@ -4,6 +4,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Time;
 
 namespace Sms.Tests.Integration.Attendance;
@@ -28,7 +29,7 @@ public class GeofenceCheckinTests(SqlServerFixture fx)
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(userId, tenantId, ["teacher"], isPlatform: false);
+        var token = jwt.IssueAccess(userId, tenantId, [Policies.Teacher], isPlatform: false);
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
         return client;
