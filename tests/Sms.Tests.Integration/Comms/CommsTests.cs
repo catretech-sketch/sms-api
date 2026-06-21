@@ -4,6 +4,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Time;
 
 namespace Sms.Tests.Integration.Comms;
@@ -21,12 +22,13 @@ public class CommsTests(SqlServerFixture fx)
             b.UseSetting("Jwt:SigningKey", Key);
         });
 
-    private static HttpClient TenantClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId)
+    private static HttpClient TenantClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId,
+        string[]? roles = null)
     {
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(userId, tenantId, ["teacher"], isPlatform: false);
+        var token = jwt.IssueAccess(userId, tenantId, roles ?? [Policies.Teacher], isPlatform: false);
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
         return client;
@@ -69,7 +71,7 @@ public class CommsTests(SqlServerFixture fx)
     public async Task Announcement_create_and_list()
     {
         await using var app = App();
-        var client = TenantClient(app, Guid.NewGuid(), Guid.NewGuid());
+        var client = TenantClient(app, Guid.NewGuid(), Guid.NewGuid(), [Policies.Principal]);
 
         var created = await Data(await client.PostAsJsonAsync("/v1/announcements",
             new { title = "Sports Day", body = "Friday 9am", type = "event" }), HttpStatusCode.Created);

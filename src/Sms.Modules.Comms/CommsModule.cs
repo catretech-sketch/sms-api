@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Data;
 using Sms.Shared.Kernel.Http;
 using Sms.Shared.Kernel.Results;
@@ -141,7 +142,8 @@ public static class CommsModule
             var role = http.User.FindFirst("role")?.Value;
             return Results.Json(new DataEnvelope<AnnouncementResponse>(
                 (await repo.CreateAnnouncementAsync(tid, req, role, role))!), statusCode: 201);
-        });
+        })
+            .RequireAuthorization(Policies.Principal);
 
         // ---- Complaints ----
         g.MapGet("/complaints", async (CommsRepository repo, string? status) =>

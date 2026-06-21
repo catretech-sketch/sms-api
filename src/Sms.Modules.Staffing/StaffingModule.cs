@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Modules.Staffing.Contracts;
 using Sms.Modules.Staffing.Data;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Http;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
@@ -86,13 +87,15 @@ public static class StaffingModule
         });
 
         g.MapGet("/approvals", async (LeaveRepository repo, string? status) =>
-            Results.Ok(new DataEnvelope<IReadOnlyList<LeaveResponse>>(await repo.ListByStatusAsync(status ?? "pending"))));
+            Results.Ok(new DataEnvelope<IReadOnlyList<LeaveResponse>>(await repo.ListByStatusAsync(status ?? "pending"))))
+            .RequireAuthorization(Policies.Principal);
 
         g.MapPatch("/approvals/{id:guid}", async (Guid id, DecideLeaveRequest req, LeaveRepository repo, ITenantContext tenant) =>
         {
             if (await repo.GetAsync(id) is null) return NotFound();
             return Results.Ok(new DataEnvelope<LeaveResponse>((await repo.DecideAsync(id, req.Status, tenant.UserId, req.DecidedNote))!));
-        });
+        })
+            .RequireAuthorization(Policies.Principal);
 
         return app;
     }
