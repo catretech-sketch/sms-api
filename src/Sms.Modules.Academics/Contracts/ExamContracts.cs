@@ -17,6 +17,10 @@ public sealed record CreateExamPaperRequest(
     Guid? ExamId, Guid? ClassId, string? Name, string? Subject, Guid? SubjectId, DateTime? Date,
     string? StartTime, int? DurationMin, int MaxMarks, string? Room, string? Invigilator1, string? Invigilator2);
 
+public sealed record UpdateExamPaperRequest(
+    string? Name, string? Subject, Guid? SubjectId, DateTime? Date, string? StartTime, int? DurationMin,
+    int? MaxMarks, string? Room, string? Invigilator1, string? Invigilator2, string? Status);
+
 // ---- Grade ----
 public sealed record GradeResponse(
     Guid Id, Guid TenantId, Guid StudentId, string? StudentName, Guid ExamPaperId, decimal Marks,

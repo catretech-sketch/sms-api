@@ -7,6 +7,7 @@ using Sms.Modules.Academics.Contracts;
 using Sms.Modules.Academics.Data;
 using Sms.Shared.Kernel.Http;
 using Sms.Shared.Kernel.Results;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Modules.Academics;
@@ -116,6 +117,18 @@ public static class AcademicsModule
             if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
             return Results.Json(new DataEnvelope<ExamPaperResponse>((await repo.CreateExamPaperAsync(tid, req))!), statusCode: 201);
         });
+
+        g.MapPatch("/exam-papers/{id:guid}", async (Guid id, UpdateExamPaperRequest req, ExamRepository repo) =>
+        {
+            var updated = await repo.UpdateExamPaperAsync(id, req);
+            return updated is null ? NotFound() : Results.Ok(new DataEnvelope<ExamPaperResponse>(updated));
+        }).RequireAuthorization(AuthorizationPolicies.TeacherApp);
+
+        g.MapDelete("/exam-papers/{id:guid}", async (Guid id, ExamRepository repo) =>
+        {
+            await repo.DeleteExamPaperAsync(id);
+            return Results.NoContent();
+        }).RequireAuthorization(AuthorizationPolicies.TeacherApp);
 
         // ---- Grades ----
         g.MapGet("/exam-papers/{examPaperId:guid}/grades", async (Guid examPaperId, ExamRepository repo) =>

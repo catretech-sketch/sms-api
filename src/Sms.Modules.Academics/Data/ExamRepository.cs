@@ -46,6 +46,16 @@ public sealed class ExamRepository(IDbConnectionFactory factory) : BaseRepositor
             $"SELECT {PaperCols} FROM dbo.ExamPapers WHERE (@examId IS NULL OR ExamId = @examId) ORDER BY [Date]",
             new { examId }, ct);
 
+    public Task<ExamPaperResponse?> UpdateExamPaperAsync(Guid id, UpdateExamPaperRequest r, CancellationToken ct = default) =>
+        QuerySingleProcAsync<ExamPaperResponse>("dbo.ExamPaper_Update", new
+        {
+            Id = id, r.Name, r.Subject, r.SubjectId, r.Date, r.StartTime, r.DurationMin,
+            r.MaxMarks, r.Room, r.Invigilator1, r.Invigilator2, r.Status
+        }, ct);
+
+    public Task<int> DeleteExamPaperAsync(Guid id, CancellationToken ct = default) =>
+        ExecuteProcAsync("dbo.ExamPaper_Delete", new { Id = id }, ct);
+
     // Grades
     public Task<GradeResponse?> UpsertGradeAsync(Guid tenantId, UpsertGradeRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<GradeResponse>("dbo.Grade_Upsert",
