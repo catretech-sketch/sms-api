@@ -76,4 +76,26 @@ public class SwaggerPerAppTests(SqlServerFixture fx)
         foreach (var (key, _) in ApiAudienceMap.Apps)
             Doc(app, key).Paths.Keys.Should().Contain("/v1/auth/login", $"every app logs in ({key})");
     }
+
+    [Fact]
+    public void Teacher_doc_includes_approvals_principal_and_dashboard_stats()
+    {
+        using var app = App();
+        var paths = Doc(app, "teacher").Paths.Keys;
+        paths.Should().Contain("/v1/approvals",                    "teacher sees their own leave approvals");
+        paths.Should().Contain("/v1/principal/overview",           "principal overview is a teacher-app screen");
+        paths.Should().Contain("/v1/principal/attendance",         "principal attendance is a teacher-app screen");
+        paths.Should().Contain("/v1/classes/{classId}/students",   "class student list is a core teacher screen");
+        paths.Should().Contain("/v1/dashboard/stats",              "dashboard stats screen is teacher-app only");
+    }
+
+    [Fact]
+    public void Catre_dashboard_overview_still_belongs_to_catre_admin_only()
+    {
+        using var app = App();
+        var catrePaths  = Doc(app, "catre-admin").Paths.Keys;
+        var teacherPaths = Doc(app, "teacher").Paths.Keys;
+        catrePaths.Should().Contain("/v1/dashboard/overview",  "catre admin owns the Catre dashboard");
+        teacherPaths.Should().NotContain("/v1/dashboard/overview", "catre dashboard must not leak to teacher doc");
+    }
 }

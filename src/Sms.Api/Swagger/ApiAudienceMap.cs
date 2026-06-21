@@ -39,6 +39,7 @@ public static class ApiAudienceMap
         ("v1/plans",         [CatreAdmin]),
         ("v1/invoices",      [CatreAdmin]),
         ("v1/subscriptions", [CatreAdmin]),
+        ("v1/dashboard/stats", [Teacher]),             // teacher dashboard stats — must precede v1/dashboard
         ("v1/dashboard",     [CatreAdmin]),
         ("v1/onboarding",    [CatreAdmin]),
         ("v1/tickets",       [CatreAdmin]),
@@ -63,7 +64,8 @@ public static class ApiAudienceMap
         ("v1/homework",      [Teacher, Student]),
         ("v1/fees",          [SchoolAdmin, Student]),
         ("v1/payslips",      [SchoolAdmin, Teacher, Staff]),
-        ("v1/approvals",     [SchoolAdmin]),
+        ("v1/principal",     [Teacher]),
+        ("v1/approvals",     [SchoolAdmin, Teacher]),
         ("v1/leave",         [SchoolAdmin, Staff, Student]),
         ("v1/announcements", [SchoolAdmin, Teacher, Student]),
         ("v1/threads",       [SchoolAdmin, Teacher, Student]),
