@@ -16,6 +16,7 @@ using Sms.Modules.Academics;
 using Sms.Modules.Attendance;
 using Sms.Modules.Comms;
 using Sms.Modules.Finance;
+using Sms.Modules.Reporting;
 using Sms.Modules.Sis;
 using Sms.Modules.Staffing;
 using Sms.Modules.Tenancy;
@@ -96,6 +97,7 @@ builder.Services.AddFinanceModule();
 builder.Services.AddAttendanceModule();
 builder.Services.AddTransportModule();
 builder.Services.AddCommsModule();
+builder.Services.AddReportingModule();
 builder.Services.AddEndpointsApiExplorer();
 // One Swagger document per frontend app (Catre Admin / School Admin / Teacher / Student / Staff).
 // An endpoint is included in every app that consumes it (ApiAudienceMap); tag = its resource.
@@ -207,6 +209,7 @@ app.MapFinanceModule();
 app.MapAttendanceModule();
 app.MapTransportModule();
 app.MapCommsModule();
+app.MapReportingModule();
 
 app.Run();
 
