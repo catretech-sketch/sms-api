@@ -11,3 +11,10 @@ public sealed record PrincipalStaffEntry(
     bool CheckedIn, DateTime? CheckInAt, string? Role);
 
 public sealed record PrincipalOverviewResponse(PrincipalKpis Kpis, IReadOnlyList<PrincipalStaffEntry> Staff);
+
+public sealed record PrincipalClassAttendance(
+    Guid ClassId, string ClassName, int Present, int Total, decimal Pct);
+
+public sealed record PrincipalAttendanceResponse(
+    DateTime Date, int PresentTotal, int StudentTotal, decimal OverallPct,
+    IReadOnlyList<PrincipalClassAttendance> Classes, IReadOnlyList<PrincipalStaffEntry> Staff);

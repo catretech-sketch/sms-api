@@ -25,6 +25,25 @@ SELECT
         Guid TeacherId, string Name, string? SubjectsCsv, string? Phone, string? Designation,
         DateTime? CheckInAt);
 
+    private async Task<IReadOnlyList<PrincipalStaffEntry>> LoadStaffAsync(DateTime d, CancellationToken ct)
+    {
+        var staffRows = await QueryInlineAsync<StaffRow>(@"
+SELECT t.Id AS TeacherId, t.Name, t.SubjectsCsv, t.Phone, t.Designation,
+       (SELECT MAX(ci.At) FROM dbo.CheckIns ci
+          JOIN dbo.Users u ON u.Id = ci.UserId
+          WHERE u.Email = t.Email AND ci.Kind = 'in' AND ci.Verified = 1
+            AND CAST(ci.At AS date) = @d) AS CheckInAt
+FROM dbo.Teachers t
+WHERE t.Status = 'active'
+ORDER BY t.Name", new { d }, ct);
+
+        return staffRows.Select(r => new PrincipalStaffEntry(
+            r.TeacherId, r.Name, Initials(r.Name),
+            string.IsNullOrEmpty(r.SubjectsCsv) ? null : r.SubjectsCsv.Split(',')[0],
+            r.Phone, r.CheckInAt is not null, r.CheckInAt,
+            string.IsNullOrEmpty(r.Designation) ? "teacher" : r.Designation)).ToList();
+    }
+
     public async Task<PrincipalOverviewResponse> GetPrincipalOverviewAsync(DateTime today, CancellationToken ct = default)
     {
         var d = today.Date;
@@ -44,23 +63,27 @@ SELECT
   (SELECT COUNT(*) FROM dbo.LeaveRequests WHERE Status = 'pending')             AS PendingApprovals",
             new { d }, ct);
 
-        var staffRows = await QueryInlineAsync<StaffRow>(@"
-SELECT t.Id AS TeacherId, t.Name, t.SubjectsCsv, t.Phone, t.Designation,
-       (SELECT MAX(ci.At) FROM dbo.CheckIns ci
-          JOIN dbo.Users u ON u.Id = ci.UserId
-          WHERE u.Email = t.Email AND ci.Kind = 'in' AND ci.Verified = 1
-            AND CAST(ci.At AS date) = @d) AS CheckInAt
-FROM dbo.Teachers t
-WHERE t.Status = 'active'
-ORDER BY t.Name", new { d }, ct);
-
-        var staff = staffRows.Select(r => new PrincipalStaffEntry(
-            r.TeacherId, r.Name, Initials(r.Name),
-            string.IsNullOrEmpty(r.SubjectsCsv) ? null : r.SubjectsCsv.Split(',')[0],
-            r.Phone, r.CheckInAt is not null, r.CheckInAt,
-            string.IsNullOrEmpty(r.Designation) ? "teacher" : r.Designation)).ToList();
-
+        var staff = await LoadStaffAsync(d, ct);
         return new PrincipalOverviewResponse(kpiRows[0], staff);
+    }
+
+    public async Task<PrincipalAttendanceResponse> GetPrincipalAttendanceAsync(DateTime today, CancellationToken ct = default)
+    {
+        var d = today.Date;
+        var classes = await QueryInlineAsync<PrincipalClassAttendance>(@"
+SELECT c.Id AS ClassId, c.Name AS ClassName,
+       ISNULL(a.Present, 0) AS Present, c.StudentCount AS Total,
+       CAST(CASE WHEN c.StudentCount > 0 THEN 100.0 * ISNULL(a.Present,0) / c.StudentCount ELSE 0 END AS decimal(5,1)) AS Pct
+FROM dbo.Classes c
+OUTER APPLY (SELECT COUNT(*) AS Present FROM dbo.AttendanceRecords ar
+             WHERE ar.ClassId = c.Id AND ar.[Date] = @d AND ar.Status IN ('present','late')) a
+ORDER BY c.Name", new { d }, ct);
+
+        int presentTotal = classes.Sum(c => c.Present);
+        int studentTotal = classes.Sum(c => c.Total);
+        decimal overall = studentTotal > 0 ? Math.Round(100m * presentTotal / studentTotal, 1) : 0m;
+        var staff = await LoadStaffAsync(d, ct);
+        return new PrincipalAttendanceResponse(d, presentTotal, studentTotal, overall, classes, staff);
     }
 
     private static string Initials(string name)

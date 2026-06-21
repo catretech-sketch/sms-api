@@ -32,6 +32,11 @@ public static class ReportingModule
                 await repo.GetPrincipalOverviewAsync(clock.UtcNow))))
             .RequireAuthorization(Policies.Principal);
 
+        g.MapGet("/principal/attendance", async (ReportingRepository repo, IClock clock) =>
+            Results.Ok(new DataEnvelope<PrincipalAttendanceResponse>(
+                await repo.GetPrincipalAttendanceAsync(clock.UtcNow))))
+            .RequireAuthorization(Policies.Principal);
+
         return app;
     }
 }
