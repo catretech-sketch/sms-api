@@ -22,6 +22,7 @@ public static class AcademicsModule
         services.AddScoped<ExamRepository>();
         services.AddScoped<HomeworkRepository>();
         services.AddScoped<TimetableRepository>();
+        services.AddScoped<CalendarRepository>();
         return services;
     }
 
@@ -179,6 +180,17 @@ public static class AcademicsModule
         {
             if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
             return Results.Json(new DataEnvelope<TimetableSlotResponse>((await repo.CreateAsync(tid, req))!), statusCode: 201);
+        }).RequireAuthorization(Policies.Principal);
+
+        // ---- Calendar ----
+        g.MapGet("/calendar", async (CalendarRepository repo) =>
+            Results.Ok(new DataEnvelope<IReadOnlyList<CalendarEventResponse>>(await repo.ListAsync())))
+            .RequireAuthorization(AuthorizationPolicies.TeacherApp);
+
+        g.MapPost("/calendar", async (CreateCalendarEventRequest req, CalendarRepository repo, ITenantContext tenant) =>
+        {
+            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
+            return Results.Json(new DataEnvelope<CalendarEventResponse>((await repo.CreateAsync(tid, req))!), statusCode: 201);
         }).RequireAuthorization(Policies.Principal);
 
         return app;

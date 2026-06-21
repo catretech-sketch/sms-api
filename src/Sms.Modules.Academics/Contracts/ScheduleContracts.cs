@@ -6,3 +6,8 @@ public sealed record TimetableSlotResponse(
 public sealed record CreateTimetableSlotRequest(
     string Day, int Period, string? Subject, Guid? ClassId, string? ClassName, string? Room,
     string? StartTime, string? EndTime);
+
+public sealed record CalendarEventResponse(
+    Guid Id, Guid TenantId, string Title, DateTime Date, string? Time, string Type, string? Description);
+public sealed record CreateCalendarEventRequest(
+    string Title, DateTime Date, string? Time, string Type, string? Description);
