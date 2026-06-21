@@ -26,6 +26,19 @@
 > `submissions_count` = `Homework` rows for the assignment marked done/submitted (0 when none);
 > `status` derived (closed if stored closed; else overdue/due_soon/active from `DueDate`). No dev seeds
 > (tests seed via HTTP POST now that create endpoints exist).
+>
+> **Amendment (2026-06-21, Phase-4 decisions — scope "core now, position simple"):** Transport has NO
+> bus/route/stop master and NO teacher↔bus link (it is purely driver-side `Trips`/`TripPings`/`Boardings`
+> keyed by `TripId`/`DriverId`). So §5.5 adds new master tables `Buses`/`BusStops`/`BusAssignments`
+> (migration **M0044**, RLS), provisioned out-of-band (admin/import — no teacher-app create endpoints;
+> tests seed via raw SQL). The four reads/writes live in the **Transport module** under a new `/v1/bus`
+> group: `GET /bus/assigned` (the authed teacher's assignment → bus + stops), and `GET /bus/{id}/roster`,
+> `POST /bus/{id}/boarding`, `GET /bus/{id}/position` which **reuse** the existing trip data by resolving
+> the bus's current live trip via `Trips.BusNo = Buses.BusNo AND Status='live'`. Boarding adds an `absent`
+> state and reuses `dbo.Boarding_Upsert` per record. Position is **simple**: latest `TripPing` →
+> nearest `BusStop` = `current_stop_index`, `progress` = index/(stops-1), `next_stop_name`,
+> `eta_minutes` nullable (null when not computable — no speculative ETA model). All `/v1/bus` GETs +
+> the boarding POST are `TeacherApp`-gated.
 
 ---
 
