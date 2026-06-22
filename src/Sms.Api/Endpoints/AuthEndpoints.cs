@@ -16,8 +16,11 @@ public static class AuthEndpoints
         g.MapPost("/login", async (LoginRequest req, AuthRepository users, IPasswordHasher hasher,
             IJwtTokenService jwt, IRefreshTokenStore tokens, ITenantContext tenant) =>
         {
-            if (req.Email is null || req.Password is null)
-                return Results.Json(ErrorEnvelope.From(new("invalid_credentials", "email and password required")),
+            // Sign in with either an email or a mobile number. An '@' routes the lookup to email,
+            // otherwise to phone — the same identifier convention the OTP/reset endpoints use.
+            var identifier = !string.IsNullOrWhiteSpace(req.Email) ? req.Email : req.Phone;
+            if (string.IsNullOrWhiteSpace(identifier) || req.Password is null)
+                return Results.Json(ErrorEnvelope.From(new("invalid_credentials", "email or phone and password required")),
                     statusCode: 422);
 
             // Credential lookup runs as a SYSTEM (platform) session: the caller's tenant is unknown
@@ -25,7 +28,9 @@ public static class AuthEndpoints
             // filtered out and every login fails. The issued token reflects the user's REAL
             // tenant/platform/roles (from the DB), not this lookup context.
             tenant.Set(null, null, isPlatform: true);
-            var user = await users.GetByEmailAsync(req.Email);
+            var user = identifier.Contains('@')
+                ? await users.GetByEmailAsync(identifier)
+                : await users.GetByPhoneAsync(identifier);
             if (user?.PasswordHash is null || !hasher.Verify(req.Password, user.PasswordHash))
                 return Results.Json(ErrorEnvelope.From(new("invalid_credentials", "bad email or password")),
                     statusCode: 401);

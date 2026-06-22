@@ -48,4 +48,29 @@ public class AuthFlowTests(SqlServerFixture fx)
         var me = await client.GetAsync("/v1/auth/me");
         me.StatusCode.Should().Be(HttpStatusCode.OK);
     }
+
+    [Fact]
+    public async Task Login_with_mobile_number_returns_tokens()
+    {
+        var hasher = new PasswordHasher();
+        var ctx = new TenantContext(); ctx.Set(null, Guid.NewGuid(), true);
+        var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
+        var phone = $"+9198{Guid.NewGuid():N}".Substring(0, 13);
+        await using (var c = await factory.OpenAsync())
+            await c.ExecuteAsync(
+                "INSERT dbo.Users (Id, Phone, PasswordHash, IsPlatform) VALUES (NEWID(),@p,@h,1)",
+                new { p = phone, h = hasher.Hash("Pass123!") });
+
+        await using var app = AppWithDb();
+        var client = app.CreateClient();
+
+        // No '@' → backend looks the user up by phone instead of email.
+        var login = await client.PostAsJsonAsync("/v1/auth/login", new { phone, password = "Pass123!" });
+        login.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var json = await login.Content.ReadAsStringAsync();
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        doc.RootElement.GetProperty("data").GetProperty("access_token").GetString()
+            .Should().NotBeNullOrEmpty();
+    }
 }
