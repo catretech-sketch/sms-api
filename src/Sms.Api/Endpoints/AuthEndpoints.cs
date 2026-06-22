@@ -92,6 +92,31 @@ public static class AuthEndpoints
             IOtpSender otp, ITenantContext tenant) =>
             SendOtpToRegisteredAsync(req.Identifier, users, otp, tenant));
 
+        g.MapPost("/password/reset", async (ResetPasswordRequest req, AuthRepository users,
+            IPasswordHasher hasher, ITenantContext tenant) =>
+        {
+            if (req.Password is null || req.Password.Length < 8)
+                return Results.Json(ErrorEnvelope.From(new("weak_password",
+                    "password must be at least 8 characters")), statusCode: 422);
+
+            tenant.Set(null, null, isPlatform: true);
+            var activeHash = await users.OtpActiveHashAsync(req.Identifier);
+            if (activeHash is null || activeHash != Sha256(req.Code))
+                return Results.Json(ErrorEnvelope.From(new("invalid_code", "code invalid or expired")),
+                    statusCode: 401);
+            await users.OtpConsumeAsync(req.Identifier, activeHash);
+
+            var user = req.Identifier.Contains('@')
+                ? await users.GetByEmailAsync(req.Identifier)
+                : await users.GetByPhoneAsync(req.Identifier);
+            if (user is null)
+                return Results.Json(ErrorEnvelope.From(new("invalid_code", "user not found")),
+                    statusCode: 401);
+
+            await users.SetPasswordAsync(user.Id, hasher.Hash(req.Password));
+            return Results.NoContent();
+        });
+
         g.MapPost("/set-password", async (SetPasswordRequest req, AuthRepository users,
             IPasswordHasher hasher, ITenantContext tenant) =>
         {

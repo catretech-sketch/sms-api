@@ -64,4 +64,70 @@ public class PasswordResetTests(SqlServerFixture fx)
             "SELECT COUNT(*) FROM dbo.OtpCodes WHERE Identifier = @id", new { id = email });
         count.Should().BeGreaterThan(0);
     }
+
+    [Fact]
+    public async Task Reset_with_valid_code_sets_password_and_does_not_return_tokens()
+    {
+        var factory = Factory(fx);
+        var email = await InsertUserAsync(factory, $"reset{Guid.NewGuid():N}@x.com");
+
+        await using var app = App();
+        var client = app.CreateClient();
+
+        (await client.PostAsJsonAsync("/v1/auth/password/forgot", new { identifier = email }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Overwrite the random stored hash with a known code so the test is deterministic.
+        await using (var c = await factory.OpenAsync())
+            await c.ExecuteAsync("UPDATE dbo.OtpCodes SET CodeHash = @h WHERE Identifier = @id",
+                new { id = email, h = Sha256Hex("123456") });
+
+        var reset = await client.PostAsJsonAsync("/v1/auth/password/reset",
+            new { identifier = email, code = "123456", password = "newSecret1" });
+        reset.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await reset.Content.ReadAsStringAsync()).Should().NotContain("access_token");
+
+        // The new password works at /login.
+        var login = await client.PostAsJsonAsync("/v1/auth/login",
+            new { email, password = "newSecret1" });
+        login.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task Reset_with_wrong_code_returns_401()
+    {
+        var factory = Factory(fx);
+        var email = await InsertUserAsync(factory, $"reset{Guid.NewGuid():N}@x.com");
+
+        await using var app = App();
+        var client = app.CreateClient();
+
+        await client.PostAsJsonAsync("/v1/auth/password/forgot", new { identifier = email });
+        await using (var c = await factory.OpenAsync())
+            await c.ExecuteAsync("UPDATE dbo.OtpCodes SET CodeHash = @h WHERE Identifier = @id",
+                new { id = email, h = Sha256Hex("123456") });
+
+        (await client.PostAsJsonAsync("/v1/auth/password/reset",
+            new { identifier = email, code = "000000", password = "newSecret1" }))
+            .StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Reset_with_short_password_returns_422()
+    {
+        var factory = Factory(fx);
+        var email = await InsertUserAsync(factory, $"reset{Guid.NewGuid():N}@x.com");
+
+        await using var app = App();
+        var client = app.CreateClient();
+
+        await client.PostAsJsonAsync("/v1/auth/password/forgot", new { identifier = email });
+        await using (var c = await factory.OpenAsync())
+            await c.ExecuteAsync("UPDATE dbo.OtpCodes SET CodeHash = @h WHERE Identifier = @id",
+                new { id = email, h = Sha256Hex("123456") });
+
+        (await client.PostAsJsonAsync("/v1/auth/password/reset",
+            new { identifier = email, code = "123456", password = "short" }))
+            .StatusCode.Should().Be((HttpStatusCode)422);
+    }
 }
