@@ -8,3 +8,5 @@ public sealed record RefreshRequest(string RefreshToken);
 public sealed record OtpRequest(string Identifier);
 public sealed record OtpVerifyRequest(string Identifier, string Code);
 public sealed record SetPasswordRequest(string Password);
+public sealed record ForgotPasswordRequest(string Identifier);
+public sealed record ResetPasswordRequest(string Identifier, string Code, string Password);

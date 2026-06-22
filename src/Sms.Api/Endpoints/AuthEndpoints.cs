@@ -61,27 +61,8 @@ public static class AuthEndpoints
             return Results.Ok(new DataEnvelope<TokenResponse>(new TokenResponse(access, newRefresh)));
         });
 
-        g.MapPost("/otp/request", async (OtpRequest req, AuthRepository users, IOtpSender otp,
-            ITenantContext tenant) =>
-        {
-            // Lookups run as a system (platform) session — Users is RLS-protected and the caller is anon.
-            tenant.Set(null, null, isPlatform: true);
-            var isEmail = req.Identifier.Contains('@');
-            var channel = isEmail ? "email" : "sms";
-            var user = isEmail
-                ? await users.GetByEmailAsync(req.Identifier)
-                : await users.GetByPhoneAsync(req.Identifier);
-
-            // Only registered identifiers get an OTP; unregistered ones are told so (no OTP generated).
-            // Note: this intentionally reveals account existence (enumeration) for clearer admin-login UX.
-            if (user is null)
-                return Results.Json(ErrorEnvelope.From(new("not_registered",
-                    isEmail ? "Email is not registered." : "Phone is not registered.")), statusCode: 404);
-
-            var code = await otp.SendAsync(req.Identifier, channel);
-            await users.OtpInsertAsync(req.Identifier, channel, Sha256(code), DateTime.UtcNow.AddMinutes(10));
-            return Results.Ok(new DataEnvelope<object>(new { sent = true }));
-        });
+        g.MapPost("/otp/request", (OtpRequest req, AuthRepository users, IOtpSender otp,
+            ITenantContext tenant) => SendOtpToRegisteredAsync(req.Identifier, users, otp, tenant));
 
         g.MapPost("/otp/verify", async (OtpVerifyRequest req, AuthRepository users,
             IJwtTokenService jwt, IRefreshTokenStore tokens, ITenantContext tenant) =>
@@ -106,6 +87,10 @@ public static class AuthEndpoints
             await tokens.SaveAsync(user.Id, Sha256(refresh), DateTime.UtcNow.AddDays(30));
             return Results.Ok(new DataEnvelope<TokenResponse>(new TokenResponse(access, refresh)));
         });
+
+        g.MapPost("/password/forgot", (ForgotPasswordRequest req, AuthRepository users,
+            IOtpSender otp, ITenantContext tenant) =>
+            SendOtpToRegisteredAsync(req.Identifier, users, otp, tenant));
 
         g.MapPost("/set-password", async (SetPasswordRequest req, AuthRepository users,
             IPasswordHasher hasher, ITenantContext tenant) =>
@@ -132,6 +117,28 @@ public static class AuthEndpoints
             await tokens.RevokeAsync(Sha256(req.RefreshToken));
             return Results.NoContent();
         });
+    }
+
+    private static async Task<IResult> SendOtpToRegisteredAsync(
+        string identifier, AuthRepository users, IOtpSender otp, ITenantContext tenant)
+    {
+        // Lookups run as a system (platform) session — Users is RLS-protected and the caller is anon.
+        tenant.Set(null, null, isPlatform: true);
+        var isEmail = identifier.Contains('@');
+        var channel = isEmail ? "email" : "sms";
+        var user = isEmail
+            ? await users.GetByEmailAsync(identifier)
+            : await users.GetByPhoneAsync(identifier);
+
+        // Only registered identifiers get an OTP; unregistered ones are told so (no OTP generated).
+        // This intentionally reveals account existence (enumeration) for clearer login UX.
+        if (user is null)
+            return Results.Json(ErrorEnvelope.From(new("not_registered",
+                isEmail ? "Email is not registered." : "Phone is not registered.")), statusCode: 404);
+
+        var code = await otp.SendAsync(identifier, channel);
+        await users.OtpInsertAsync(identifier, channel, Sha256(code), DateTime.UtcNow.AddMinutes(10));
+        return Results.Ok(new DataEnvelope<object>(new { sent = true }));
     }
 
     private static string Sha256(string input)
