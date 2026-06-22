@@ -101,7 +101,7 @@ public static class AuthEndpoints
 
             tenant.Set(null, null, isPlatform: true);
             var activeHash = await users.OtpActiveHashAsync(req.Identifier);
-            if (activeHash is null || activeHash != Sha256(req.Code))
+            if (activeHash is null || req.Code is null || activeHash != Sha256(req.Code))
                 return Results.Json(ErrorEnvelope.From(new("invalid_code", "code invalid or expired")),
                     statusCode: 401);
             await users.OtpConsumeAsync(req.Identifier, activeHash);

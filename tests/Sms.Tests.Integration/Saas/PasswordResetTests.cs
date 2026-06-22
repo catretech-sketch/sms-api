@@ -130,4 +130,24 @@ public class PasswordResetTests(SqlServerFixture fx)
             new { identifier = email, code = "123456", password = "short" }))
             .StatusCode.Should().Be((HttpStatusCode)422);
     }
+
+    [Fact]
+    public async Task Reset_with_missing_code_returns_401()
+    {
+        var factory = Factory(fx);
+        var email = await InsertUserAsync(factory, $"reset{Guid.NewGuid():N}@x.com");
+
+        await using var app = App();
+        var client = app.CreateClient();
+
+        await client.PostAsJsonAsync("/v1/auth/password/forgot", new { identifier = email });
+        await using (var c = await factory.OpenAsync())
+            await c.ExecuteAsync("UPDATE dbo.OtpCodes SET CodeHash = @h WHERE Identifier = @id",
+                new { id = email, h = Sha256Hex("123456") });
+
+        // POST with no code field — should return 401, not 500
+        (await client.PostAsJsonAsync("/v1/auth/password/reset",
+            new { identifier = email, password = "newSecret1" }))
+            .StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
 }
