@@ -15,7 +15,8 @@ public sealed record ImportResponse(int Created, int Skipped, IReadOnlyList<Impo
 public static class UserEndpoints
 {
     private static readonly HashSet<string> AssignableRoles = new(
-        Policies.All.Where(r => r != Policies.PlatformOnly), StringComparer.OrdinalIgnoreCase);
+        Policies.All.Where(r => r != Policies.PlatformOnly && r != Policies.SchoolOwner),
+        StringComparer.OrdinalIgnoreCase);
 
     public static void MapUsers(this WebApplication app)
     {
@@ -62,7 +63,7 @@ public static class UserEndpoints
     }
 
     private static bool IsSchoolAdmin(HttpContext http) =>
-        http.User.FindAll("role").Any(c => c.Value == Policies.SchoolAdmin);
+        http.User.FindAll("role").Any(c => c.Value is Policies.SchoolAdmin or Policies.SchoolOwner);
 
     private static IResult Forbidden(string m) =>
         Results.Json(ErrorEnvelope.From(new Error("forbidden", m)), statusCode: 403);

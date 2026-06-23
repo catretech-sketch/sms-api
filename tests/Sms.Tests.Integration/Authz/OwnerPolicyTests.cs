@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
@@ -47,5 +48,25 @@ public class OwnerPolicyTests(SqlServerFixture fx)
         var client = TenantClient(app, [Policies.SchoolOwner]);
         // /v1/clients is platform-only; a school owner must be forbidden.
         (await client.GetAsync("/v1/clients")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task Owner_can_invite_a_school_user()
+    {
+        await using var app = App();
+        var client = TenantClient(app, [Policies.SchoolOwner]);
+        var resp = await client.PostAsJsonAsync("/v1/users",
+            new { email = $"t{Guid.NewGuid():N}@x.com", phone = (string?)null, roles = new[] { Policies.Teacher } });
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    [Fact]
+    public async Task Owner_role_is_not_invitable()
+    {
+        await using var app = App();
+        var client = TenantClient(app, [Policies.SchoolOwner]);
+        var resp = await client.PostAsJsonAsync("/v1/users",
+            new { email = $"t{Guid.NewGuid():N}@x.com", phone = (string?)null, roles = new[] { Policies.SchoolOwner } });
+        resp.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity); // 422 invalid role
     }
 }
