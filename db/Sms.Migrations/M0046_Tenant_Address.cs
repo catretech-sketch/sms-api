@@ -75,5 +75,9 @@ END");
     public override void Down()
     {
         Delete.Column("Address").FromTable("Tenants");
+        // Restore the pre-Address baseline procs (the embedded procs/catre/*.sql files
+        // are still at the pre-Address version) so they no longer reference the dropped column.
+        foreach (var sql in M0003_Procs_Auth.EmbeddedProcs("procs.catre."))
+            Execute.Sql(sql);
     }
 }
