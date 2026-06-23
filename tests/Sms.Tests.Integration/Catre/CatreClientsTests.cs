@@ -1,9 +1,12 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Dapper;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
+using Sms.Shared.Kernel.Data;
+using Sms.Shared.Kernel.Tenancy;
 using Sms.Shared.Kernel.Time;
 
 namespace Sms.Tests.Integration.Catre;
@@ -119,5 +122,30 @@ public class CatreClientsTests(SqlServerFixture fx)
         await using var app = App();
         var res = await app.CreateClient().GetAsync("/v1/clients"); // no token
         res.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Onboarding_saves_the_founding_account_as_school_owner()
+    {
+        await using var app = App();
+        var client = PlatformClient(app);
+        var gold = await CreatePlanAsync(client, "Gold", "gold", 14999);
+
+        var email = $"owner-{Guid.NewGuid():N}@greenwood.edu.in";
+        await Data(await client.PostAsJsonAsync("/v1/clients", new
+        {
+            name = "Greenwood High", slug = $"greenwood-{Guid.NewGuid():N}", country = "Mumbai, MH",
+            admin_name = "Priya Sharma", admin_email = email, plan_id = gold, trial_days = 14
+        }), System.Net.HttpStatusCode.Created);
+
+        var ctx = new Sms.Shared.Kernel.Tenancy.TenantContext();
+        ctx.Set(null, Guid.NewGuid(), true); // platform context bypasses RLS on dbo.Users
+        var factory = new Sms.Shared.Kernel.Data.SqlConnectionFactory(fx.ConnectionString, ctx);
+        await using var c = await factory.OpenAsync();
+        var roles = (await Dapper.SqlMapper.QueryAsync<string>(c,
+            "SELECT ur.Role FROM dbo.UserRoles ur JOIN dbo.Users u ON u.Id = ur.UserId WHERE u.Email = @e",
+            new { e = email })).ToList();
+
+        roles.Should().ContainSingle().Which.Should().Be("school.owner");
     }
 }
