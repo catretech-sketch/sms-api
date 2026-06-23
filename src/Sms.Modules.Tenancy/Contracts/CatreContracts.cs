@@ -7,11 +7,12 @@ public sealed record ClientResponse(
     Guid Id, string Name, string Slug, string? Country, string Status,
     Guid? PlanId, string? PlanName, string? Tier, decimal Mrr,
     int StudentsCount, int StaffCount, decimal StorageGb, ClientLimits Limits,
-    DateTime Created, string? Csm, int HealthScore);
+    DateTime Created, string? Csm, int HealthScore,
+    string? ContactName, string? ContactEmail, string? ContactPhone, string? Address);
 
 public sealed record CreateClientRequest(
     string Name, string Slug, string? Country, string? AdminName, string? AdminEmail,
-    string? AdminPhone, Guid PlanId, int TrialDays, string? Csm);
+    string? AdminPhone, Guid PlanId, int TrialDays, string? Csm, string? Address = null);
 
 public sealed record SetStatusRequest(string Status, string? Reason);
 public sealed record ChangePlanRequest(Guid PlanId);
@@ -20,7 +21,8 @@ public sealed record ChangePlanRequest(Guid PlanId);
 public sealed record ClientRow(
     Guid Id, string Name, string Slug, string? Country, string Status, Guid? PlanId, string? PlanName,
     string? Tier, decimal Mrr, int StudentsCount, int StaffCount, decimal StorageGb,
-    int? LimitsStudents, int? LimitsStaff, int? LimitsStorageGb, DateTime CreatedAt, string? Csm, int HealthScore);
+    int? LimitsStudents, int? LimitsStaff, int? LimitsStorageGb, DateTime CreatedAt, string? Csm, int HealthScore,
+    string? ContactName, string? ContactEmail, string? ContactPhone, string? Address);
 
 // ---- Plan ----
 public sealed record PlanLimits(int Students, int Staff, int StorageGb);
@@ -50,7 +52,8 @@ public static class CatreMappers
         r.Id, r.Name, r.Slug, r.Country, r.Status, r.PlanId, r.PlanName, r.Tier, r.Mrr,
         r.StudentsCount, r.StaffCount, r.StorageGb,
         new ClientLimits(r.LimitsStudents, r.LimitsStaff, r.LimitsStorageGb),
-        r.CreatedAt, r.Csm, r.HealthScore);
+        r.CreatedAt, r.Csm, r.HealthScore,
+        r.ContactName, r.ContactEmail, r.ContactPhone, r.Address);
 
     public static PlanResponse ToResponse(this PlanRow r) => new(
         r.Id, r.Name, r.Tier, r.Pricing, r.Price, r.PerStudent, r.MinStudents, r.Period,

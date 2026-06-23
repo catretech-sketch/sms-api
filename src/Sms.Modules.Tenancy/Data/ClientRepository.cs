@@ -7,14 +7,15 @@ public sealed class ClientRepository(IDbConnectionFactory factory) : BaseReposit
 {
     private const string Cols =
         "Id, Name, Slug, Country, Status, PlanId, PlanName, Tier, Mrr, StudentsCount, StaffCount, StorageGb, " +
-        "LimitsStudents, LimitsStaff, LimitsStorageGb, CreatedAt, Csm, HealthScore";
+        "LimitsStudents, LimitsStaff, LimitsStorageGb, CreatedAt, Csm, HealthScore, " +
+        "ContactName, ContactEmail, ContactPhone, Address";
 
     public Task<ClientRow?> CreateAsync(CreateClientRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<ClientRow>("dbo.Client_Create", new
         {
             r.Name, r.Slug, r.Country,
             ContactName = r.AdminName, ContactEmail = r.AdminEmail, ContactPhone = r.AdminPhone,
-            r.PlanId, r.Csm
+            r.Address, r.PlanId, r.Csm
         }, ct);
 
     public Task<ClientRow?> SetStatusAsync(Guid id, string status, CancellationToken ct = default) =>

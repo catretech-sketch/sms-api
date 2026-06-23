@@ -117,6 +117,34 @@ public class CatreClientsTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Client_create_persists_and_returns_contact_and_address()
+    {
+        await using var app = App();
+        var client = PlatformClient(app);
+        var gold = await CreatePlanAsync(client, "Gold", "gold", 14999);
+
+        var created = await Data(await client.PostAsJsonAsync("/v1/clients", new
+        {
+            name = "Greenwood High", slug = $"greenwood-{Guid.NewGuid():N}", country = "Mumbai, MH",
+            admin_name = "Priya Sharma", admin_email = "admin@greenwood.edu.in", admin_phone = "+91 98200 11111",
+            address = "12 MG Road, Fort, Mumbai 400001", plan_id = gold, trial_days = 14
+        }), HttpStatusCode.Created);
+
+        created.GetProperty("contact_name").GetString().Should().Be("Priya Sharma");
+        created.GetProperty("contact_email").GetString().Should().Be("admin@greenwood.edu.in");
+        created.GetProperty("contact_phone").GetString().Should().Be("+91 98200 11111");
+        created.GetProperty("address").GetString().Should().Be("12 MG Road, Fort, Mumbai 400001");
+
+        var id = created.GetProperty("id").GetGuid();
+        var got = await Data(await client.GetAsync($"/v1/clients/{id}"), HttpStatusCode.OK);
+        got.GetProperty("address").GetString().Should().Be("12 MG Road, Fort, Mumbai 400001");
+
+        var list = await Data(await client.GetAsync("/v1/clients"), HttpStatusCode.OK);
+        var row = list.EnumerateArray().Single(e => e.GetProperty("id").GetGuid() == id);
+        row.GetProperty("contact_email").GetString().Should().Be("admin@greenwood.edu.in");
+    }
+
+    [Fact]
     public async Task Clients_requires_platform_auth()
     {
         await using var app = App();
