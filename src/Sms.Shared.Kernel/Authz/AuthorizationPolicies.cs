@@ -11,8 +11,8 @@ public static class AuthorizationPolicies
     public static IServiceCollection AddSmsAuthorization(this IServiceCollection services) =>
         services.AddAuthorizationBuilder()
             .AddPolicy("platform", p => p.RequireClaim("is_platform", "1"))
-            .AddPolicy(Policies.SchoolAdmin, p => p.RequireRole(Policies.SchoolAdmin))
-            .AddPolicy(Policies.Principal, p => p.RequireRole(Policies.Principal, Policies.SchoolAdmin))
-            .AddPolicy(TeacherApp, p => p.RequireRole(Policies.Teacher, Policies.Principal, Policies.SchoolAdmin))
+            .AddPolicy(Policies.SchoolAdmin, p => p.RequireRole(Policies.SchoolAdmin, Policies.SchoolOwner))
+            .AddPolicy(Policies.Principal, p => p.RequireRole(Policies.Principal, Policies.SchoolAdmin, Policies.SchoolOwner))
+            .AddPolicy(TeacherApp, p => p.RequireRole(Policies.Teacher, Policies.Principal, Policies.SchoolAdmin, Policies.SchoolOwner))
             .Services;
 }

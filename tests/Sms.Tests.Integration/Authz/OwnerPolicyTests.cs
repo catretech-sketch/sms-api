@@ -1,0 +1,51 @@
+using System.Net;
+using FluentAssertions;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Sms.Shared.Kernel.Auth;
+using Sms.Shared.Kernel.Authz;
+using Sms.Shared.Kernel.Time;
+using Xunit;
+
+namespace Sms.Tests.Integration.Authz;
+
+[Collection("sql")]
+public class OwnerPolicyTests(SqlServerFixture fx)
+{
+    private const string Key = "integration-test-signing-key-32-bytes-min!!";
+
+    private WebApplicationFactory<Program> App() =>
+        new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("environment", "Production");
+            b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
+            b.UseSetting("Jwt:SigningKey", Key);
+        });
+
+    private static HttpClient TenantClient(WebApplicationFactory<Program> app, string[] roles)
+    {
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), Guid.NewGuid(), roles, isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+        return client;
+    }
+
+    [Fact]
+    public async Task Owner_role_has_admin_level_access_to_approvals()
+    {
+        await using var app = App();
+        var client = TenantClient(app, [Policies.SchoolOwner]);
+        (await client.GetAsync("/v1/approvals")).StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task Owner_role_is_not_platform()
+    {
+        await using var app = App();
+        var client = TenantClient(app, [Policies.SchoolOwner]);
+        // /v1/clients is platform-only; a school owner must be forbidden.
+        (await client.GetAsync("/v1/clients")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+}
