@@ -4,12 +4,17 @@ namespace Sms.Modules.Tenancy.Contracts;
 public sealed record OnboardingChecklistItem(string Label, bool Done);
 public sealed record OnboardingItemResponse(
     Guid Id, Guid? TenantId, string Name, string Slug, string? Owner, decimal Value, string Stage,
-    IReadOnlyList<OnboardingChecklistItem> Checklist, int Done, int Age);
-public sealed record CreateOnboardingRequest(string Name, string Slug, string? Owner, decimal Value, string? Stage, Guid? TenantId = null);
+    IReadOnlyList<OnboardingChecklistItem> Checklist, int Done, int Age,
+    string? ContactName, string? ContactEmail, string? ContactPhone, string? Address);
+public sealed record CreateOnboardingRequest(
+    string Name, string Slug, string? Owner, decimal Value, string? Stage,
+    string? ContactName = null, string? ContactEmail = null, string? ContactPhone = null, string? Address = null,
+    Guid? TenantId = null);
 public sealed record AdvanceRequest(string Stage);
 public sealed record ChecklistRequest(string Label, bool Done);
 public sealed record OnboardingItemRow(
-    Guid Id, Guid? TenantId, string Name, string Slug, string? Owner, decimal Value, string Stage, int Age);
+    Guid Id, Guid? TenantId, string Name, string Slug, string? Owner, decimal Value, string Stage, int Age,
+    string? ContactName, string? ContactEmail, string? ContactPhone, string? Address);
 public sealed record ChecklistRow(Guid OnboardingId, string Label, bool Done);
 
 // ---- Support tickets ----

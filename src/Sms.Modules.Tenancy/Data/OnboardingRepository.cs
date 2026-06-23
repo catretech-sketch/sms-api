@@ -7,7 +7,8 @@ public sealed class OnboardingRepository(IDbConnectionFactory factory) : BaseRep
 {
     public async Task<Guid> CreateAsync(CreateOnboardingRequest r, CancellationToken ct = default) =>
         await QuerySingleProcAsync<Guid>("dbo.Onboarding_Create",
-            new { r.Name, r.Slug, r.Owner, r.Value, r.Stage, r.TenantId }, ct);
+            new { r.Name, r.Slug, r.Owner, r.Value, r.Stage,
+                  r.ContactName, r.ContactEmail, r.ContactPhone, r.Address, r.TenantId }, ct);
 
     public Task AdvanceAsync(Guid id, string stage, CancellationToken ct = default) =>
         ExecuteProcAsync("dbo.Onboarding_Advance", new { Id = id, Stage = stage }, ct);
@@ -18,7 +19,8 @@ public sealed class OnboardingRepository(IDbConnectionFactory factory) : BaseRep
     public async Task<OnboardingItemResponse?> GetAsync(Guid id, CancellationToken ct = default)
     {
         var item = (await QueryInlineAsync<OnboardingItemRow>(
-            "SELECT Id, TenantId, Name, Slug, Owner, Value, Stage, Age FROM dbo.OnboardingItems WHERE Id = @id",
+            "SELECT Id, TenantId, Name, Slug, Owner, Value, Stage, Age, " +
+            "ContactName, ContactEmail, ContactPhone, Address FROM dbo.OnboardingItems WHERE Id = @id",
             new { id }, ct)).FirstOrDefault();
         if (item is null) return null;
         var checks = await QueryInlineAsync<ChecklistRow>(
@@ -30,7 +32,8 @@ public sealed class OnboardingRepository(IDbConnectionFactory factory) : BaseRep
     public async Task<IReadOnlyList<OnboardingItemResponse>> ListAsync(string? stage, CancellationToken ct = default)
     {
         var items = await QueryInlineAsync<OnboardingItemRow>(
-            "SELECT Id, TenantId, Name, Slug, Owner, Value, Stage, Age FROM dbo.OnboardingItems " +
+            "SELECT Id, TenantId, Name, Slug, Owner, Value, Stage, Age, " +
+            "ContactName, ContactEmail, ContactPhone, Address FROM dbo.OnboardingItems " +
             "WHERE (@stage IS NULL OR Stage = @stage) ORDER BY Age DESC", new { stage }, ct);
         var checks = await QueryInlineAsync<ChecklistRow>(
             "SELECT OnboardingId, Label, Done FROM dbo.OnboardingChecklist ORDER BY Seq", null, ct);
@@ -42,6 +45,7 @@ public sealed class OnboardingRepository(IDbConnectionFactory factory) : BaseRep
     {
         var list = checks.Select(c => new OnboardingChecklistItem(c.Label, c.Done)).ToList();
         return new OnboardingItemResponse(i.Id, i.TenantId, i.Name, i.Slug, i.Owner, i.Value, i.Stage,
-            list, list.Count(c => c.Done), i.Age);
+            list, list.Count(c => c.Done), i.Age,
+            i.ContactName, i.ContactEmail, i.ContactPhone, i.Address);
     }
 }

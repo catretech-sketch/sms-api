@@ -153,6 +153,29 @@ public class CatreClientsTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Client_create_seeds_onboarding_card_with_contact()
+    {
+        await using var app = App();
+        var client = PlatformClient(app);
+        var gold = await CreatePlanAsync(client, "Gold", "gold", 14999);
+
+        var slug = $"greenwood-{Guid.NewGuid():N}";
+        await Data(await client.PostAsJsonAsync("/v1/clients", new
+        {
+            name = "Greenwood High", slug, country = "Mumbai, MH",
+            admin_name = "Priya Sharma", admin_email = "admin@greenwood.edu.in", admin_phone = "+91 98200 11111",
+            address = "12 MG Road, Fort, Mumbai 400001", plan_id = gold, trial_days = 14
+        }), HttpStatusCode.Created);
+
+        var board = await Data(await client.GetAsync("/v1/onboarding"), HttpStatusCode.OK);
+        var card = board.EnumerateArray().Single(e => e.GetProperty("slug").GetString() == slug);
+        card.GetProperty("contact_name").GetString().Should().Be("Priya Sharma");
+        card.GetProperty("contact_email").GetString().Should().Be("admin@greenwood.edu.in");
+        card.GetProperty("contact_phone").GetString().Should().Be("+91 98200 11111");
+        card.GetProperty("address").GetString().Should().Be("12 MG Road, Fort, Mumbai 400001");
+    }
+
+    [Fact]
     public async Task Onboarding_saves_the_founding_account_as_school_owner()
     {
         await using var app = App();

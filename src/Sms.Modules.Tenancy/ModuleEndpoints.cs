@@ -75,7 +75,8 @@ public static class ModuleEndpoints
             // A new client enters the onboarding pipeline as a Trial card (with the default checklist).
             if (row is not null)
                 await onboarding.CreateAsync(new CreateOnboardingRequest(
-                    row.Name, row.Slug, row.Csm, row.Mrr, "trial", row.Id));
+                    row.Name, row.Slug, row.Csm, row.Mrr, "trial",
+                    req.AdminName, req.AdminEmail, req.AdminPhone, req.Address, row.Id));
             return Results.Json(new DataEnvelope<ClientResponse>(row!.ToResponse()), statusCode: 201);
         });
 
