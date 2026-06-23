@@ -73,4 +73,29 @@ public class AuthFlowTests(SqlServerFixture fx)
         doc.RootElement.GetProperty("data").GetProperty("access_token").GetString()
             .Should().NotBeNullOrEmpty();
     }
+
+    [Fact]
+    public async Task Me_exposes_is_platform_for_a_platform_user()
+    {
+        var hasher = new PasswordHasher();
+        var ctx = new TenantContext(); ctx.Set(null, Guid.NewGuid(), true);
+        var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
+        var email = $"plat{Guid.NewGuid():N}@x.com";
+        await using (var c = await factory.OpenAsync())
+            await c.ExecuteAsync(
+                "INSERT dbo.Users (Id, Email, PasswordHash, IsPlatform) VALUES (NEWID(),@e,@h,1)",
+                new { e = email, h = hasher.Hash("Pass123!") });
+
+        await using var app = AppWithDb();
+        var client = app.CreateClient();
+        var login = await client.PostAsJsonAsync("/v1/auth/login", new { email, password = "Pass123!" });
+        var token = System.Text.Json.JsonDocument.Parse(await login.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("data").GetProperty("access_token").GetString();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var me = await client.GetAsync("/v1/auth/me");
+        me.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = System.Text.Json.JsonDocument.Parse(await me.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("data").GetProperty("is_platform").GetBoolean().Should().BeTrue();
+    }
 }

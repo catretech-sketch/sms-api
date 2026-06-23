@@ -138,7 +138,8 @@ public static class AuthEndpoints
             {
                 id = sub,
                 tenant_id = http.User.FindFirst("tenant_id")?.Value,
-                roles = http.User.FindAll("role").Select(c => c.Value).ToArray()
+                roles = http.User.FindAll("role").Select(c => c.Value).ToArray(),
+                is_platform = http.User.FindFirst("is_platform")?.Value == "1"
             }));
         }).RequireAuthorization();
 
