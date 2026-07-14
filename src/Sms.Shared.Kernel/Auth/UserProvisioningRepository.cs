@@ -20,6 +20,35 @@ public sealed class UserProvisioningRepository(IDbConnectionFactory factory) : B
         return id;
     }
 
+    /// Platform (Catre) user id for an email, if any.
+    public async Task<Guid?> FindPlatformUserIdByEmailAsync(string email, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<Guid>(
+            "SELECT TOP 1 Id FROM dbo.Users WHERE LOWER(Email) = LOWER(@email) AND IsPlatform = 1",
+            new { email }, ct);
+        var id = rows.FirstOrDefault();
+        return id == Guid.Empty ? null : id;
+    }
+
+    /// Replace all roles for a user (Catre RBAC uses a single primary role).
+    public async Task ReplaceRolesAsync(Guid userId, IEnumerable<string> roles, CancellationToken ct = default)
+    {
+        await using var conn = await Factory.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM dbo.UserRoles WHERE UserId = @userId",
+            new { userId }, cancellationToken: ct));
+        foreach (var role in roles)
+            await ExecuteProcAsync("dbo.UserRole_Add", new { UserId = userId, Role = role }, ct);
+    }
+
+    public async Task SetStatusAsync(Guid userId, string status, CancellationToken ct = default)
+    {
+        await using var conn = await Factory.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(
+            "UPDATE dbo.Users SET Status = @status WHERE Id = @userId",
+            new { userId, status }, cancellationToken: ct));
+    }
+
     /// True if at least one active platform admin exists (bootstrap idempotency guard).
     public async Task<bool> PlatformAdminExistsAsync(CancellationToken ct = default)
         => await QuerySingleProcAsync<int>("dbo.PlatformAdmin_Exists", null, ct) == 1;

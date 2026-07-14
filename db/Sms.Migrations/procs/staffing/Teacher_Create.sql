@@ -13,6 +13,13 @@ BEGIN
         @Phone, @Email, ISNULL(@Exp, 0), ISNULL(@Rating, 0), ISNULL(@Result, 0), ISNULL(@Load, 0),
         ISNULL(@AvatarHue, 0), ISNULL(@Top, 0));
 
+    UPDATE dbo.Tenants
+    SET StaffCount = (
+        (SELECT COUNT(*) FROM dbo.Teachers te WHERE te.TenantId = @TenantId AND te.Status = N'active')
+      + (SELECT COUNT(*) FROM dbo.Staff st WHERE st.TenantId = @TenantId AND st.Status = N'active')
+    )
+    WHERE Id = @TenantId;
+
     SELECT Id, TenantId, Name, Gender, Department, Designation, SubjectsCsv, ClassTeacher, Phone, Email,
            Exp, Rating, AttendancePct, Result, Load, Status, AvatarHue, [Top]
     FROM dbo.Teachers WHERE Id = @Id;

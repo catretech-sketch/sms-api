@@ -5,11 +5,20 @@ public sealed record InvoiceResponse(
     Guid Id, Guid TenantId, string? TenantName, string? PlanName, decimal Amount,
     string Status, DateTime Issued, DateTime Due, DateTime? PaidOn);
 
+public sealed record CreateInvoiceRequest(
+    Guid TenantId, string? TenantName, string? PlanName, decimal Amount, DateTime Due);
+
 // ---- Subscription ----
+// Enriched for Billing → Subscriptions (joins tenant + plan). Wire names match catreadmin.
 public sealed record SubscriptionResponse(
-    Guid Id, Guid TenantId, Guid PlanId, string Status, DateTime StartedAt, DateTime? RenewsAt, int Seats);
+    Guid Id, Guid TenantId, string? TenantName, Guid PlanId, string? PlanName, string? Tier,
+    string Status, DateTime CurrentPeriodStart, DateTime? CurrentPeriodEnd, decimal? NextCharge, int Seats);
 
 public sealed record CreateSubscriptionRequest(Guid TenantId, Guid PlanId, int Seats);
+
+/// <summary>Lean row returned by dbo.Subscription_Create before re-fetching the enriched view.</summary>
+internal sealed record SubscriptionCreated(
+    Guid Id, Guid TenantId, Guid PlanId, string Status, DateTime StartedAt, DateTime? RenewsAt, int Seats);
 
 // ---- Dashboard overview ----
 public sealed record DashCounts(int Total, int Active, int Trial, int Suspended, int Cancelled);

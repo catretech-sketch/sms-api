@@ -1,0 +1,36 @@
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Sms.Application.Services.Academics;
+using Sms.Modules.Academics.Contracts;
+using Sms.Shared.Kernel.Authz;
+
+namespace Sms.Api.Controllers;
+
+[Route("v1")]
+[Authorize]
+public sealed class ExamPaperController(IAcademicsService academics) : ApiControllerBase
+{
+    [HttpGet("exam-papers")]
+    public async Task<IActionResult> List(
+        [FromQuery(Name = "exam_id")] Guid? examId, CancellationToken ct) =>
+        FromResult(await academics.ListExamPapersAsync(examId, ct));
+
+    [HttpGet("exam-papers/{id:guid}")]
+    public async Task<IActionResult> Get(Guid id, CancellationToken ct) =>
+        FromResult(await academics.GetExamPaperAsync(id, ct));
+
+    [HttpPost("exam-papers")]
+    [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
+    public async Task<IActionResult> Create([FromBody] CreateExamPaperRequest req, CancellationToken ct) =>
+        FromResult(await academics.CreateExamPaperAsync(req, ct));
+
+    [HttpPatch("exam-papers/{id:guid}")]
+    [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
+    public async Task<IActionResult> Update(Guid id, [FromBody] UpdateExamPaperRequest req, CancellationToken ct) =>
+        FromResult(await academics.UpdateExamPaperAsync(id, req, ct));
+
+    [HttpDelete("exam-papers/{id:guid}")]
+    [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct) =>
+        FromResult(await academics.DeleteExamPaperAsync(id, ct));
+}

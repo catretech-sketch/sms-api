@@ -31,6 +31,10 @@ public static class ApiAudienceMap
     private static readonly (string Prefix, string[] Apps)[] Rules =
     [
         ("v1/auth",          All),
+        ("v1/me/schools/fee-summary", [SchoolAdmin]),
+        ("v1/me/schools",    [SchoolAdmin]),
+        ("v1/me/plans",      [SchoolAdmin]),
+        ("v1/me/switch-school", [SchoolAdmin]),
         ("health",           All),
 
         // Catre platform admin

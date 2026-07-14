@@ -1,13 +1,5 @@
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Shared.Kernel.Data;
-using Sms.Shared.Kernel.Http;
-using Sms.Shared.Kernel.Results;
-using Sms.Shared.Kernel.Tenancy;
-using Sms.Shared.Kernel.Time;
 
 namespace Sms.Modules.Attendance;
 
@@ -124,66 +116,5 @@ public static class AttendanceModule
     {
         services.AddScoped<CheckInRepository>();
         return services;
-    }
-
-    private static IResult Forbidden(string message) =>
-        Results.Json(ErrorEnvelope.From(new Error("forbidden", message)), statusCode: 403);
-
-    /// Phase 3: teacher geofenced self check-in under /v1/me/attendance/*. Tenant + user scoped.
-    public static IEndpointRouteBuilder MapAttendanceModule(this IEndpointRouteBuilder app)
-    {
-        var g = app.MapGroup("/v1/me/attendance").RequireAuthorization();
-
-        g.MapGet("/school-location", async (CheckInRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            var loc = await repo.GetSchoolLocationAsync(tid) ?? new SchoolLocationResponse(0, 0, 50, null);
-            return Results.Ok(new DataEnvelope<SchoolLocationResponse>(loc));
-        });
-
-        g.MapPut("/school-location", async (UpsertSchoolLocationRequest req, CheckInRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            return Results.Ok(new DataEnvelope<SchoolLocationResponse>((await repo.UpsertSchoolLocationAsync(tid, req))!));
-        });
-
-        g.MapPost("/punch", async (PunchRequest req, CheckInRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid) return Forbidden("no tenant/user context");
-            await repo.PunchAsync(tid, uid, req);
-            var day = await repo.GetTodayAsync(uid, req.At);
-            return Results.Json(new DataEnvelope<TeacherAttendanceDayResponse>(day), statusCode: 201);
-        });
-
-        g.MapGet("/today", async (CheckInRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.UserId is not { } uid) return Forbidden("no user context");
-            return Results.Ok(new DataEnvelope<TeacherAttendanceDayResponse>(
-                await repo.GetTodayAsync(uid, DateTime.UtcNow)));
-        });
-
-        g.MapGet("/history", async (CheckInRepository repo, ITenantContext tenant, [FromQuery] int? limit) =>
-        {
-            if (tenant.UserId is not { } uid) return Forbidden("no user context");
-            return Results.Ok(new DataEnvelope<IReadOnlyList<TeacherAttendanceDayResponse>>(
-                await repo.GetHistoryAsync(uid, limit is > 0 and <= 366 ? limit.Value : 30)));
-        });
-
-        g.MapGet("/summary", async (CheckInRepository repo, ITenantContext tenant, IClock clock, [FromQuery] string? month) =>
-        {
-            if (tenant.UserId is not { } uid) return Forbidden("no user context");
-            var now = clock.UtcNow;
-            int year = now.Year, m = now.Month;
-            if (month is not null)
-            {
-                if (!System.Text.RegularExpressions.Regex.IsMatch(month, @"^\d{4}-\d{2}$"))
-                    return Results.Json(ErrorEnvelope.From(new Error("invalid_month", "month must be YYYY-MM")), statusCode: 422);
-                year = int.Parse(month[..4]); m = int.Parse(month[5..]);
-            }
-            return Results.Ok(new DataEnvelope<TeacherAttendanceSummaryResponse>(
-                await repo.GetSummaryAsync(uid, year, m)));
-        });
-
-        return app;
     }
 }

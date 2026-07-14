@@ -7,5 +7,5 @@ BEGIN
            u.PasswordHash, u.IsPlatform, u.Status
     FROM dbo.Users u
     WHERE u.Phone = @Phone
-    ORDER BY u.CreatedAt;
+    ORDER BY CASE WHEN u.IsPlatform = 1 THEN 0 ELSE 1 END, u.CreatedAt;
 END

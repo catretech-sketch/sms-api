@@ -13,6 +13,15 @@ public sealed class OnboardingRepository(IDbConnectionFactory factory) : BaseRep
     public Task AdvanceAsync(Guid id, string stage, CancellationToken ct = default) =>
         ExecuteProcAsync("dbo.Onboarding_Advance", new { Id = id, Stage = stage }, ct);
 
+    public async Task AdvanceByTenantAsync(Guid tenantId, string stage, CancellationToken ct = default)
+    {
+        var id = (await QueryInlineAsync<Guid?>(
+            "SELECT TOP 1 Id FROM dbo.OnboardingItems WHERE TenantId = @tenantId ORDER BY Age DESC",
+            new { tenantId }, ct)).FirstOrDefault();
+        if (id is Guid oid)
+            await AdvanceAsync(oid, stage, ct);
+    }
+
     public Task SetChecklistAsync(Guid id, string label, bool done, CancellationToken ct = default) =>
         ExecuteProcAsync("dbo.Onboarding_SetChecklist", new { Id = id, Label = label, Done = done }, ct);
 

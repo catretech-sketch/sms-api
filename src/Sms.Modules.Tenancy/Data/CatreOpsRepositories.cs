@@ -7,16 +7,85 @@ namespace Sms.Modules.Tenancy.Data;
 
 public sealed class TeamRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
-    private const string Cols = "Id, Name, Email, Role, Status, LastLogin, Joined";
+    private const string Cols = "Id, Name, Email, Role, Status, LastLogin, Joined, EmployeeId, PhotoUrl, Phone";
 
-    public Task<TeamMemberResponse?> InviteAsync(InviteTeamRequest r, CancellationToken ct = default) =>
-        QuerySingleProcAsync<TeamMemberResponse>("dbo.Team_Invite", new { r.Name, r.Email, r.Role }, ct);
+    private sealed record TeamMemberRow(
+        Guid Id, string Name, string Email, string Role, string Status, DateTime? LastLogin, DateTime Joined,
+        string? EmployeeId, string? PhotoUrl, string? Phone);
 
-    public Task<IReadOnlyList<TeamMemberResponse>> ListAsync(CancellationToken ct = default) =>
-        QueryInlineAsync<TeamMemberResponse>($"SELECT {Cols} FROM dbo.TeamMembers ORDER BY Joined DESC", null, ct);
+    private sealed record DocContentRow(
+        Guid Id, Guid TeamMemberId, string Label, string FileName, string ContentType, int SizeBytes, DateTime Created, string Content);
 
-    public Task<TeamMemberResponse?> UpdateAsync(Guid id, string? role, string? status, CancellationToken ct = default) =>
-        QuerySingleProcAsync<TeamMemberResponse>("dbo.Team_Update", new { Id = id, Role = role, Status = status }, ct);
+    public async Task<TeamMemberResponse?> InviteAsync(InviteTeamRequest r, CancellationToken ct = default)
+    {
+        var row = await QuerySingleProcAsync<TeamMemberRow>("dbo.Team_Invite",
+            new { r.Name, r.Email, r.Role, r.EmployeeId, r.PhotoUrl, r.Phone }, ct);
+        return row is null ? null : await GetComposedAsync(row.Id, ct);
+    }
+
+    public async Task<IReadOnlyList<TeamMemberResponse>> ListAsync(CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<TeamMemberRow>($"SELECT {Cols} FROM dbo.TeamMembers ORDER BY Joined DESC", null, ct);
+        var docs = await QueryInlineAsync<TeamDocumentMeta>(
+            "SELECT Id, TeamMemberId, Label, FileName, ContentType, SizeBytes, CreatedAt AS Created " +
+            "FROM dbo.TeamDocuments ORDER BY CreatedAt DESC", null, ct);
+        var byMember = docs.GroupBy(d => d.TeamMemberId).ToDictionary(g => g.Key, g => (IReadOnlyList<TeamDocumentMeta>)g.ToList());
+        return rows.Select(r => Map(r, byMember.TryGetValue(r.Id, out var list) ? list : [])).ToList();
+    }
+
+    public async Task<TeamMemberResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
+        await GetComposedAsync(id, ct);
+
+    public async Task<TeamMemberResponse?> UpdateAsync(Guid id, UpdateTeamRequest r, CancellationToken ct = default)
+    {
+        var row = await QuerySingleProcAsync<TeamMemberRow>("dbo.Team_Update",
+            new { Id = id, r.Role, r.Status, r.Name, r.EmployeeId, r.PhotoUrl, r.Phone }, ct);
+        return row is null ? null : await GetComposedAsync(id, ct);
+    }
+
+    public Task<TeamDocumentMeta?> AddDocumentAsync(Guid memberId, TeamDocumentInput doc, int sizeBytes, CancellationToken ct = default) =>
+        QuerySingleProcAsync<TeamDocumentMeta>("dbo.TeamDocument_Add", new
+        {
+            TeamMemberId = memberId,
+            doc.Label,
+            doc.FileName,
+            doc.ContentType,
+            SizeBytes = sizeBytes,
+            doc.Content,
+        }, ct);
+
+    public async Task<bool> DeleteDocumentAsync(Guid memberId, Guid docId, CancellationToken ct = default)
+    {
+        await using var conn = await Factory.OpenAsync(ct);
+        var n = await conn.ExecuteAsync(new CommandDefinition(
+            "DELETE FROM dbo.TeamDocuments WHERE Id = @docId AND TeamMemberId = @memberId",
+            new { docId, memberId }, cancellationToken: ct));
+        return n > 0;
+    }
+
+    public async Task<TeamDocumentDetail?> GetDocumentAsync(Guid memberId, Guid docId, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<DocContentRow>(
+            "SELECT Id, TeamMemberId, Label, FileName, ContentType, SizeBytes, CreatedAt AS Created, Content " +
+            "FROM dbo.TeamDocuments WHERE Id = @docId AND TeamMemberId = @memberId",
+            new { docId, memberId }, ct);
+        var r = rows.FirstOrDefault();
+        return r is null ? null : new TeamDocumentDetail(r.Id, r.TeamMemberId, r.Label, r.FileName, r.ContentType, r.SizeBytes, r.Created, r.Content);
+    }
+
+    private async Task<TeamMemberResponse?> GetComposedAsync(Guid id, CancellationToken ct)
+    {
+        var rows = await QueryInlineAsync<TeamMemberRow>($"SELECT {Cols} FROM dbo.TeamMembers WHERE Id = @id", new { id }, ct);
+        var row = rows.FirstOrDefault();
+        if (row is null) return null;
+        var docs = await QueryInlineAsync<TeamDocumentMeta>(
+            "SELECT Id, TeamMemberId, Label, FileName, ContentType, SizeBytes, CreatedAt AS Created " +
+            "FROM dbo.TeamDocuments WHERE TeamMemberId = @id ORDER BY CreatedAt DESC", new { id }, ct);
+        return Map(row, docs);
+    }
+
+    private static TeamMemberResponse Map(TeamMemberRow r, IReadOnlyList<TeamDocumentMeta> docs) =>
+        new(r.Id, r.Name, r.Email, r.Role, r.Status, r.LastLogin, r.Joined, r.EmployeeId, r.PhotoUrl, r.Phone, docs);
 }
 
 public sealed class AuditRepository(IDbConnectionFactory factory) : BaseRepository(factory)

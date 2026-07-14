@@ -1,13 +1,5 @@
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Shared.Kernel.Data;
-using Sms.Shared.Kernel.Http;
-using Sms.Shared.Kernel.Payments;
-using Sms.Shared.Kernel.Results;
-using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Modules.Finance;
 
@@ -60,7 +52,23 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
         QueryInlineAsync<FeeInvoiceResponse>(
             $"SELECT {Cols} FROM dbo.FeeInvoices WHERE (@studentId IS NULL OR StudentId = @studentId) ORDER BY DueDate DESC",
             new { studentId }, ct);
+
+    /// <summary>
+    /// Cross-tenant fee rollup (call under platform elevation so RLS does not filter peers out).
+    /// </summary>
+    public Task<IReadOnlyList<FeeTenantSummaryRow>> SummarizeByTenantsAsync(
+        IReadOnlyList<Guid> tenantIds, DateOnly from, DateOnly to, CancellationToken ct = default)
+    {
+        if (tenantIds.Count == 0)
+            return Task.FromResult<IReadOnlyList<FeeTenantSummaryRow>>([]);
+        var json = System.Text.Json.JsonSerializer.Serialize(tenantIds);
+        return QueryProcAsync<FeeTenantSummaryRow>("dbo.Fee_SummaryByTenants",
+            new { TenantIds = json, From = from.ToDateTime(TimeOnly.MinValue), To = to.ToDateTime(TimeOnly.MinValue) }, ct);
+    }
 }
+
+public sealed record FeeTenantSummaryRow(
+    Guid TenantId, string Name, decimal Collected, decimal Outstanding, int PaymentCount, int InvoiceCount);
 
 // ---- Payslips (HR/payroll) ----
 public sealed record PayslipResponse(
@@ -89,62 +97,5 @@ public static class FinanceModule
         services.AddScoped<FeeInvoiceRepository>();
         services.AddScoped<PayslipRepository>();
         return services;
-    }
-
-    private static IResult Forbidden(string message) =>
-        Results.Json(ErrorEnvelope.From(new Error("forbidden", message)), statusCode: 403);
-
-    private static IResult NotFound() =>
-        Results.Json(ErrorEnvelope.From(new Error("not_found", "resource not found")), statusCode: 404);
-
-    private static IResult Conflict(string message) =>
-        Results.Json(ErrorEnvelope.From(new Error("conflict", message)), statusCode: 409);
-
-    /// Phase 2 finance: /v1/fees/payments. Tenant-scoped.
-    public static IEndpointRouteBuilder MapFinanceModule(this IEndpointRouteBuilder app)
-    {
-        var g = app.MapGroup("/v1").RequireAuthorization();
-
-        g.MapGet("/fees/payments", async (FeeRepository repo, [FromQuery(Name = "student_id")] Guid? studentId) =>
-            Results.Ok(new CursorPage<FeePaymentResponse>(await repo.ListAsync(studentId), null)));
-
-        g.MapPost("/fees/payments", async (CreateFeePaymentRequest req, FeeRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            return Results.Json(new DataEnvelope<FeePaymentResponse>((await repo.CreateAsync(tid, req))!), statusCode: 201);
-        });
-
-        // ---- Fee invoices + online payment (parent) ----
-        g.MapGet("/fees/invoices", async (FeeInvoiceRepository repo, [FromQuery(Name = "student_id")] Guid? studentId) =>
-            Results.Ok(new CursorPage<FeeInvoiceResponse>(await repo.ListAsync(studentId), null)));
-
-        g.MapPost("/fees/invoices", async (CreateFeeInvoiceRequest req, FeeInvoiceRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            return Results.Json(new DataEnvelope<FeeInvoiceResponse>((await repo.CreateAsync(tid, req))!), statusCode: 201);
-        });
-
-        g.MapPost("/fees/invoices/{id:guid}/pay",
-            async (Guid id, FeeInvoiceRepository repo, IPaymentGateway gateway) =>
-        {
-            var inv = await repo.GetAsync(id);
-            if (inv is null) return NotFound();
-            if (inv.Status == "paid") return Conflict("invoice already paid");
-            var result = await gateway.ChargeAsync(inv.Amount, "INR");
-            if (!result.Success) return Conflict("payment failed");
-            return Results.Ok(new DataEnvelope<FeeInvoiceResponse>((await repo.MarkPaidAsync(id, result.Method))!));
-        });
-
-        // ---- Payslips ----
-        g.MapGet("/payslips", async (PayslipRepository repo, [FromQuery(Name = "user_id")] Guid? userId, ITenantContext tenant) =>
-            Results.Ok(new DataEnvelope<IReadOnlyList<PayslipResponse>>(await repo.ListAsync(userId ?? tenant.UserId))));
-
-        g.MapPost("/payslips", async (CreatePayslipRequest req, PayslipRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            return Results.Json(new DataEnvelope<PayslipResponse>((await repo.CreateAsync(tid, req))!), statusCode: 201);
-        });
-
-        return app;
     }
 }

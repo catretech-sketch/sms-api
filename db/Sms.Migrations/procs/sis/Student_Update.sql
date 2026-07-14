@@ -20,6 +20,15 @@ BEGIN
         Status = ISNULL(@Status, Status)
     WHERE Id = @Id;
 
+    DECLARE @TenantId uniqueidentifier =
+        (SELECT TOP 1 TenantId FROM dbo.Students WHERE Id = @Id);
+    IF @TenantId IS NOT NULL
+        UPDATE dbo.Tenants
+        SET StudentsCount = (
+            SELECT COUNT(*) FROM dbo.Students s WHERE s.TenantId = @TenantId AND s.Status = N'active'
+        )
+        WHERE Id = @TenantId;
+
     SELECT Id, TenantId, AdmissionNo, Name, Gender, Grade, Section, ClassLabel, Roll, GuardianName,
            GuardianPhone, AttendancePct, FeeStatus, FeeDue, Status, House, AvatarHue, Dob, Email, Address
     FROM dbo.Students WHERE Id = @Id;

@@ -7,6 +7,15 @@ public sealed class InvoiceRepository(IDbConnectionFactory factory) : BaseReposi
 {
     private const string Cols = "Id, TenantId, TenantName, PlanName, Amount, Status, Issued, Due, PaidOn";
 
+    public Task<InvoiceResponse?> CreateAsync(CreateInvoiceRequest r, CancellationToken ct = default) =>
+        QuerySingleProcAsync<InvoiceResponse>("dbo.Invoice_Create",
+            new { r.TenantId, r.TenantName, r.PlanName, r.Amount, r.Due }, ct);
+
+    public async Task<InvoiceResponse?> SetAmountAsync(Guid id, decimal amount, CancellationToken ct = default) =>
+        (await QueryInlineAsync<InvoiceResponse>(
+            $"UPDATE dbo.Invoices SET Amount = @amount WHERE Id = @id; SELECT {Cols} FROM dbo.Invoices WHERE Id = @id;",
+            new { id, amount }, ct)).FirstOrDefault();
+
     public async Task<InvoiceResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
         (await QueryInlineAsync<InvoiceResponse>($"SELECT {Cols} FROM dbo.Invoices WHERE Id = @id", new { id }, ct))
         .FirstOrDefault();

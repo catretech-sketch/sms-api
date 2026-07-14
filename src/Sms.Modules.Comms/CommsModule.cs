@@ -1,12 +1,5 @@
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
-using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Data;
-using Sms.Shared.Kernel.Http;
-using Sms.Shared.Kernel.Results;
-using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Modules.Comms;
 
@@ -101,76 +94,5 @@ public static class CommsModule
     {
         services.AddScoped<CommsRepository>();
         return services;
-    }
-
-    private static IResult Forbidden(string message) =>
-        Results.Json(ErrorEnvelope.From(new Error("forbidden", message)), statusCode: 403);
-
-    private static IResult NotFound() =>
-        Results.Json(ErrorEnvelope.From(new Error("not_found", "resource not found")), statusCode: 404);
-
-    /// Canonical messaging + announcements (§3C): /v1/threads, /v1/announcements. Tenant-scoped.
-    public static IEndpointRouteBuilder MapCommsModule(this IEndpointRouteBuilder app)
-    {
-        var g = app.MapGroup("/v1").RequireAuthorization();
-
-        g.MapGet("/threads", async (CommsRepository repo) =>
-            Results.Ok(new DataEnvelope<IReadOnlyList<ChatThreadResponse>>(await repo.ListThreadsAsync())));
-
-        g.MapPost("/threads", async (CreateThreadRequest req, CommsRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            return Results.Json(new DataEnvelope<ChatThreadResponse>((await repo.CreateThreadAsync(tid, req))!), statusCode: 201);
-        });
-
-        g.MapGet("/threads/{id:guid}/messages", async (Guid id, CommsRepository repo, ITenantContext tenant) =>
-            Results.Ok(new DataEnvelope<IReadOnlyList<ChatMessageResponse>>(await repo.ListMessagesAsync(id, tenant.UserId))));
-
-        g.MapPost("/threads/{id:guid}/messages", async (Guid id, SendMessageRequest req, CommsRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            return Results.Json(new DataEnvelope<ChatMessageResponse>(
-                (await repo.AddMessageAsync(tid, id, tenant.UserId, req.Text))!), statusCode: 201);
-        });
-
-        g.MapGet("/announcements", async (CommsRepository repo, string? audience) =>
-            Results.Ok(new DataEnvelope<IReadOnlyList<AnnouncementResponse>>(await repo.ListAnnouncementsAsync(audience))));
-
-        g.MapPost("/announcements", async (CreateAnnouncementRequest req, CommsRepository repo, HttpContext http, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            var role = http.User.FindFirst("role")?.Value;
-            return Results.Json(new DataEnvelope<AnnouncementResponse>(
-                (await repo.CreateAnnouncementAsync(tid, req, role, role))!), statusCode: 201);
-        })
-            .RequireAuthorization(Policies.Principal);
-
-        // ---- Complaints ----
-        g.MapGet("/complaints", async (CommsRepository repo, string? status) =>
-            Results.Ok(new DataEnvelope<IReadOnlyList<ComplaintResponse>>(await repo.ListComplaintsAsync(status))));
-
-        g.MapPost("/complaints", async (CreateComplaintRequest req, CommsRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            return Results.Json(new DataEnvelope<ComplaintResponse>((await repo.CreateComplaintAsync(tid, req))!), statusCode: 201);
-        });
-
-        g.MapPatch("/complaints/{id:guid}", async (Guid id, UpdateComplaintRequest req, CommsRepository repo) =>
-        {
-            if (await repo.GetComplaintAsync(id) is null) return NotFound();
-            return Results.Ok(new DataEnvelope<ComplaintResponse>((await repo.UpdateComplaintAsync(id, req.Status, req.Assignee))!));
-        });
-
-        // ---- Notifications ----
-        g.MapGet("/notifications", async (CommsRepository repo) =>
-            Results.Ok(new DataEnvelope<IReadOnlyList<NotificationResponse>>(await repo.ListNotificationsAsync())));
-
-        g.MapPost("/notifications", async (CreateNotificationRequest req, CommsRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            return Results.Json(new DataEnvelope<NotificationResponse>((await repo.CreateNotificationAsync(tid, req))!), statusCode: 201);
-        });
-
-        return app;
     }
 }

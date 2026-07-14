@@ -1,13 +1,5 @@
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
-using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Data;
-using Sms.Shared.Kernel.Http;
-using Sms.Shared.Kernel.Results;
-using Sms.Shared.Kernel.Tenancy;
-using Sms.Shared.Kernel.Time;
 
 namespace Sms.Modules.Transport;
 
@@ -122,39 +114,5 @@ public static class BusModule
     {
         services.AddScoped<BusRepository>();
         return services;
-    }
-
-    internal static IResult Forbidden(string message) =>
-        Results.Json(ErrorEnvelope.From(new Error("forbidden", message)), statusCode: 403);
-
-    /// Phase 4: teacher bus-duty view under /v1/bus*. Tenant-scoped; assigned is user-scoped.
-    public static IEndpointRouteBuilder MapBusModule(this IEndpointRouteBuilder app)
-    {
-        var g = app.MapGroup("/v1/bus").RequireAuthorization(AuthorizationPolicies.TeacherApp);
-
-        g.MapGet("/assigned", async (BusRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.UserId is not { } uid) return Forbidden("no user context");
-            var bus = await repo.GetAssignedAsync(uid);
-            return bus is null
-                ? Results.Json(ErrorEnvelope.From(new Error("not_found", "no assigned bus")), statusCode: 404)
-                : Results.Ok(new DataEnvelope<BusResponse>(bus));
-        });
-
-        g.MapGet("/{busId:guid}/roster", async (Guid busId, BusRepository repo) =>
-            Results.Ok(new DataEnvelope<IReadOnlyList<BusRosterEntry>>(await repo.GetRosterAsync(busId))));
-
-        g.MapGet("/{busId:guid}/position", async (Guid busId, BusRepository repo) =>
-            Results.Ok(new DataEnvelope<BusPositionResponse>(await repo.GetPositionAsync(busId))));
-
-        g.MapPost("/{busId:guid}/boarding", async (Guid busId, BusBoardingRequest req, BusRepository repo, ITenantContext tenant, IClock clock) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            var ok = await repo.UpsertBoardingAsync(tid, busId, req.Records, clock.UtcNow);
-            return ok ? Results.NoContent()
-                      : Results.Json(ErrorEnvelope.From(new Error("no_active_trip", "no live trip for this bus")), statusCode: 409);
-        });
-
-        return app;
     }
 }

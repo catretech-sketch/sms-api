@@ -15,6 +15,12 @@ BEGIN
     VALUES (@Id, @TenantId, @AdmissionNo, @Name, @Gender, @Grade, @Section, @ClassLabel, ISNULL(@Roll, 0),
         @GuardianName, @GuardianPhone, @House, ISNULL(@AvatarHue, 0), @Dob, @Email, @Address);
 
+    UPDATE dbo.Tenants
+    SET StudentsCount = (
+        SELECT COUNT(*) FROM dbo.Students s WHERE s.TenantId = @TenantId AND s.Status = N'active'
+    )
+    WHERE Id = @TenantId;
+
     SELECT Id, TenantId, AdmissionNo, Name, Gender, Grade, Section, ClassLabel, Roll, GuardianName,
            GuardianPhone, AttendancePct, FeeStatus, FeeDue, Status, House, AvatarHue, Dob, Email, Address
     FROM dbo.Students WHERE Id = @Id;

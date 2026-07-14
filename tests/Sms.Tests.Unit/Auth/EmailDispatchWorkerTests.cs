@@ -14,11 +14,10 @@ public class EmailDispatchWorkerTests
         public SignalingSender(Func<EmailMessage, bool>? throwFor = null) => _throwFor = throwFor ?? (_ => false);
         public Task<EmailMessage> Delivered => _delivered.Task;
 
-        public Task SendAsync(string to, string subject, string body, CancellationToken ct = default)
+        public Task SendAsync(EmailMessage message, CancellationToken ct = default)
         {
-            var msg = new EmailMessage(to, subject, body);
-            if (_throwFor(msg)) throw new InvalidOperationException("smtp boom");
-            _delivered.TrySetResult(msg);
+            if (_throwFor(message)) throw new InvalidOperationException("smtp boom");
+            _delivered.TrySetResult(message);
             return Task.CompletedTask;
         }
     }

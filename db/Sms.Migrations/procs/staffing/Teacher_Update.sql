@@ -16,6 +16,16 @@ BEGIN
         Status = ISNULL(@Status, Status)
     WHERE Id = @Id;
 
+    DECLARE @TenantId uniqueidentifier =
+        (SELECT TOP 1 TenantId FROM dbo.Teachers WHERE Id = @Id);
+    IF @TenantId IS NOT NULL
+        UPDATE dbo.Tenants
+        SET StaffCount = (
+            (SELECT COUNT(*) FROM dbo.Teachers te WHERE te.TenantId = @TenantId AND te.Status = N'active')
+          + (SELECT COUNT(*) FROM dbo.Staff st WHERE st.TenantId = @TenantId AND st.Status = N'active')
+        )
+        WHERE Id = @TenantId;
+
     SELECT Id, TenantId, Name, Gender, Department, Designation, SubjectsCsv, ClassTeacher, Phone, Email,
            Exp, Rating, AttendancePct, Result, Load, Status, AvatarHue, [Top]
     FROM dbo.Teachers WHERE Id = @Id;

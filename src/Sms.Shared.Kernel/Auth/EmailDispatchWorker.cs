@@ -25,7 +25,7 @@ public sealed class EmailDispatchWorker(
             {
                 try
                 {
-                    await sender.SendAsync(message.To, message.Subject, message.Body, stoppingToken);
+                    await sender.SendAsync(message, stoppingToken);
                     break;
                 }
                 catch (Exception ex)

@@ -2,7 +2,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Tenancy;
 
-namespace Sms.Api.Auth;
+namespace Sms.Api.Endpoints.Auth;
 
 /// Ensures exactly one Catre platform admin exists. Idempotent: runs every boot,
 /// no-ops once seeded. The admin logs in via the existing email OTP flow.

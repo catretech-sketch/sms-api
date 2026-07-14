@@ -1,13 +1,7 @@
 using System.Data;
 using Dapper;
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Shared.Kernel.Data;
-using Sms.Shared.Kernel.Http;
-using Sms.Shared.Kernel.Results;
-using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Modules.Transport;
 
@@ -100,51 +94,5 @@ public static class TransportModule
     {
         services.AddScoped<TripRepository>();
         return services;
-    }
-
-    private static IResult Forbidden(string message) =>
-        Results.Json(ErrorEnvelope.From(new Error("forbidden", message)), statusCode: 403);
-
-    /// Phase 4: staff live trips under /v1/staff/trips* — GPS ping fan-in via TVP. Tenant + driver scoped.
-    public static IEndpointRouteBuilder MapTransportModule(this IEndpointRouteBuilder app)
-    {
-        var g = app.MapGroup("/v1/staff").RequireAuthorization();
-
-        g.MapPost("/trips", async (StartTripRequest req, TripRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid) return Forbidden("no tenant/user context");
-            return Results.Json(new DataEnvelope<TripResponse>((await repo.StartAsync(tid, uid, req))!), statusCode: 201);
-        });
-
-        g.MapGet("/trip/current", async (TripRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.UserId is not { } uid) return Forbidden("no user context");
-            var trip = await repo.GetCurrentAsync(uid);
-            return Results.Ok(new DataEnvelope<TripResponse?>(trip));
-        });
-
-        g.MapPost("/trips/{tripId:guid}/pings",
-            async (Guid tripId, BulkPingRequest req, TripRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            await repo.IngestPingsAsync(tid, tripId, req.Pings);
-            return Results.NoContent();
-        });
-
-        g.MapPost("/trips/{tripId:guid}/end", async (Guid tripId, TripRepository repo) =>
-            Results.Ok(new DataEnvelope<TripSummaryResponse>(await repo.EndAsync(tripId))));
-
-        g.MapGet("/trips/{tripId:guid}/boarding", async (Guid tripId, TripRepository repo) =>
-            Results.Ok(new DataEnvelope<IReadOnlyList<BoardingResponse>>(await repo.ListBoardingAsync(tripId))));
-
-        g.MapPost("/trips/{tripId:guid}/boarding",
-            async (Guid tripId, BoardingRequest req, TripRepository repo, ITenantContext tenant) =>
-        {
-            if (tenant.TenantId is not { } tid) return Forbidden("no tenant context");
-            await repo.UpsertBoardingAsync(tid, tripId, req);
-            return Results.NoContent();
-        });
-
-        return app;
     }
 }

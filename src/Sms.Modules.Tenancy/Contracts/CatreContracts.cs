@@ -14,7 +14,7 @@ public sealed record CreateClientRequest(
     string Name, string Slug, string? Country, string? AdminName, string? AdminEmail,
     string? AdminPhone, Guid PlanId, int TrialDays, string? Csm, string? Address = null);
 
-public sealed record SetStatusRequest(string Status, string? Reason);
+public sealed record SetStatusRequest(string? Status, string? Reason);
 public sealed record ChangePlanRequest(Guid PlanId);
 
 // Flat DB row (Dapper maps columns by name); composed into ClientResponse.
@@ -62,4 +62,30 @@ public static class CatreMappers
         r.Visibility, r.Audience, r.Band,
         r.OfferLabel is null ? null : new PlanOffer(r.OfferLabel, r.OfferPct ?? 0),
         r.Color, r.Description);
+
+    /// <summary>
+    /// Monthly bill for a tenant on a plan. Per-student plans: rate × max(students, seats, min_students, 1).
+    /// Flat plans: plan.Price.
+    /// </summary>
+    public static decimal ComputeMonthlyAmount(PlanRow plan, int studentsCount, int seats = 0)
+    {
+        if (string.Equals(plan.Pricing, "per_student", StringComparison.OrdinalIgnoreCase))
+        {
+            var rate = plan.PerStudent ?? 0m;
+            var min = plan.MinStudents ?? 0;
+            var billable = Math.Max(Math.Max(Math.Max(studentsCount, seats), min), 1);
+            return rate * billable;
+        }
+        return plan.Price;
+    }
+
+    public static int BillableSeats(PlanRow plan, int studentsCount, int fallbackSeats = 0)
+    {
+        if (string.Equals(plan.Pricing, "per_student", StringComparison.OrdinalIgnoreCase))
+        {
+            var min = plan.MinStudents ?? 0;
+            return Math.Max(Math.Max(Math.Max(studentsCount, fallbackSeats), min), 1);
+        }
+        return Math.Max(Math.Max(studentsCount, fallbackSeats), 1);
+    }
 }

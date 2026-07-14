@@ -1,12 +1,5 @@
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.DependencyInjection;
-using Sms.Modules.Reporting.Contracts;
 using Sms.Modules.Reporting.Data;
-using Sms.Shared.Kernel.Authz;
-using Sms.Shared.Kernel.Http;
-using Sms.Shared.Kernel.Time;
 
 namespace Sms.Modules.Reporting;
 
@@ -16,27 +9,5 @@ public static class ReportingModule
     {
         services.AddScoped<ReportingRepository>();
         return services;
-    }
-
-    public static IEndpointRouteBuilder MapReportingModule(this IEndpointRouteBuilder app)
-    {
-        var g = app.MapGroup("/v1").RequireAuthorization();
-
-        g.MapGet("/dashboard/stats", async (ReportingRepository repo, IClock clock) =>
-            Results.Ok(new DataEnvelope<DashboardStatsResponse>(
-                await repo.GetDashboardStatsAsync(clock.UtcNow))))
-            .RequireAuthorization(AuthorizationPolicies.TeacherApp);
-
-        g.MapGet("/principal/overview", async (ReportingRepository repo, IClock clock) =>
-            Results.Ok(new DataEnvelope<PrincipalOverviewResponse>(
-                await repo.GetPrincipalOverviewAsync(clock.UtcNow))))
-            .RequireAuthorization(Policies.Principal);
-
-        g.MapGet("/principal/attendance", async (ReportingRepository repo, IClock clock) =>
-            Results.Ok(new DataEnvelope<PrincipalAttendanceResponse>(
-                await repo.GetPrincipalAttendanceAsync(clock.UtcNow))))
-            .RequireAuthorization(Policies.Principal);
-
-        return app;
     }
 }

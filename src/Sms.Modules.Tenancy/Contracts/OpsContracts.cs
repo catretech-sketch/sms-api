@@ -31,10 +31,23 @@ public sealed record UpdateTicketRequest(string? Status, string? Assignee);
 public sealed record AddMessageRequest(string Text);
 
 // ---- Team ----
+public sealed record TeamDocumentMeta(
+    Guid Id, Guid TeamMemberId, string Label, string FileName, string ContentType, int SizeBytes, DateTime Created);
+public sealed record TeamDocumentDetail(
+    Guid Id, Guid TeamMemberId, string Label, string FileName, string ContentType, int SizeBytes, DateTime Created, string Content);
+public sealed record TeamDocumentInput(string Label, string FileName, string ContentType, string Content);
+
 public sealed record TeamMemberResponse(
-    Guid Id, string Name, string Email, string Role, string Status, DateTime? LastLogin, DateTime Joined);
-public sealed record InviteTeamRequest(string Name, string Email, string Role);
-public sealed record UpdateTeamRequest(string? Role, string? Status);
+    Guid Id, string Name, string Email, string Role, string Status, DateTime? LastLogin, DateTime Joined,
+    string? EmployeeId, string? PhotoUrl, string? Phone,
+    IReadOnlyList<TeamDocumentMeta> Documents);
+public sealed record InviteTeamRequest(
+    string Name, string Email, string Role,
+    string? EmployeeId = null, string? PhotoUrl = null, string? Phone = null,
+    IReadOnlyList<TeamDocumentInput>? Documents = null);
+public sealed record UpdateTeamRequest(
+    string? Role = null, string? Status = null, string? Name = null,
+    string? EmployeeId = null, string? PhotoUrl = null, string? Phone = null);
 
 // ---- Audit ----
 public sealed record AuditEntry(
