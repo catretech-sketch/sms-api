@@ -56,4 +56,8 @@ public sealed class SubscriptionRepository(IDbConnectionFactory factory) : BaseR
             " AND (@status IS NULL OR s.Status = @status)" +
             " ORDER BY s.StartedAt DESC",
             new { tenantId, status }, ct);
+
+    public async Task SetPlanAsync(Guid tenantId, Guid planId, int seats, CancellationToken ct = default) =>
+        await QuerySingleProcAsync<SubscriptionCreated>("dbo.Subscription_SetPlan",
+            new { TenantId = tenantId, PlanId = planId, Seats = seats }, ct);
 }

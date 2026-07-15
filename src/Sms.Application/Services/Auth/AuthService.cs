@@ -4,6 +4,7 @@ using System.Text;
 using Sms.Application.DTOs.Auth;
 using Sms.Application.Common;
 using Sms.Application.Interfaces.DAO;
+using Sms.Modules.Tenancy.Data;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
@@ -17,6 +18,9 @@ public interface IAuthService
     Task<ApiResult<object>> RequestOtpAsync(OtpRequest req, CancellationToken ct = default);
     Task<ApiResult<TokenResponse>> VerifyOtpAsync(OtpVerifyRequest req, CancellationToken ct = default);
     Task<ApiResult<object>> ForgotPasswordAsync(ForgotPasswordRequest req, CancellationToken ct = default);
+    /// <summary>Onboard invite: welcome email/SMS with school name + password-setup OTP.</summary>
+    Task<ApiResult<object>> SendInviteSetupAsync(
+        string identifier, string schoolName, string? roleLabel = null, CancellationToken ct = default);
     Task<ApiResult> ResetPasswordAsync(ResetPasswordRequest req, CancellationToken ct = default);
     Task<ApiResult> SetPasswordAsync(SetPasswordRequest req, CancellationToken ct = default);
     ApiResult<object> GetMe(ClaimsPrincipal user);
@@ -29,6 +33,8 @@ public sealed class AuthService(
     IJwtTokenService jwt,
     IRefreshTokenStore tokens,
     IOtpSender otp,
+    IEmailQueue emailQueue,
+    ClientRepository clients,
     ITenantContext tenant) : IAuthService
 {
     public async Task<ApiResult<TokenResponse>> LoginAsync(LoginRequest req, CancellationToken ct = default)
@@ -84,8 +90,64 @@ public sealed class AuthService(
         return await IssueTokensAsync(user, ct);
     }
 
-    public Task<ApiResult<object>> ForgotPasswordAsync(ForgotPasswordRequest req, CancellationToken ct = default) =>
-        SendOtpToRegisteredAsync(req.Identifier, ct);
+    public async Task<ApiResult<object>> ForgotPasswordAsync(ForgotPasswordRequest req, CancellationToken ct = default)
+    {
+        /* First-time / invite users (no password yet): welcome email with school name + OTP.
+           Existing users: keep the generic verification-code mail. */
+        tenant.Set(null, null, isPlatform: true);
+        var user = await FindUserByIdentifierAsync(req.Identifier, ct);
+        if (user is not null && string.IsNullOrEmpty(user.PasswordHash))
+        {
+            var schoolName = "your school";
+            string? roleLabel = null;
+            if (user.TenantId is Guid tid)
+            {
+                var school = await clients.GetAsync(tid, ct);
+                if (!string.IsNullOrWhiteSpace(school?.Name)) schoolName = school.Name;
+                var roles = await users.GetRolesAsync(user.Id, ct);
+                roleLabel = RoleLabel(roles.FirstOrDefault());
+            }
+            return await SendInviteSetupAsync(req.Identifier, schoolName, roleLabel, ct);
+        }
+        return await SendOtpToRegisteredAsync(req.Identifier, ct);
+    }
+
+    public async Task<ApiResult<object>> SendInviteSetupAsync(
+        string identifier, string schoolName, string? roleLabel = null, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(identifier))
+            return ApiResult<object>.Fail(new Error("invalid_request", "email or phone required"), 422);
+
+        tenant.Set(null, null, isPlatform: true);
+        var id = identifier.Trim();
+        var isEmail = id.Contains('@');
+        var channel = isEmail ? "email" : "sms";
+        var user = await FindUserByIdentifierAsync(id, ct);
+        if (user is null)
+            return ApiResult<object>.Fail(new Error("not_registered",
+                isEmail ? "Email is not registered." : "Phone is not registered."), 404);
+
+        var code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
+        await users.OtpInsertAsync(id, channel, Sha256(code), DateTime.UtcNow.AddMinutes(10), ct);
+
+        if (isEmail)
+            emailQueue.Enqueue(InviteWelcomeEmail.Build(id, schoolName, code, roleLabel));
+        else
+            Console.WriteLine($"[OTP/{channel}] {id} -> {InviteWelcomeEmail.SmsBody(schoolName, code, roleLabel)}");
+
+        return ApiResult<object>.Ok(new { sent = true });
+    }
+
+    private static string? RoleLabel(string? role) => role?.ToLowerInvariant() switch
+    {
+        "school.owner" => "Owner",
+        "school.admin" => "Admin",
+        "school.principal" => "Principal",
+        "school.vice_principal" or "school.vice-principal" => "Vice-Principal",
+        "school.teacher" => "Teacher",
+        "staff" => "Staff",
+        _ => role,
+    };
 
     public async Task<ApiResult> ResetPasswordAsync(ResetPasswordRequest req, CancellationToken ct = default)
     {

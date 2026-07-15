@@ -1,3 +1,4 @@
+using Microsoft.Data.SqlClient;
 using Sms.Application.Common;
 using Sms.Application.DTOs.Auth;
 using Sms.Application.Interfaces.DAO;
@@ -15,6 +16,8 @@ public interface IMeSchoolsService
 {
     Task<IReadOnlyList<ClientResponse>> ListAsync(CancellationToken ct = default);
     Task<ApiResult<ClientResponse>> CreateAsync(CreateMySchoolRequest req, CancellationToken ct = default);
+    Task<ApiResult<ClientResponse>> UpdateAsync(Guid tenantId, UpdateSchoolProfileRequest req, CancellationToken ct = default);
+    Task<ApiResult> DeleteAsync(Guid tenantId, DeleteClientRequest req, CancellationToken ct = default);
     Task<IReadOnlyList<PlanResponse>> ListPublishedPlansAsync(CancellationToken ct = default);
     Task<ApiResult<TokenResponse>> SwitchTenantAsync(Guid tenantId, CancellationToken ct = default);
     Task<FeeSummaryResponse> FeeSummaryAsync(DateOnly? from, DateOnly? to, CancellationToken ct = default);
@@ -34,7 +37,8 @@ public sealed record FeeSummaryResponse(
 
 public sealed record CreateMySchoolRequest(
     string Name, string Slug, string? Country, Guid PlanId,
-    string? AdminName, string? AdminPhone, string? Address, int TrialDays = 14);
+    string? AdminName, string? AdminPhone, string? Address, int TrialDays = 14,
+    string? LogoUrl = null, string? ImageUrl = null);
 
 /// <summary>
 /// School-owner portfolio: list/create schools for the signed-in founding owner
@@ -105,12 +109,24 @@ public sealed class MeSchoolsService(
         tenant.Set(null, uid, isPlatform: true);
         try
         {
+            var slug = await clients.AllocateUniqueSlugAsync(req.Slug, ct);
             var create = new CreateClientRequest(
-                req.Name.Trim(), req.Slug.Trim().ToLowerInvariant(), req.Country,
+                req.Name.Trim(), slug, req.Country,
                 req.AdminName ?? me.Email.Split('@')[0], me.Email, req.AdminPhone ?? me.Phone,
-                req.PlanId, req.TrialDays <= 0 ? 14 : req.TrialDays, null, req.Address);
+                req.PlanId, req.TrialDays <= 0 ? 14 : req.TrialDays, null, req.Address, req.LogoUrl, req.ImageUrl);
 
-            var row = await clients.CreateAsync(create, ct);
+            ClientRow? row;
+            try
+            {
+                row = await clients.CreateAsync(create, ct);
+            }
+            catch (SqlException ex) when (ex.Number is 2601 or 2627)
+            {
+                return ApiResult<ClientResponse>.Fail(
+                    new Error("slug_taken", "A school with this name/slug already exists. Try a different school name."),
+                    409);
+            }
+
             if (row is null)
                 return ApiResult<ClientResponse>.Fail(new Error("internal_error", "could not create school"), 500);
 
@@ -124,6 +140,114 @@ public sealed class MeSchoolsService(
                 create.AdminName, create.AdminEmail, create.AdminPhone, create.Address, row.Id), ct);
 
             return ApiResult<ClientResponse>.Ok(row.ToResponse(), 201);
+        }
+        finally
+        {
+            tenant.Set(me.TenantId, uid, isPlatform: false);
+        }
+    }
+
+    public async Task<ApiResult<ClientResponse>> UpdateAsync(
+        Guid tenantId, UpdateSchoolProfileRequest req, CancellationToken ct = default)
+    {
+        if (tenant.UserId is not { } uid)
+            return ApiResult<ClientResponse>.Fail(new Error("unauthorized", "unauthorized"), 401);
+
+        var me = await auth.GetByIdAsync(uid, ct);
+        if (me is null)
+            return ApiResult<ClientResponse>.Fail(new Error("unauthorized", "unauthorized"), 401);
+
+        var roles = await auth.GetRolesAsync(uid, ct);
+        var canEdit = tenant.IsPlatform
+            || roles.Contains(Policies.SchoolOwner)
+            || roles.Contains(Policies.SchoolAdmin);
+
+        if (!canEdit)
+            return ApiResult<ClientResponse>.Fail(new Error("forbidden", "Only school owners or admins can edit school profile."), 403);
+
+        var savedTid = tenant.TenantId;
+        var wasPlatform = tenant.IsPlatform;
+        tenant.Set(null, uid, isPlatform: true);
+        try
+        {
+            if (!wasPlatform)
+            {
+                if (me.Email is null)
+                    return ApiResult<ClientResponse>.Fail(new Error("unauthorized", "unauthorized"), 401);
+                var owned = await auth.GetByEmailAndTenantAsync(me.Email, tenantId, ct);
+                if (owned is null)
+                    return ApiResult<ClientResponse>.Fail(new Error("forbidden", "You do not own that school."), 403);
+            }
+
+            if (string.IsNullOrWhiteSpace(req.Name)
+                && string.IsNullOrWhiteSpace(req.Country)
+                && string.IsNullOrWhiteSpace(req.Address)
+                && string.IsNullOrWhiteSpace(req.ContactName)
+                && string.IsNullOrWhiteSpace(req.ContactEmail)
+                && string.IsNullOrWhiteSpace(req.ContactPhone)
+                && !req.SetLogo
+                && !req.SetImage)
+            {
+                return ApiResult<ClientResponse>.Fail(new Error("invalid_request", "No profile fields to update."), 422);
+            }
+
+            var patch = req with
+            {
+                Name = string.IsNullOrWhiteSpace(req.Name) ? null : req.Name.Trim(),
+                Country = string.IsNullOrWhiteSpace(req.Country) ? null : req.Country.Trim(),
+                Address = string.IsNullOrWhiteSpace(req.Address) ? null : req.Address.Trim(),
+                ContactName = string.IsNullOrWhiteSpace(req.ContactName) ? null : req.ContactName.Trim(),
+                ContactEmail = string.IsNullOrWhiteSpace(req.ContactEmail) ? null : req.ContactEmail.Trim(),
+                ContactPhone = string.IsNullOrWhiteSpace(req.ContactPhone) ? null : req.ContactPhone.Trim(),
+            };
+
+            var row = await clients.UpdateProfileAsync(tenantId, patch, ct);
+            if (row is null)
+                return ApiResult<ClientResponse>.Fail(new Error("not_found", "school not found"), 404);
+
+            return ApiResult<ClientResponse>.Ok(row.ToResponse());
+        }
+        finally
+        {
+            tenant.Set(savedTid, uid, wasPlatform);
+        }
+    }
+
+    public async Task<ApiResult> DeleteAsync(Guid tenantId, DeleteClientRequest req, CancellationToken ct = default)
+    {
+        if (tenant.IsPlatform)
+            return ApiResult.Fail(new Error("forbidden", "Platform operators must use DELETE /clients/{id}."), 403);
+        if (tenant.UserId is not { } uid)
+            return ApiResult.Fail(new Error("unauthorized", "unauthorized"), 401);
+        if (!string.Equals(req.Confirm?.Trim(), "DELETE", StringComparison.Ordinal))
+            return ApiResult.Fail(new Error("invalid_request", "confirm must be DELETE"), 422);
+
+        var me = await auth.GetByIdAsync(uid, ct);
+        if (me?.Email is null)
+            return ApiResult.Fail(new Error("unauthorized", "unauthorized"), 401);
+
+        tenant.Set(null, uid, isPlatform: true);
+        try
+        {
+            var owned = await auth.GetByEmailAndTenantAsync(me.Email, tenantId, ct);
+            if (owned is null)
+                return ApiResult.Fail(new Error("forbidden", "You do not own that school."), 403);
+
+            var result = await clients.DeleteEmptyAsync(tenantId, ct);
+            if (result is null)
+                return ApiResult.Fail(new Error("internal_error", "delete failed"), 500);
+
+            if (!result.Ok)
+            {
+                if (string.Equals(result.Code, "not_found", StringComparison.OrdinalIgnoreCase))
+                    return ApiResult.Fail(new Error("not_found", "school not found"), 404);
+                if (string.Equals(result.Code, "has_people", StringComparison.OrdinalIgnoreCase))
+                    return ApiResult.Fail(new Error("conflict",
+                        $"Cannot delete: school has {result.Students} student(s) and {result.Teachers + result.Staff} staff/teacher(s). Remove them first."), 409);
+                return ApiResult.Fail(new Error("conflict", "cannot delete school"), 409);
+            }
+
+            return ApiResult.NoContent();
         }
         finally
         {

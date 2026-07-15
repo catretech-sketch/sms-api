@@ -17,15 +17,57 @@ public sealed class ClientRepository(IDbConnectionFactory factory) : BaseReposit
         "  (SELECT COUNT_BIG(*) FROM dbo.Staff st WHERE st.TenantId = t.Id AND st.Status = N'active') " +
         ") AS int) AS StaffCount, " +
         "t.StorageGb, t.LimitsStudents, t.LimitsStaff, t.LimitsStorageGb, t.CreatedAt, t.Csm, t.HealthScore, " +
-        "t.ContactName, t.ContactEmail, t.ContactPhone, t.Address " +
+        "t.ContactName, t.ContactEmail, t.ContactPhone, t.Address, t.LogoUrl, t.ImageUrl " +
         "FROM dbo.Tenants t";
+
+    public async Task<bool> SlugExistsAsync(string slug, CancellationToken ct = default)
+    {
+        var n = (await QueryInlineAsync<int>(
+            "SELECT CASE WHEN EXISTS (SELECT 1 FROM dbo.Tenants WHERE Slug = @slug) THEN 1 ELSE 0 END",
+            new { slug }, ct)).FirstOrDefault();
+        return n == 1;
+    }
+
+    /// <summary>Pick an unused slug; appends -NNNN or a short guid suffix on collision.</summary>
+    public async Task<string> AllocateUniqueSlugAsync(string desired, CancellationToken ct = default)
+    {
+        var baseSlug = string.IsNullOrWhiteSpace(desired) ? "school" : desired.Trim().ToLowerInvariant();
+        if (baseSlug.Length > 40) baseSlug = baseSlug[..40];
+        baseSlug = baseSlug.Trim('-');
+        if (baseSlug.Length == 0) baseSlug = "school";
+
+        var candidate = baseSlug;
+        for (var i = 0; i < 24; i++)
+        {
+            if (!await SlugExistsAsync(candidate, ct)) return candidate;
+            candidate = $"{baseSlug}-{Random.Shared.Next(1000, 9999)}";
+            if (candidate.Length > 48) candidate = candidate[..48];
+        }
+        return $"{baseSlug}-{Guid.NewGuid():N}"[..48];
+    }
 
     public Task<ClientRow?> CreateAsync(CreateClientRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<ClientRow>("dbo.Client_Create", new
         {
             r.Name, r.Slug, r.Country,
             ContactName = r.AdminName, ContactEmail = r.AdminEmail, ContactPhone = r.AdminPhone,
-            r.Address, r.PlanId, r.Csm
+            r.Address, r.PlanId, r.Csm, r.LogoUrl, r.ImageUrl
+        }, ct);
+
+    public Task<ClientRow?> UpdateProfileAsync(Guid id, UpdateSchoolProfileRequest r, CancellationToken ct = default) =>
+        QuerySingleProcAsync<ClientRow>("dbo.Client_UpdateProfile", new
+        {
+            Id = id,
+            r.Name,
+            r.Country,
+            r.Address,
+            r.ContactName,
+            r.ContactEmail,
+            r.ContactPhone,
+            r.LogoUrl,
+            r.ImageUrl,
+            r.SetLogo,
+            r.SetImage,
         }, ct);
 
     public Task<ClientRow?> SetStatusAsync(Guid id, string status, CancellationToken ct = default) =>
@@ -59,4 +101,10 @@ public sealed class ClientRepository(IDbConnectionFactory factory) : BaseReposit
             : QueryInlineAsync<ClientRow>(
                 $"{SelectLive} WHERE t.Id IN @ids ORDER BY t.Mrr DESC",
                 new { ids }, ct);
+
+    public sealed record DeleteResult(bool Ok, string Code, int Students, int Teachers, int Staff);
+
+    /// <summary>Deletes an empty school (no students/teachers/staff). Returns outcome row from dbo.Client_Delete.</summary>
+    public async Task<DeleteResult?> DeleteEmptyAsync(Guid id, CancellationToken ct = default) =>
+        (await QuerySingleProcAsync<DeleteResult>("dbo.Client_Delete", new { Id = id }, ct));
 }

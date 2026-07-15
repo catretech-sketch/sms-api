@@ -8,13 +8,31 @@ public sealed record ClientResponse(
     Guid? PlanId, string? PlanName, string? Tier, decimal Mrr,
     int StudentsCount, int StaffCount, decimal StorageGb, ClientLimits Limits,
     DateTime Created, string? Csm, int HealthScore,
-    string? ContactName, string? ContactEmail, string? ContactPhone, string? Address);
+    string? ContactName, string? ContactEmail, string? ContactPhone, string? Address,
+    string? LogoUrl = null, string? ImageUrl = null);
 
 public sealed record CreateClientRequest(
     string Name, string Slug, string? Country, string? AdminName, string? AdminEmail,
-    string? AdminPhone, Guid PlanId, int TrialDays, string? Csm, string? Address = null);
+    string? AdminPhone, Guid PlanId, int TrialDays, string? Csm, string? Address = null,
+    string? LogoUrl = null, string? ImageUrl = null);
+
+/// <summary>Partial update of school branding / contact. Null fields are left unchanged; Logo/Image use Set* flags.</summary>
+public sealed record UpdateSchoolProfileRequest(
+    string? Name = null,
+    string? Country = null,
+    string? Address = null,
+    string? ContactName = null,
+    string? ContactEmail = null,
+    string? ContactPhone = null,
+    string? LogoUrl = null,
+    string? ImageUrl = null,
+    bool SetLogo = false,
+    bool SetImage = false);
 
 public sealed record SetStatusRequest(string? Status, string? Reason);
+
+/// <summary>Hard-delete empty school. Body must confirm with the literal string DELETE.</summary>
+public sealed record DeleteClientRequest(string? Confirm);
 public sealed record ChangePlanRequest(Guid PlanId);
 
 // Flat DB row (Dapper maps columns by name); composed into ClientResponse.
@@ -22,7 +40,8 @@ public sealed record ClientRow(
     Guid Id, string Name, string Slug, string? Country, string Status, Guid? PlanId, string? PlanName,
     string? Tier, decimal Mrr, int StudentsCount, int StaffCount, decimal StorageGb,
     int? LimitsStudents, int? LimitsStaff, int? LimitsStorageGb, DateTime CreatedAt, string? Csm, int HealthScore,
-    string? ContactName, string? ContactEmail, string? ContactPhone, string? Address);
+    string? ContactName, string? ContactEmail, string? ContactPhone, string? Address,
+    string? LogoUrl = null, string? ImageUrl = null);
 
 // ---- Plan ----
 public sealed record PlanLimits(int Students, int Staff, int StorageGb);
@@ -53,7 +72,7 @@ public static class CatreMappers
         r.StudentsCount, r.StaffCount, r.StorageGb,
         new ClientLimits(r.LimitsStudents, r.LimitsStaff, r.LimitsStorageGb),
         r.CreatedAt, r.Csm, r.HealthScore,
-        r.ContactName, r.ContactEmail, r.ContactPhone, r.Address);
+        r.ContactName, r.ContactEmail, r.ContactPhone, r.Address, r.LogoUrl, r.ImageUrl);
 
     public static PlanResponse ToResponse(this PlanRow r) => new(
         r.Id, r.Name, r.Tier, r.Pricing, r.Price, r.PerStudent, r.MinStudents, r.Period,

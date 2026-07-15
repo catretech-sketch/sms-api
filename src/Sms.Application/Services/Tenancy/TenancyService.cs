@@ -1,5 +1,8 @@
+using Microsoft.Data.SqlClient;
 using Sms.Application.Common;
+using Sms.Application.DTOs.Auth;
 using Sms.Application.Interfaces.DAO;
+using Sms.Application.Services.Auth;
 using Sms.Modules.Tenancy.Contracts;
 using Sms.Modules.Tenancy.Data;
 using Sms.Shared.Kernel.Auth;
@@ -15,7 +18,9 @@ public interface ITenancyService
     Task<IReadOnlyList<ClientResponse>> ListClientsAsync(string? status, string? tier, string? q, CancellationToken ct = default);
     Task<ApiResult<ClientResponse>> GetClientAsync(Guid id, CancellationToken ct = default);
     Task<ApiResult<ClientResponse>> CreateClientAsync(CreateClientRequest req, CancellationToken ct = default);
+    Task<ApiResult<ClientResponse>> UpdateClientProfileAsync(Guid id, UpdateSchoolProfileRequest req, CancellationToken ct = default);
     Task<ApiResult<ClientResponse>> SetClientStatusAsync(Guid id, SetStatusRequest req, CancellationToken ct = default);
+    Task<ApiResult> DeleteClientAsync(Guid id, DeleteClientRequest req, CancellationToken ct = default);
     Task<ApiResult<ClientResponse>> ChangeClientPlanAsync(Guid id, ChangePlanRequest req, CancellationToken ct = default);
 
     Task<IReadOnlyList<PlanResponse>> ListPlansAsync(string? visibility, string? audience, CancellationToken ct = default);
@@ -74,6 +79,7 @@ public sealed class TenancyService(
     ReportRepository reports,
     IUserProvisioningDao users,
     UserProvisioningRepository platformUsers,
+    IAuthService auth,
     IEmailQueue emailQueue,
     IInvoicePdfGenerator invoicePdf) : ITenancyService
 {
@@ -98,15 +104,68 @@ public sealed class TenancyService(
 
     public async Task<ApiResult<ClientResponse>> CreateClientAsync(CreateClientRequest req, CancellationToken ct = default)
     {
-        var row = await clients.CreateAsync(req);
-        if (row is not null && (req.AdminEmail is not null || req.AdminPhone is not null))
-            await users.CreateUserAsync(row.Id, req.AdminEmail, req.AdminPhone, false,
+        var slug = await clients.AllocateUniqueSlugAsync(req.Slug, ct);
+        var create = req with { Slug = slug };
+        ClientRow? row;
+        try
+        {
+            row = await clients.CreateAsync(create, ct);
+        }
+        catch (SqlException ex) when (ex.Number is 2601 or 2627)
+        {
+            return ApiResult<ClientResponse>.Fail(
+                new Error("slug_taken", "A school with this name/slug already exists. Try a different school name."),
+                409);
+        }
+
+        if (row is not null && (create.AdminEmail is not null || create.AdminPhone is not null))
+        {
+            await users.CreateUserAsync(row.Id, create.AdminEmail, create.AdminPhone, false,
                 [Policies.SchoolOwner], ct);
+            /* Welcome onboard email/SMS with school name + password-setup OTP. */
+            var inviteId = create.AdminEmail ?? create.AdminPhone;
+            if (!string.IsNullOrWhiteSpace(inviteId))
+            {
+                try { await auth.SendInviteSetupAsync(inviteId!, row.Name, "Owner", ct); }
+                catch { /* invite is best-effort — school already created */ }
+            }
+        }
         if (row is not null)
             await onboarding.CreateAsync(new CreateOnboardingRequest(
                 row.Name, row.Slug, row.Csm, row.Mrr, "trial",
-                req.AdminName, req.AdminEmail, req.AdminPhone, req.Address, row.Id));
+                create.AdminName, create.AdminEmail, create.AdminPhone, create.Address, row.Id));
         return ApiResult<ClientResponse>.Ok(row!.ToResponse(), 201);
+    }
+
+    public async Task<ApiResult<ClientResponse>> UpdateClientProfileAsync(
+        Guid id, UpdateSchoolProfileRequest req, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(req.Name)
+            && string.IsNullOrWhiteSpace(req.Country)
+            && string.IsNullOrWhiteSpace(req.Address)
+            && string.IsNullOrWhiteSpace(req.ContactName)
+            && string.IsNullOrWhiteSpace(req.ContactEmail)
+            && string.IsNullOrWhiteSpace(req.ContactPhone)
+            && !req.SetLogo
+            && !req.SetImage)
+        {
+            return ApiResult<ClientResponse>.Fail(new Error("invalid_request", "No profile fields to update."), 422);
+        }
+
+        var patch = req with
+        {
+            Name = string.IsNullOrWhiteSpace(req.Name) ? null : req.Name.Trim(),
+            Country = string.IsNullOrWhiteSpace(req.Country) ? null : req.Country.Trim(),
+            Address = string.IsNullOrWhiteSpace(req.Address) ? null : req.Address.Trim(),
+            ContactName = string.IsNullOrWhiteSpace(req.ContactName) ? null : req.ContactName.Trim(),
+            ContactEmail = string.IsNullOrWhiteSpace(req.ContactEmail) ? null : req.ContactEmail.Trim(),
+            ContactPhone = string.IsNullOrWhiteSpace(req.ContactPhone) ? null : req.ContactPhone.Trim(),
+        };
+
+        var row = await clients.UpdateProfileAsync(id, patch, ct);
+        return row is null
+            ? ApiResult<ClientResponse>.Fail(new Error("not_found", "resource not found"), 404)
+            : ApiResult<ClientResponse>.Ok(row.ToResponse());
     }
 
     public async Task<ApiResult<ClientResponse>> SetClientStatusAsync(Guid id, SetStatusRequest req, CancellationToken ct = default)
@@ -114,25 +173,52 @@ public sealed class TenancyService(
         if (string.IsNullOrWhiteSpace(req.Status))
             return ApiResult<ClientResponse>.Fail(new Error("invalid_request", "status is required"), 422);
 
-        var row = await clients.SetStatusAsync(id, req.Status);
+        var status = req.Status.Trim().ToLowerInvariant();
+        if (status is not ("trial" or "active" or "past_due" or "hold" or "deactivated" or "suspended" or "cancelled"))
+            return ApiResult<ClientResponse>.Fail(
+                new Error("invalid_request", "status must be trial, active, past_due, hold, deactivated, suspended, or cancelled"), 422);
+
+        var row = await clients.SetStatusAsync(id, status);
         if (row is null)
             return ApiResult<ClientResponse>.Fail(new Error("not_found", "resource not found"), 404);
 
         // Keep onboarding kanban in sync with tenant lifecycle.
-        var onboardStage = req.Status.Trim().ToLowerInvariant() switch
+        var onboardStage = status switch
         {
             "active" => "active",
             "trial" => "trial",
-            "cancelled" => "lead",
+            "cancelled" or "deactivated" => "lead",
             _ => null,
         };
         if (onboardStage is not null)
             await onboarding.AdvanceByTenantAsync(id, onboardStage, ct);
 
-        if (string.Equals(req.Status, "active", StringComparison.OrdinalIgnoreCase))
+        if (status == "active")
             await EnsureBillingOnActivateAsync(row, ct);
 
         return ApiResult<ClientResponse>.Ok(row.ToResponse());
+    }
+
+    public async Task<ApiResult> DeleteClientAsync(Guid id, DeleteClientRequest req, CancellationToken ct = default)
+    {
+        if (!string.Equals(req.Confirm?.Trim(), "DELETE", StringComparison.Ordinal))
+            return ApiResult.Fail(new Error("invalid_request", "confirm must be DELETE"), 422);
+
+        var result = await clients.DeleteEmptyAsync(id, ct);
+        if (result is null)
+            return ApiResult.Fail(new Error("internal_error", "delete failed"), 500);
+
+        if (!result.Ok)
+        {
+            if (string.Equals(result.Code, "not_found", StringComparison.OrdinalIgnoreCase))
+                return ApiResult.Fail(new Error("not_found", "school not found"), 404);
+            if (string.Equals(result.Code, "has_people", StringComparison.OrdinalIgnoreCase))
+                return ApiResult.Fail(new Error("conflict",
+                    $"Cannot delete: school has {result.Students} student(s) and {result.Teachers + result.Staff} staff/teacher(s). Remove them first."), 409);
+            return ApiResult.Fail(new Error("conflict", "cannot delete school"), 409);
+        }
+
+        return ApiResult.NoContent();
     }
 
     /// <summary>

@@ -34,7 +34,9 @@ public static class ApiAudienceMap
         ("v1/me/schools/fee-summary", [SchoolAdmin]),
         ("v1/me/schools",    [SchoolAdmin]),
         ("v1/me/plans",      [SchoolAdmin]),
+        ("v1/me/upgrade-requests", [SchoolAdmin]),
         ("v1/me/switch-school", [SchoolAdmin]),
+        ("v1/webhooks/razorpay", All),
         ("health",           All),
 
         // Catre platform admin
@@ -43,6 +45,7 @@ public static class ApiAudienceMap
         ("v1/plans",         [CatreAdmin]),
         ("v1/invoices",      [CatreAdmin]),
         ("v1/subscriptions", [CatreAdmin]),
+        ("v1/upgrade-requests", [CatreAdmin]),
         ("v1/dashboard/stats", [Teacher]),             // teacher dashboard stats — must precede v1/dashboard
         ("v1/dashboard",     [CatreAdmin]),
         ("v1/onboarding",    [CatreAdmin]),

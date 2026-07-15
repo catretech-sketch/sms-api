@@ -90,6 +90,9 @@ public static class ServiceCollectionExtensions
         builder.Services.AddSingleton<IOtpSender, ChannelOtpSender>();
         builder.Services.AddHostedService<EmailDispatchWorker>();
         builder.Services.AddSingleton<IPaymentGateway, StubPaymentGateway>();
+        builder.Services.Configure<RazorpayOptions>(builder.Configuration.GetSection(RazorpayOptions.SectionName));
+        builder.Services.AddHttpClient("razorpay");
+        builder.Services.AddSingleton<IRazorpayGateway, RazorpayGateway>();
 
         builder.Services.AddScoped<ITenantContext, TenantContext>();
         builder.Services.AddScoped<ITenantPlan, TenantPlan>();

@@ -97,6 +97,20 @@ public sealed class AuditRepository(IDbConnectionFactory factory) : BaseReposito
             "WHERE (@kind IS NULL OR Kind = @kind) AND (@actorId IS NULL OR ActorId = @actorId) " +
             "AND (@tenantId IS NULL OR TenantId = @tenantId) ORDER BY At DESC",
             new { kind, actorId, tenantId }, ct);
+
+    public Task<AuditEntry?> InsertAsync(
+        Guid? actorId, string? actorName, string? role, string action,
+        string? target, string? kind, Guid? tenantId, CancellationToken ct = default) =>
+        QuerySingleProcAsync<AuditEntry>("dbo.Audit_Insert", new
+        {
+            ActorId = actorId,
+            ActorName = actorName,
+            Role = role,
+            Action = action,
+            Target = target,
+            Kind = kind,
+            TenantId = tenantId,
+        }, ct);
 }
 
 public sealed class ReportRepository(IDbConnectionFactory factory) : BaseRepository(factory)

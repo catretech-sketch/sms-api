@@ -61,12 +61,25 @@ public class OwnerPolicyTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task Owner_role_is_not_invitable()
+    public async Task Owner_can_invite_co_owner_admin_and_principal()
     {
         await using var app = App();
         var client = TenantClient(app, [Policies.SchoolOwner]);
+        foreach (var role in new[] { Policies.SchoolOwner, Policies.SchoolAdmin, Policies.Principal })
+        {
+            var resp = await client.PostAsJsonAsync("/v1/users",
+                new { email = $"t{Guid.NewGuid():N}@x.com", phone = (string?)null, roles = new[] { role } });
+            resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        }
+    }
+
+    [Fact]
+    public async Task Admin_cannot_invite_school_owner()
+    {
+        await using var app = App();
+        var client = TenantClient(app, [Policies.SchoolAdmin]);
         var resp = await client.PostAsJsonAsync("/v1/users",
             new { email = $"t{Guid.NewGuid():N}@x.com", phone = (string?)null, roles = new[] { Policies.SchoolOwner } });
-        resp.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity); // 422 invalid role
+        resp.StatusCode.Should().Be(HttpStatusCode.UnprocessableEntity);
     }
 }

@@ -1,5 +1,7 @@
 using System.Data;
+using System.Text.Json;
 using Dapper;
+using Sms.Application.DTOs.Users;
 using Sms.Application.Interfaces.DAO;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Data;
@@ -36,4 +38,34 @@ public sealed class UserProvisioningDao(IDbConnectionFactory factory) : BaseRepo
         var result = await QuerySingleProcAsync<ImportResult>("dbo.Users_BulkCreate", p, ct);
         return result ?? new ImportResult(0, rows.Count);
     }
+
+    public async Task<IReadOnlyList<SchoolUserListRow>> ListByTenantAsync(Guid tenantId, CancellationToken ct = default) =>
+        await QueryProcAsync<SchoolUserListRow>("dbo.Users_ListByTenant", new { TenantId = tenantId }, ct);
+
+    public async Task<bool> UserInTenantAsync(Guid userId, Guid tenantId, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<int>(
+            "SELECT COUNT(1) FROM dbo.Users WHERE Id = @UserId AND TenantId = @TenantId",
+            new { UserId = userId, TenantId = tenantId }, ct);
+        return rows.FirstOrDefault() > 0;
+    }
+
+    public Task ReplaceRolesAsync(Guid userId, string[] roles, CancellationToken ct = default) =>
+        ExecuteProcAsync("dbo.UserRoles_Replace",
+            new { UserId = userId, Roles = string.Join(',', roles) }, ct);
+
+    public async Task<IReadOnlyList<PermissionOverrideDto>> GetPermissionsAsync(Guid userId, CancellationToken ct = default)
+    {
+        var rows = await QueryProcAsync<PermissionRow>("dbo.UserPermissions_Get", new { UserId = userId }, ct);
+        return rows.Select(r => new PermissionOverrideDto(r.Module, r.Cap, r.Effect)).ToList();
+    }
+
+    public Task SetPermissionsAsync(Guid userId, IReadOnlyList<PermissionOverrideDto> overrides, CancellationToken ct = default)
+    {
+        var json = JsonSerializer.Serialize(
+            overrides.Select(o => new { module = o.Module, cap = o.Cap, effect = o.Effect }));
+        return ExecuteProcAsync("dbo.UserPermissions_Set", new { UserId = userId, Json = json }, ct);
+    }
+
+    private sealed record PermissionRow(string Module, string Cap, string Effect);
 }

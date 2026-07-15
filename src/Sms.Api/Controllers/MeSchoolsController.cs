@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Sms.Application.Services.Auth;
+using Sms.Modules.Tenancy.Contracts;
 
 namespace Sms.Api.Controllers;
 
@@ -20,6 +21,15 @@ public sealed class MeSchoolsController(IMeSchoolsService schools) : ApiControll
     [HttpPost("schools")]
     public async Task<IActionResult> Create([FromBody] CreateMySchoolRequest req, CancellationToken ct) =>
         FromResult(await schools.CreateAsync(req, ct));
+
+    [HttpPatch("schools/{tenantId:guid}")]
+    public async Task<IActionResult> Update(
+        Guid tenantId, [FromBody] UpdateSchoolProfileRequest req, CancellationToken ct) =>
+        FromResult(await schools.UpdateAsync(tenantId, req, ct));
+
+    [HttpDelete("schools/{tenantId:guid}")]
+    public async Task<IActionResult> Delete(Guid tenantId, [FromBody] DeleteClientRequest req, CancellationToken ct) =>
+        FromResult(await schools.DeleteAsync(tenantId, req, ct));
 
     [HttpGet("plans")]
     public async Task<IActionResult> Plans(CancellationToken ct) =>
