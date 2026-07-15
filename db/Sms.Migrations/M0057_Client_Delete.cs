@@ -7,7 +7,9 @@ public sealed class M0057_Client_Delete : Migration
 {
     public override void Up()
     {
-        foreach (var sql in M0003_Procs_Auth.EmbeddedProcs("procs.catre.Client_Delete"))
+        // Keep under procs/catredel (not procs/catre) so M0006's EmbeddedProcs("procs.catre.")
+        // does not create this proc before PlanUpgradeRequests and other late tables exist.
+        foreach (var sql in M0003_Procs_Auth.EmbeddedProcs("procs.catredel.Client_Delete"))
             Execute.Sql(sql);
     }
 

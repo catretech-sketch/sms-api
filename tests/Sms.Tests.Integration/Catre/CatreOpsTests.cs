@@ -102,19 +102,24 @@ public class CatreOpsTests(SqlServerFixture fx)
         await using var app = App();
         var client = PlatformClient(app);
 
+        var employeeId = $"EMP-{Guid.NewGuid():N}"[..16];
         var invited = await Data(await client.PostAsJsonAsync("/v1/team", new
         {
-            name = "Asha", email = $"asha{Guid.NewGuid():N}@catre.io", role = "support"
+            name = "Asha",
+            email = $"asha{Guid.NewGuid():N}@catre.io",
+            role = "support",
+            employee_id = employeeId,
         }), HttpStatusCode.Created);
         var id = invited.GetProperty("id").GetGuid();
-        invited.GetProperty("status").GetString().Should().Be("invited");
+        invited.GetProperty("status").GetString().Should().Be("active");
+        invited.GetProperty("employee_id").GetString().Should().Be(employeeId);
 
         var list = await Data(await client.GetAsync("/v1/team"), HttpStatusCode.OK);
         list.EnumerateArray().Select(e => e.GetProperty("id").GetGuid()).Should().Contain(id);
 
         var updated = await Data(await client.PatchAsJsonAsync($"/v1/team/{id}",
-            new { status = "active" }), HttpStatusCode.OK);
-        updated.GetProperty("status").GetString().Should().Be("active");
+            new { status = "invited" }), HttpStatusCode.OK);
+        updated.GetProperty("status").GetString().Should().Be("invited");
     }
 
     [Fact]

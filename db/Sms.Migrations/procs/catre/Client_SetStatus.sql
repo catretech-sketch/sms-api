@@ -6,7 +6,6 @@ BEGIN
     UPDATE dbo.Tenants SET Status = @Status WHERE Id = @Id;
 
     SELECT Id, Name, Slug, Country, Status, PlanId, PlanName, Tier, Mrr, StudentsCount, StaffCount, StorageGb,
-           LimitsStudents, LimitsStaff, LimitsStorageGb, CreatedAt, Csm, HealthScore,
-           ContactName, ContactEmail, ContactPhone, Address
+           LimitsStudents, LimitsStaff, LimitsStorageGb, CreatedAt, Csm, HealthScore
     FROM dbo.Tenants WHERE Id = @Id;
 END

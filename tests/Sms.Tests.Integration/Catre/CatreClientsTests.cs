@@ -159,13 +159,14 @@ public class CatreClientsTests(SqlServerFixture fx)
         var client = PlatformClient(app);
         var gold = await CreatePlanAsync(client, "Gold", "gold", 14999);
 
-        var slug = $"greenwood-{Guid.NewGuid():N}";
-        await Data(await client.PostAsJsonAsync("/v1/clients", new
+        var created = await Data(await client.PostAsJsonAsync("/v1/clients", new
         {
-            name = "Greenwood High", slug, country = "Mumbai, MH",
+            name = "Greenwood High", slug = $"greenwood-{Guid.NewGuid():N}", country = "Mumbai, MH",
             admin_name = "Priya Sharma", admin_email = "admin@greenwood.edu.in", admin_phone = "+91 98200 11111",
             address = "12 MG Road, Fort, Mumbai 400001", plan_id = gold, trial_days = 14
         }), HttpStatusCode.Created);
+        // AllocateUniqueSlugAsync may truncate long desired slugs — match the persisted value.
+        var slug = created.GetProperty("slug").GetString();
 
         var board = await Data(await client.GetAsync("/v1/onboarding"), HttpStatusCode.OK);
         var card = board.EnumerateArray().Single(e => e.GetProperty("slug").GetString() == slug);
