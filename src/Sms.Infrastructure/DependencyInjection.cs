@@ -10,6 +10,7 @@ public static class DependencyInjection
     {
         services.AddScoped<IAuthDao, AuthDao>();
         services.AddScoped<IUserProvisioningDao, UserProvisioningDao>();
+        services.AddScoped<IInvitationDao, InvitationDao>();
         return services;
     }
 }

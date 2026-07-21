@@ -56,5 +56,8 @@ public sealed class AuthDao(IDbConnectionFactory factory) : BaseRepository(facto
     public Task OtpConsumeAsync(string identifier, string codeHash, CancellationToken ct = default) =>
         ExecuteProcAsync(AuthQueries.OtpConsume, new { Identifier = identifier, CodeHash = codeHash }, ct);
 
+    public Task OtpConsumeAllAsync(string identifier, CancellationToken ct = default) =>
+        ExecuteProcAsync(AuthQueries.OtpConsumeAll, new { Identifier = identifier }, ct);
+
     private sealed record OtpRow(Guid Id, string CodeHash);
 }

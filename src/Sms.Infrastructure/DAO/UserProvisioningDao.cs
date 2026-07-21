@@ -67,5 +67,8 @@ public sealed class UserProvisioningDao(IDbConnectionFactory factory) : BaseRepo
         return ExecuteProcAsync("dbo.UserPermissions_Set", new { UserId = userId, Json = json }, ct);
     }
 
+    public Task SetStatusAsync(Guid userId, string status, CancellationToken ct = default) =>
+        ExecuteProcAsync("dbo.User_SetStatus", new { UserId = userId, Status = status }, ct);
+
     private sealed record PermissionRow(string Module, string Cap, string Effect);
 }

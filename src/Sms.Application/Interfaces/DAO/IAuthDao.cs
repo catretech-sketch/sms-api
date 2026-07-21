@@ -15,4 +15,5 @@ public interface IAuthDao
     Task OtpInsertAsync(string identifier, string channel, string codeHash, DateTime expiresAt, CancellationToken ct = default);
     Task<string?> OtpActiveHashAsync(string identifier, CancellationToken ct = default);
     Task OtpConsumeAsync(string identifier, string codeHash, CancellationToken ct = default);
+    Task OtpConsumeAllAsync(string identifier, CancellationToken ct = default);
 }

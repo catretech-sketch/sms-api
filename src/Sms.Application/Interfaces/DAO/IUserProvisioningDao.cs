@@ -13,6 +13,7 @@ public interface IUserProvisioningDao
     Task ReplaceRolesAsync(Guid userId, string[] roles, CancellationToken ct = default);
     Task<IReadOnlyList<PermissionOverrideDto>> GetPermissionsAsync(Guid userId, CancellationToken ct = default);
     Task SetPermissionsAsync(Guid userId, IReadOnlyList<PermissionOverrideDto> overrides, CancellationToken ct = default);
+    Task SetStatusAsync(Guid userId, string status, CancellationToken ct = default);
 }
 
 public sealed record SchoolUserListRow(

@@ -11,4 +11,5 @@ public static class AuthQueries
     public const string OtpInsert = "dbo.Otp_Insert";
     public const string OtpGetActive = "dbo.Otp_GetActive";
     public const string OtpConsume = "dbo.Otp_Consume";
+    public const string OtpConsumeAll = "dbo.Otp_ConsumeAllForIdentifier";
 }
