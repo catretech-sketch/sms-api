@@ -126,7 +126,7 @@ public sealed class TenancyService(
             var inviteId = create.AdminEmail ?? create.AdminPhone;
             if (!string.IsNullOrWhiteSpace(inviteId))
             {
-                try { await auth.SendInviteSetupAsync(inviteId!, row.Name, "Owner", ct); }
+                try { await auth.SendInviteSetupAsync(inviteId!, row.Name, "Owner", ct: ct); }
                 catch { /* invite is best-effort — school already created */ }
             }
         }
