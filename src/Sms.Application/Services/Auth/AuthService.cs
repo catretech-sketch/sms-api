@@ -20,7 +20,7 @@ public interface IAuthService
     Task<ApiResult<object>> ForgotPasswordAsync(ForgotPasswordRequest req, CancellationToken ct = default);
     /// <summary>Onboard invite: welcome email/SMS with school name + password-setup OTP.</summary>
     Task<ApiResult<object>> SendInviteSetupAsync(
-        string identifier, string schoolName, string? roleLabel = null, CancellationToken ct = default);
+        string identifier, string schoolName, string? roleLabel = null, TimeSpan? validFor = null, CancellationToken ct = default);
     Task<ApiResult> ResetPasswordAsync(ResetPasswordRequest req, CancellationToken ct = default);
     Task<ApiResult> SetPasswordAsync(SetPasswordRequest req, CancellationToken ct = default);
     ApiResult<object> GetMe(ClaimsPrincipal user);
@@ -35,7 +35,8 @@ public sealed class AuthService(
     IOtpSender otp,
     IEmailQueue emailQueue,
     ClientRepository clients,
-    ITenantContext tenant) : IAuthService
+    ITenantContext tenant,
+    IInvitationDao invitations) : IAuthService
 {
     public async Task<ApiResult<TokenResponse>> LoginAsync(LoginRequest req, CancellationToken ct = default)
     {
@@ -107,13 +108,13 @@ public sealed class AuthService(
                 var roles = await users.GetRolesAsync(user.Id, ct);
                 roleLabel = RoleLabel(roles.FirstOrDefault());
             }
-            return await SendInviteSetupAsync(req.Identifier, schoolName, roleLabel, ct);
+            return await SendInviteSetupAsync(req.Identifier, schoolName, roleLabel, TimeSpan.FromHours(24), ct);
         }
         return await SendOtpToRegisteredAsync(req.Identifier, ct);
     }
 
     public async Task<ApiResult<object>> SendInviteSetupAsync(
-        string identifier, string schoolName, string? roleLabel = null, CancellationToken ct = default)
+        string identifier, string schoolName, string? roleLabel = null, TimeSpan? validFor = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(identifier))
             return ApiResult<object>.Fail(new Error("invalid_request", "email or phone required"), 422);
@@ -128,7 +129,8 @@ public sealed class AuthService(
                 isEmail ? "Email is not registered." : "Phone is not registered."), 404);
 
         var code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
-        await users.OtpInsertAsync(id, channel, Sha256(code), DateTime.UtcNow.AddMinutes(10), ct);
+        var expiresAt = DateTime.UtcNow.Add(validFor ?? TimeSpan.FromMinutes(10));
+        await users.OtpInsertAsync(id, channel, Sha256(code), expiresAt, ct);
 
         if (isEmail)
             emailQueue.Enqueue(InviteWelcomeEmail.Build(id, schoolName, code, roleLabel));
@@ -165,6 +167,7 @@ public sealed class AuthService(
             return ApiResult.Fail(new Error("invalid_code", "user not found"), 401);
 
         await users.SetPasswordAsync(user.Id, hasher.Hash(req.Password), ct);
+        await invitations.MarkAcceptedByUserIdAsync(user.Id, ct);
         return ApiResult.NoContent();
     }
 

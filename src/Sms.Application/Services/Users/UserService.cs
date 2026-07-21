@@ -25,7 +25,8 @@ public sealed class UserService(
     IUserProvisioningDao dao,
     ITenantContext tenant,
     IAuthService auth,
-    ClientRepository clients) : IUserService
+    ClientRepository clients,
+    IInvitationDao invitations) : IUserService
 {
     /// School base roles: admin, principal, teacher (+ staff/parent). Owner only via school.owner inviter.
     private static readonly HashSet<string> BaseAssignableRoles = new(
@@ -59,14 +60,19 @@ public sealed class UserService(
                 422);
 
         var id = await dao.CreateUserAsync(tid, req.Email, req.Phone, false, req.Roles, ct);
+        await dao.SetStatusAsync(id, "pending", ct);
+
+        var roleLabel = RoleLabel(req.Roles.FirstOrDefault());
+        await invitations.CreateAsync(tid, id, req.Email, req.Phone, roleLabel ?? "Member",
+            tenant.UserId, DateTime.UtcNow.AddHours(24), ct);
+
         /* Welcome onboard email/SMS: school name + password-setup OTP (same reset flow). */
         var inviteId = req.Email ?? req.Phone;
         if (!string.IsNullOrWhiteSpace(inviteId))
         {
             var school = await clients.GetAsync(tid, ct);
             var schoolName = school?.Name ?? "your school";
-            var roleLabel = RoleLabel(req.Roles.FirstOrDefault());
-            try { await auth.SendInviteSetupAsync(inviteId!, schoolName, roleLabel, ct); }
+            try { await auth.SendInviteSetupAsync(inviteId!, schoolName, roleLabel, TimeSpan.FromHours(24), ct); }
             catch { /* user row exists; invite email is best-effort */ }
         }
         return ApiResult<object>.Ok(new { id, invited = true }, 201);
