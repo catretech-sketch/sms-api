@@ -91,6 +91,31 @@ public class RoleTemplateLifecycleTests(SqlServerFixture fx)
         get!.Data.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task School_audit_endpoint_returns_only_the_caller_tenants_rows()
+    {
+        var tenantId = await SeedActiveTenantAsync();
+        var otherTenantId = await SeedActiveTenantAsync();
+        await using var app = App();
+        var admin = AdminClient(app, tenantId, Guid.NewGuid());
+
+        await admin.PutAsJsonAsync("/v1/roles/permissions", new
+        {
+            overrides = new[] { new { role = "teacher", module = "fees", cap = "E", effect = "grant" } },
+        });
+
+        var otherAdmin = AdminClient(app, otherTenantId, Guid.NewGuid());
+        await otherAdmin.PutAsJsonAsync("/v1/roles/permissions", new
+        {
+            overrides = new[] { new { role = "staff", module = "sis", cap = "V", effect = "grant" } },
+        });
+
+        var res = await admin.GetFromJsonAsync<AuditEnvelope>("/v1/school/audit?action=role_template.updated");
+        res!.Data.Should().ContainSingle();
+    }
+
     private sealed record RoleTemplateOverrideWire(string Role, string Module, string Cap, string Effect);
     private sealed record RoleTemplateEnvelope(RoleTemplateOverrideWire[] Data);
+    private sealed record AuditRow(string Id, string? ActorId, string? ActorName, string Action, string? Target, string At);
+    private sealed record AuditEnvelope(AuditRow[] Data, string? NextCursor);
 }
