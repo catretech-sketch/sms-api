@@ -21,6 +21,7 @@ public static class DependencyInjection
         services.AddScoped<IAuthService, AuthService>();
         services.AddScoped<IMeSchoolsService, MeSchoolsService>();
         services.AddScoped<IUserService, UserService>();
+        services.AddScoped<IInvitationService, InvitationService>();
         services.AddScoped<ITenancyService, TenancyService>();
         services.AddScoped<IPlanUpgradeService, PlanUpgradeService>();
         services.AddSingleton<IInvoicePdfGenerator, InvoicePdfGenerator>();

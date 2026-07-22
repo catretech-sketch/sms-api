@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Dapper;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -113,5 +114,72 @@ public class InvitationLifecycleTests(SqlServerFixture fx)
 
         var (_, acceptedAt, _) = await GetInvitationByEmailAsync(email);
         acceptedAt.Should().NotBeNull();
+    }
+
+    private async Task<string> InviteAndGetIdAsync(HttpClient admin, string email)
+    {
+        await admin.PostAsJsonAsync("/v1/users", new { email, roles = new[] { "school.teacher" } });
+        var list = await admin.GetAsync("/v1/invitations");
+        using var doc = JsonDocument.Parse(await list.Content.ReadAsStringAsync());
+        return doc.RootElement.GetProperty("data").EnumerateArray()
+            .Single(r => r.GetProperty("email").GetString() == email).GetProperty("id").GetString()!;
+    }
+
+    [Fact]
+    public async Task Resend_extends_expiry_and_bumps_last_resent_at()
+    {
+        var tid = await SeedActiveTenant();
+        await using var app = App();
+        var admin = AdminClient(app, tid);
+        var email = $"teacher{Guid.NewGuid():N}@x.com";
+        var id = await InviteAndGetIdAsync(admin, email);
+
+        var resend = await admin.PostAsync($"/v1/invitations/{id}/resend", null);
+        resend.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var list = await admin.GetAsync("/v1/invitations");
+        using var doc = JsonDocument.Parse(await list.Content.ReadAsStringAsync());
+        var row = doc.RootElement.GetProperty("data").EnumerateArray().Single(r => r.GetProperty("id").GetString() == id);
+        row.TryGetProperty("status", out var status).Should().BeTrue();
+        status.GetString().Should().Be("pending");
+    }
+
+    [Fact]
+    public async Task Revoke_deactivates_the_user_and_blocks_further_resend_or_revoke()
+    {
+        var tid = await SeedActiveTenant();
+        await using var app = App();
+        var admin = AdminClient(app, tid);
+        var email = $"teacher{Guid.NewGuid():N}@x.com";
+        var id = await InviteAndGetIdAsync(admin, email);
+
+        (await admin.PostAsync($"/v1/invitations/{id}/revoke", null)).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var (_, status) = await GetUserStatusAsync(email);
+        status.Should().Be("revoked");
+
+        (await admin.PostAsync($"/v1/invitations/{id}/revoke", null)).StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await admin.PostAsync($"/v1/invitations/{id}/resend", null)).StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    [Fact]
+    public async Task Non_admin_cannot_list_resend_or_revoke_invitations()
+    {
+        var tid = await SeedActiveTenant();
+        await using var app = App();
+        var admin = AdminClient(app, tid);
+        var email = $"teacher{Guid.NewGuid():N}@x.com";
+        var id = await InviteAndGetIdAsync(admin, email);
+
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tid, ["school.teacher"], isPlatform: false);
+        var teacher = app.CreateClient();
+        teacher.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        (await teacher.GetAsync("/v1/invitations")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await teacher.PostAsync($"/v1/invitations/{id}/resend", null)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await teacher.PostAsync($"/v1/invitations/{id}/revoke", null)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 }
