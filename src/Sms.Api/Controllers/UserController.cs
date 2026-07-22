@@ -34,6 +34,14 @@ public sealed class UserController(IUserService users) : ApiControllerBase
     public async Task<IActionResult> SetPermissions(Guid id, [FromBody] SetUserPermissionsRequest req, CancellationToken ct) =>
         FromResult(await users.SetPermissionsAsync(id, req, IsSchoolAdmin(), ct));
 
+    [HttpGet("roles/permissions")]
+    public async Task<IActionResult> GetRoleTemplate(CancellationToken ct) =>
+        FromResult(await users.GetRoleTemplateAsync(IsSchoolAdmin(), ct));
+
+    [HttpPut("roles/permissions")]
+    public async Task<IActionResult> SetRoleTemplate([FromBody] SetRoleTemplateRequest req, CancellationToken ct) =>
+        FromResult(await users.SetRoleTemplateAsync(req, IsSchoolAdmin(), ct));
+
     private bool IsSchoolAdmin() =>
         User.FindAll("role").Any(c => c.Value is Policies.SchoolAdmin or Policies.SchoolOwner);
 
