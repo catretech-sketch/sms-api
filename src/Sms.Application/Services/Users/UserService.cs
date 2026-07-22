@@ -19,6 +19,8 @@ public interface IUserService
     Task<ApiResult<SchoolUserResponse>> SetRolesAsync(Guid userId, SetUserRolesRequest req, bool isSchoolAdmin, bool canAssignOwner, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<PermissionOverrideDto>>> GetPermissionsAsync(Guid userId, bool isSchoolAdmin, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<PermissionOverrideDto>>> SetPermissionsAsync(Guid userId, SetUserPermissionsRequest req, bool isSchoolAdmin, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<RoleTemplateOverrideDto>>> GetRoleTemplateAsync(bool isSchoolAdmin, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<RoleTemplateOverrideDto>>> SetRoleTemplateAsync(SetRoleTemplateRequest req, bool isSchoolAdmin, CancellationToken ct = default);
 }
 
 public sealed class UserService(
@@ -26,8 +28,13 @@ public sealed class UserService(
     ITenantContext tenant,
     IAuthService auth,
     ClientRepository clients,
-    IInvitationDao invitations) : IUserService
+    IInvitationDao invitations,
+    IRoleTemplateDao roleTemplates,
+    AuditRepository audit) : IUserService
 {
+    private static readonly HashSet<string> AssignableRoleTemplateRoles = new(
+        ["admin", "principal", "vice_principal", "teacher", "staff"], StringComparer.OrdinalIgnoreCase);
+
     /// School base roles: admin, principal, teacher (+ staff/parent). Owner only via school.owner inviter.
     private static readonly HashSet<string> BaseAssignableRoles = new(
         Policies.All.Where(r => r is not (Policies.PlatformOnly or Policies.SchoolOwner)),
@@ -142,6 +149,8 @@ public sealed class UserService(
             return ApiResult<SchoolUserResponse>.Fail(new Error("invalid_request", "invalid role(s) for this actor"), 422);
 
         await dao.ReplaceRolesAsync(userId, req.Roles, ct);
+        await audit.InsertAsync(tenant.UserId, null, null, "user.role_changed",
+            $"{userId}: {string.Join(",", req.Roles)}", "identity", tid, ct);
         var row = (await dao.ListByTenantAsync(tid, ct)).FirstOrDefault(u => u.Id == userId);
         return row is null
             ? ApiResult<SchoolUserResponse>.Fail(new Error("not_found", "user not found"), 404)
@@ -180,7 +189,44 @@ public sealed class UserService(
             .ToList();
 
         await dao.SetPermissionsAsync(userId, cleaned, ct);
+        await audit.InsertAsync(tenant.UserId, null, null, "user.permissions_changed",
+            userId.ToString(), "identity", tid, ct);
         return ApiResult<IReadOnlyList<PermissionOverrideDto>>.Ok(await dao.GetPermissionsAsync(userId, ct));
+    }
+
+    public async Task<ApiResult<IReadOnlyList<RoleTemplateOverrideDto>>> GetRoleTemplateAsync(
+        bool isSchoolAdmin, CancellationToken ct = default)
+    {
+        if (!isSchoolAdmin)
+            return ApiResult<IReadOnlyList<RoleTemplateOverrideDto>>.Fail(new Error("forbidden", "school admin only"), 403);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<IReadOnlyList<RoleTemplateOverrideDto>>.Fail(new Error("forbidden", "no tenant context"), 403);
+
+        return ApiResult<IReadOnlyList<RoleTemplateOverrideDto>>.Ok(await roleTemplates.GetAsync(tid, ct));
+    }
+
+    public async Task<ApiResult<IReadOnlyList<RoleTemplateOverrideDto>>> SetRoleTemplateAsync(
+        SetRoleTemplateRequest req, bool isSchoolAdmin, CancellationToken ct = default)
+    {
+        if (!isSchoolAdmin)
+            return ApiResult<IReadOnlyList<RoleTemplateOverrideDto>>.Fail(new Error("forbidden", "school admin only"), 403);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<IReadOnlyList<RoleTemplateOverrideDto>>.Fail(new Error("forbidden", "no tenant context"), 403);
+
+        var cleaned = (req.Overrides ?? [])
+            .Where(o => AssignableRoleTemplateRoles.Contains(o.Role)
+                        && !string.IsNullOrWhiteSpace(o.Module)
+                        && o.Cap is "V" or "E" or "A"
+                        && o.Effect is "grant" or "revoke")
+            .Select(o => new RoleTemplateOverrideDto(
+                o.Role.Trim().ToLowerInvariant(), o.Module.Trim().ToLowerInvariant(), o.Cap, o.Effect))
+            .ToList();
+
+        await roleTemplates.SetAsync(tid, cleaned, ct);
+        await audit.InsertAsync(tenant.UserId, null, null, "role_template.updated",
+            $"{cleaned.Count} override(s)", "identity", tid, ct);
+
+        return ApiResult<IReadOnlyList<RoleTemplateOverrideDto>>.Ok(await roleTemplates.GetAsync(tid, ct));
     }
 
     private static SchoolUserResponse MapUser(SchoolUserListRow r) =>
