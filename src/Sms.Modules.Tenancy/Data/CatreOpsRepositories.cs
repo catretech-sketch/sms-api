@@ -125,8 +125,15 @@ public sealed class AuditRepository(IDbConnectionFactory factory) : BaseReposito
         if (cursor is not null)
         {
             var parts = cursor.Split('|', 2);
-            cursorAt = DateTime.Parse(parts[0], null, System.Globalization.DateTimeStyles.RoundtripKind);
-            cursorId = parts.Length > 1 ? Guid.Parse(parts[1]) : Guid.Empty;
+            if (parts.Length == 2
+                && DateTime.TryParse(parts[0], null, System.Globalization.DateTimeStyles.RoundtripKind, out var parsedAt)
+                && Guid.TryParse(parts[1], out var parsedId))
+            {
+                cursorAt = parsedAt;
+                cursorId = parsedId;
+            }
+            // Malformed cursor (wrong shape or unparsable parts) is treated the same as no
+            // cursor at all — start from the beginning rather than throwing.
         }
 
         // DateTime2 params must be typed explicitly: Dapper otherwise binds plain .NET DateTime

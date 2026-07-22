@@ -46,4 +46,21 @@ public class AuditRepositoryTests(SqlServerFixture fx)
         page2.Should().ContainSingle();
         cursor2.Should().BeNull();
     }
+
+    [Fact]
+    public async Task ListForSchoolAsync_ignores_malformed_cursor_and_returns_first_page()
+    {
+        var tenantId = await SeedTenantAsync();
+        var repo = Repo();
+
+        for (var i = 0; i < 3; i++)
+            await repo.InsertAsync(Guid.NewGuid(), "Actor", "school.admin", "user.role_changed", $"target-{i}", "identity", tenantId);
+
+        var (pageNoCursor, cursorFromNull) = await repo.ListForSchoolAsync(tenantId, null, null, null, null, null, pageSize: 2);
+        var (pageGarbageCursor, cursorFromGarbage) = await repo.ListForSchoolAsync(tenantId, null, null, null, null, "not-a-valid-cursor", pageSize: 2);
+
+        pageGarbageCursor.Should().HaveCount(pageNoCursor.Count);
+        pageGarbageCursor.Select(r => r.Id).Should().Equal(pageNoCursor.Select(r => r.Id));
+        cursorFromGarbage.Should().Be(cursorFromNull);
+    }
 }
