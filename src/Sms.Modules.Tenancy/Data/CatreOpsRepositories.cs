@@ -111,6 +111,53 @@ public sealed class AuditRepository(IDbConnectionFactory factory) : BaseReposito
             Kind = kind,
             TenantId = tenantId,
         }, ct);
+
+    public async Task<(IReadOnlyList<AuditEntry> Data, string? NextCursor)> ListForSchoolAsync(
+        Guid tenantId, string? action, Guid? actorId, DateTime? from, DateTime? to,
+        string? cursor, int pageSize, CancellationToken ct = default)
+    {
+        // Cursor encodes both the timestamp and the row Id ("<At:O>|<Id>") so that rows sharing
+        // an identical At value (SYSUTCDATETIME() ties are routinely observed under fast,
+        // back-to-back inserts) are still given a stable total order and never skipped or
+        // duplicated across pages.
+        DateTime? cursorAt = null;
+        Guid? cursorId = null;
+        if (cursor is not null)
+        {
+            var parts = cursor.Split('|', 2);
+            cursorAt = DateTime.Parse(parts[0], null, System.Globalization.DateTimeStyles.RoundtripKind);
+            cursorId = parts.Length > 1 ? Guid.Parse(parts[1]) : Guid.Empty;
+        }
+
+        // DateTime2 params must be typed explicitly: Dapper otherwise binds plain .NET DateTime
+        // values as SqlDbType.DateTime (~3.33ms precision), which silently rounds the value and
+        // breaks equality/ordering comparisons against the datetime2(7) `At` column — critical
+        // here since the cursor's tie-break depends on an exact At match.
+        var p = new DynamicParameters();
+        p.Add("tenantId", tenantId);
+        p.Add("action", action);
+        p.Add("actorId", actorId);
+        p.Add("from", from, DbType.DateTime2);
+        p.Add("to", to, DbType.DateTime2);
+        p.Add("cursorAt", cursorAt, DbType.DateTime2);
+        p.Add("cursorId", cursorId);
+        p.Add("take", pageSize + 1);
+
+        var rows = await QueryInlineAsync<AuditEntry>(
+            "SELECT TOP (@take) Id, ActorId, ActorName, Role, Action, Target, Kind, At AS [Time] " +
+            "FROM dbo.AuditLog WHERE TenantId = @tenantId " +
+            "AND (@action IS NULL OR Action = @action) " +
+            "AND (@actorId IS NULL OR ActorId = @actorId) " +
+            "AND (@from IS NULL OR At >= @from) AND (@to IS NULL OR At <= @to) " +
+            "AND (@cursorAt IS NULL OR At < @cursorAt OR (At = @cursorAt AND Id < @cursorId)) " +
+            "ORDER BY At DESC, Id DESC",
+            p, ct);
+
+        var hasMore = rows.Count > pageSize;
+        var page = hasMore ? rows.Take(pageSize).ToList() : (IReadOnlyList<AuditEntry>)rows;
+        var nextCursor = hasMore ? $"{page[^1].Time:O}|{page[^1].Id}" : null;
+        return (page, nextCursor);
+    }
 }
 
 public sealed class ReportRepository(IDbConnectionFactory factory) : BaseRepository(factory)
