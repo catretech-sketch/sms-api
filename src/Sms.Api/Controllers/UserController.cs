@@ -22,6 +22,14 @@ public sealed class UserController(IUserService users) : ApiControllerBase
     public async Task<IActionResult> Import([FromBody] ImportUsersRequest req, CancellationToken ct) =>
         FromResult(await users.ImportAsync(req, IsSchoolAdmin(), IsSchoolOwner(), ct));
 
+    [HttpDelete("users/{id:guid}")]
+    public async Task<IActionResult> Deactivate(Guid id, CancellationToken ct) =>
+        FromResult(await users.DeactivateAsync(id, IsSchoolAdmin(), ct));
+
+    [HttpPut("users/{id:guid}/status")]
+    public async Task<IActionResult> SetActive(Guid id, [FromBody] SetUserActiveRequest req, CancellationToken ct) =>
+        FromResult(await users.SetActiveAsync(id, req.Active, IsSchoolAdmin(), ct));
+
     [HttpPut("users/{id:guid}/roles")]
     public async Task<IActionResult> SetRoles(Guid id, [FromBody] SetUserRolesRequest req, CancellationToken ct) =>
         FromResult(await users.SetRolesAsync(id, req, IsSchoolAdmin(), IsSchoolOwner(), ct));

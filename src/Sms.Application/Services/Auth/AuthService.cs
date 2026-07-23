@@ -18,9 +18,11 @@ public interface IAuthService
     Task<ApiResult<object>> RequestOtpAsync(OtpRequest req, CancellationToken ct = default);
     Task<ApiResult<TokenResponse>> VerifyOtpAsync(OtpVerifyRequest req, CancellationToken ct = default);
     Task<ApiResult<object>> ForgotPasswordAsync(ForgotPasswordRequest req, CancellationToken ct = default);
-    /// <summary>Onboard invite: welcome email/SMS with school name + password-setup OTP.</summary>
+    /// <summary>Onboard invite: welcome email/SMS with school name + password-setup OTP
+    /// (or a magic login link, when method is "link").</summary>
     Task<ApiResult<object>> SendInviteSetupAsync(
-        string identifier, string schoolName, string? roleLabel = null, TimeSpan? validFor = null, CancellationToken ct = default);
+        string identifier, string schoolName, string? roleLabel = null, TimeSpan? validFor = null,
+        string method = "code", string? customMessage = null, CancellationToken ct = default);
     Task<ApiResult> ResetPasswordAsync(ResetPasswordRequest req, CancellationToken ct = default);
     Task<ApiResult> SetPasswordAsync(SetPasswordRequest req, CancellationToken ct = default);
     ApiResult<object> GetMe(ClaimsPrincipal user);
@@ -34,6 +36,8 @@ public sealed class AuthService(
     IRefreshTokenStore tokens,
     IOtpSender otp,
     IEmailQueue emailQueue,
+    ISmsSender sms,
+    FrontendOptions frontend,
     ClientRepository clients,
     ITenantContext tenant,
     IInvitationDao invitations) : IAuthService
@@ -48,9 +52,20 @@ public sealed class AuthService(
         var user = await FindUserByPasswordAsync(identifier, req.Password, ct);
         if (user is null)
             return ApiResult<TokenResponse>.Fail(new Error("invalid_credentials", "bad email or password"), 401);
+        if (AccessBlockedError(user) is { } blocked)
+            return ApiResult<TokenResponse>.Fail(blocked, 403);
 
         return await IssueTokensAsync(user, ct);
     }
+
+    /// Null when the row is free to sign in; an Error when it's "removed" or "inactive"
+    /// (paused/removed by the school admin) — same wording either path (password/OTP).
+    private static Error? AccessBlockedError(UserRecord user) => user.Status switch
+    {
+        "removed" => new Error("access_removed", "Your access to this school has been removed by the admin."),
+        "inactive" => new Error("access_inactive", "Your access to this school has been deactivated by the admin."),
+        _ => null,
+    };
 
     public async Task<ApiResult<TokenResponse>> RefreshAsync(RefreshRequest req, CancellationToken ct = default)
     {
@@ -87,6 +102,8 @@ public sealed class AuthService(
         var user = await FindUserByIdentifierAsync(req.Identifier, ct);
         if (user is null)
             return ApiResult<TokenResponse>.Fail(new Error("invalid_code", "user not found"), 401);
+        if (AccessBlockedError(user) is { } blocked)
+            return ApiResult<TokenResponse>.Fail(blocked, 403);
 
         return await IssueTokensAsync(user, ct);
     }
@@ -108,13 +125,14 @@ public sealed class AuthService(
                 var roles = await users.GetRolesAsync(user.Id, ct);
                 roleLabel = RoleLabel(roles.FirstOrDefault());
             }
-            return await SendInviteSetupAsync(req.Identifier, schoolName, roleLabel, TimeSpan.FromHours(24), ct);
+            return await SendInviteSetupAsync(req.Identifier, schoolName, roleLabel, TimeSpan.FromHours(24), ct: ct);
         }
         return await SendOtpToRegisteredAsync(req.Identifier, ct);
     }
 
     public async Task<ApiResult<object>> SendInviteSetupAsync(
-        string identifier, string schoolName, string? roleLabel = null, TimeSpan? validFor = null, CancellationToken ct = default)
+        string identifier, string schoolName, string? roleLabel = null, TimeSpan? validFor = null,
+        string method = "code", string? customMessage = null, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(identifier))
             return ApiResult<object>.Fail(new Error("invalid_request", "email or phone required"), 422);
@@ -128,14 +146,24 @@ public sealed class AuthService(
             return ApiResult<object>.Fail(new Error("not_registered",
                 isEmail ? "Email is not registered." : "Phone is not registered."), 404);
 
-        var code = RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
+        // "link" method: a long opaque token flows through the exact same OTP
+        // storage/consume path as a 6-digit code (Otp_Insert/Otp_Consume compare a
+        // SHA256 hash either way) — only the value shape and delivery text differ.
+        var useLink = string.Equals(method, "link", StringComparison.OrdinalIgnoreCase);
+        var code = useLink
+            ? Convert.ToHexString(RandomNumberGenerator.GetBytes(24))
+            : RandomNumberGenerator.GetInt32(0, 1_000_000).ToString("D6");
         var expiresAt = DateTime.UtcNow.Add(validFor ?? TimeSpan.FromMinutes(10));
         await users.OtpInsertAsync(id, channel, Sha256(code), expiresAt, ct);
 
+        var link = useLink
+            ? $"{frontend.BaseUrl.TrimEnd('/')}/?identifier={Uri.EscapeDataString(id)}&code={Uri.EscapeDataString(code)}"
+            : null;
+
         if (isEmail)
-            emailQueue.Enqueue(InviteWelcomeEmail.Build(id, schoolName, code, roleLabel));
+            emailQueue.Enqueue(InviteWelcomeEmail.Build(id, schoolName, code, roleLabel, link, customMessage));
         else
-            Console.WriteLine($"[OTP/{channel}] {id} -> {InviteWelcomeEmail.SmsBody(schoolName, code, roleLabel)}");
+            await sms.SendAsync(id, InviteWelcomeEmail.SmsBody(schoolName, code, roleLabel, link, customMessage), ct);
 
         return ApiResult<object>.Ok(new { sent = true });
     }
@@ -162,12 +190,19 @@ public sealed class AuthService(
             return ApiResult.Fail(new Error("invalid_code", "code invalid or expired"), 401);
 
         await users.OtpConsumeAsync(req.Identifier, activeHash, ct);
-        var user = await FindUserByIdentifierAsync(req.Identifier, ct);
-        if (user is null)
+        // Same identifier can own several tenant-scoped rows (invited to multiple
+        // schools) — set the password on ALL of them so one setup step works
+        // everywhere they were invited, not just the row a tiebreak happens to pick.
+        var peers = await ListByIdentifierAsync(req.Identifier, ct);
+        if (peers.Count == 0)
             return ApiResult.Fail(new Error("invalid_code", "user not found"), 401);
 
-        await users.SetPasswordAsync(user.Id, hasher.Hash(req.Password), ct);
-        await invitations.MarkAcceptedByUserIdAsync(user.Id, ct);
+        var passwordHash = hasher.Hash(req.Password);
+        foreach (var peer in peers)
+        {
+            await users.SetPasswordAsync(peer.Id, passwordHash, ct);
+            await invitations.MarkAcceptedByUserIdAsync(peer.Id, ct);
+        }
         return ApiResult.NoContent();
     }
 
@@ -226,7 +261,9 @@ public sealed class AuthService(
 
     /// <summary>
     /// Resolves login across multi-tenant peers that share the same email/phone.
-    /// Picks the first password match, preferring platform accounts.
+    /// Picks the first password match, preferring platform accounts, and preferring
+    /// a fully-active row over a removed/inactive one when several match (so losing
+    /// access to one school never blocks signing in to another with the same creds).
     /// </summary>
     private async Task<UserRecord?> FindUserByPasswordAsync(string identifier, string password, CancellationToken ct)
     {
@@ -234,13 +271,17 @@ public sealed class AuthService(
         return candidates
             .Where(u => u.PasswordHash is not null && hasher.Verify(password, u.PasswordHash))
             .OrderByDescending(u => u.IsPlatform)
+            .ThenBy(u => AccessBlockedError(u) is null ? 0 : 1)
             .FirstOrDefault();
     }
 
     private async Task<UserRecord?> FindUserByIdentifierAsync(string identifier, CancellationToken ct)
     {
         var candidates = await ListByIdentifierAsync(identifier, ct);
-        return candidates.OrderByDescending(u => u.IsPlatform).FirstOrDefault();
+        return candidates
+            .OrderByDescending(u => u.IsPlatform)
+            .ThenBy(u => AccessBlockedError(u) is null ? 0 : 1)
+            .FirstOrDefault();
     }
 
     private Task<IReadOnlyList<UserRecord>> ListByIdentifierAsync(string identifier, CancellationToken ct) =>

@@ -16,6 +16,12 @@ public interface IUserService
     Task<ApiResult<object>> InviteAsync(InviteUserRequest req, bool isSchoolAdmin, bool canAssignOwner, CancellationToken ct = default);
     Task<ApiResult<ImportResponse>> ImportAsync(ImportUsersRequest req, bool isSchoolAdmin, bool canAssignOwner, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<SchoolUserResponse>>> ListAsync(bool isSchoolAdmin, CancellationToken ct = default);
+    /// <summary>Removes a person's access to the CURRENT school only — other tenants they
+    /// belong to (separate Users rows) are unaffected.</summary>
+    Task<ApiResult> DeactivateAsync(Guid userId, bool isSchoolAdmin, CancellationToken ct = default);
+    /// <summary>Reversible pause/resume — flips between "active" and "inactive" for an
+    /// already-accepted member of the current school.</summary>
+    Task<ApiResult<SchoolUserResponse>> SetActiveAsync(Guid userId, bool active, bool isSchoolAdmin, CancellationToken ct = default);
     Task<ApiResult<SchoolUserResponse>> SetRolesAsync(Guid userId, SetUserRolesRequest req, bool isSchoolAdmin, bool canAssignOwner, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<PermissionOverrideDto>>> GetPermissionsAsync(Guid userId, bool isSchoolAdmin, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<PermissionOverrideDto>>> SetPermissionsAsync(Guid userId, SetUserPermissionsRequest req, bool isSchoolAdmin, CancellationToken ct = default);
@@ -66,6 +72,15 @@ public sealed class UserService(
                         : "invalid role(s); school.owner can only be assigned by a school owner"),
                 422);
 
+        // Users.(TenantId, Email) has no unique constraint — without this check, a retried
+        // or double-submitted invite silently creates another row for the same person in
+        // the same school (they'd show up N times in the Team list).
+        var existingInTenant = await dao.ListByTenantAsync(tid, ct);
+        if (req.Email is not null && existingInTenant.Any(u => string.Equals(u.Email, req.Email, StringComparison.OrdinalIgnoreCase)))
+            return ApiResult<object>.Fail(new Error("conflict", "A user with this email already exists in this school. Resend the invite from the Invitations tab instead."), 409);
+        if (req.Phone is not null && existingInTenant.Any(u => string.Equals(u.Phone, req.Phone, StringComparison.OrdinalIgnoreCase)))
+            return ApiResult<object>.Fail(new Error("conflict", "A user with this phone number already exists in this school. Resend the invite from the Invitations tab instead."), 409);
+
         var id = await dao.CreateUserAsync(tid, req.Email, req.Phone, false, req.Roles, ct);
         await dao.SetStatusAsync(id, "pending", ct);
 
@@ -73,13 +88,23 @@ public sealed class UserService(
         await invitations.CreateAsync(tid, id, req.Email, req.Phone, roleLabel ?? "Member",
             tenant.UserId, DateTime.UtcNow.AddHours(24), ct);
 
-        /* Welcome onboard email/SMS: school name + password-setup OTP (same reset flow). */
-        var inviteId = req.Email ?? req.Phone;
-        if (!string.IsNullOrWhiteSpace(inviteId))
+        /* Welcome onboard email/SMS: school name(s) + password-setup OTP or magic link.
+           SendWelcome=false when this call is one of several in a multi-school invite
+           batch for the same person — only the batch's last call actually sends. */
+        var inviteId = req.Channel?.Trim().ToLowerInvariant() switch
         {
-            var school = await clients.GetAsync(tid, ct);
-            var schoolName = school?.Name ?? "your school";
-            try { await auth.SendInviteSetupAsync(inviteId!, schoolName, roleLabel, TimeSpan.FromHours(24), ct); }
+            "phone" => req.Phone ?? req.Email,
+            "email" => req.Email ?? req.Phone,
+            _ => req.Email ?? req.Phone,
+        };
+        if (req.SendWelcome && !string.IsNullOrWhiteSpace(inviteId))
+        {
+            string schoolName;
+            if (req.SchoolNames is { Length: > 0 })
+                schoolName = string.Join(", ", req.SchoolNames);
+            else
+                schoolName = (await clients.GetAsync(tid, ct))?.Name ?? "your school";
+            try { await auth.SendInviteSetupAsync(inviteId!, schoolName, roleLabel, TimeSpan.FromHours(24), req.Method, req.Message, ct); }
             catch { /* user row exists; invite email is best-effort */ }
         }
         return ApiResult<object>.Ok(new { id, invited = true }, 201);
@@ -134,6 +159,63 @@ public sealed class UserService(
         return ApiResult<IReadOnlyList<SchoolUserResponse>>.Ok(list);
     }
 
+    /// Removes a person's access to THIS school only — their Users row for any other
+    /// tenant they belong to is untouched (each school membership is its own row).
+    public async Task<ApiResult> DeactivateAsync(Guid userId, bool isSchoolAdmin, CancellationToken ct = default)
+    {
+        if (!isSchoolAdmin)
+            return ApiResult.Fail(new Error("forbidden", "school admin only"), 403);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+        var row = (await dao.ListByTenantAsync(tid, ct)).FirstOrDefault(u => u.Id == userId);
+        if (row is null)
+            return ApiResult.Fail(new Error("not_found", "user not found in this school"), 404);
+        if (userId == tenant.UserId)
+            return ApiResult.Fail(new Error("conflict", "You can't remove your own access."), 409);
+        if (IsOwnerRow(row))
+            return ApiResult.Fail(new Error("conflict", "An owner's access can't be removed here."), 409);
+
+        await dao.SetStatusAsync(userId, "removed", ct);
+        await audit.InsertAsync(tenant.UserId, null, null, "user.access_removed", userId.ToString(), "identity", tid, ct);
+        return ApiResult.NoContent();
+    }
+
+    private static bool IsOwnerRow(SchoolUserListRow row) =>
+        row.Roles.Split(',', StringSplitOptions.RemoveEmptyEntries).Contains(Policies.SchoolOwner, StringComparer.OrdinalIgnoreCase);
+
+    /// Reversible pause/resume of a person's access to THIS school — unlike
+    /// DeactivateAsync ("removed"), this can be flipped back with the same call,
+    /// no re-invite needed. Only valid for someone who has already accepted
+    /// (status active/inactive) — pending invites use Resend, removed users need
+    /// a fresh invite.
+    public async Task<ApiResult<SchoolUserResponse>> SetActiveAsync(
+        Guid userId, bool active, bool isSchoolAdmin, CancellationToken ct = default)
+    {
+        if (!isSchoolAdmin)
+            return ApiResult<SchoolUserResponse>.Fail(new Error("forbidden", "school admin only"), 403);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<SchoolUserResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
+        var rows = await dao.ListByTenantAsync(tid, ct);
+        var row = rows.FirstOrDefault(u => u.Id == userId);
+        if (row is null)
+            return ApiResult<SchoolUserResponse>.Fail(new Error("not_found", "user not found in this school"), 404);
+        if (row.Status is not ("active" or "inactive"))
+            return ApiResult<SchoolUserResponse>.Fail(
+                new Error("invalid_request", "Only an already-accepted member can be activated or deactivated — resend the invite or remove and re-invite instead."), 422);
+        if (userId == tenant.UserId)
+            return ApiResult<SchoolUserResponse>.Fail(new Error("conflict", "You can't change your own access."), 409);
+        if (IsOwnerRow(row))
+            return ApiResult<SchoolUserResponse>.Fail(new Error("conflict", "An owner's access can't be paused here."), 409);
+
+        var status = active ? "active" : "inactive";
+        await dao.SetStatusAsync(userId, status, ct);
+        await audit.InsertAsync(tenant.UserId, null, null, "user.status_changed", $"{userId}: {status}", "identity", tid, ct);
+        var updated = (await dao.ListByTenantAsync(tid, ct)).FirstOrDefault(u => u.Id == userId);
+        return updated is null
+            ? ApiResult<SchoolUserResponse>.Fail(new Error("not_found", "user not found"), 404)
+            : ApiResult<SchoolUserResponse>.Ok(MapUser(updated));
+    }
+
     public async Task<ApiResult<SchoolUserResponse>> SetRolesAsync(
         Guid userId, SetUserRolesRequest req, bool isSchoolAdmin, bool canAssignOwner, CancellationToken ct = default)
     {
@@ -141,8 +223,13 @@ public sealed class UserService(
             return ApiResult<SchoolUserResponse>.Fail(new Error("forbidden", "school admin only"), 403);
         if (tenant.TenantId is not { } tid)
             return ApiResult<SchoolUserResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
-        if (!await dao.UserInTenantAsync(userId, tid, ct))
+        var current = (await dao.ListByTenantAsync(tid, ct)).FirstOrDefault(u => u.Id == userId);
+        if (current is null)
             return ApiResult<SchoolUserResponse>.Fail(new Error("not_found", "user not found in this school"), 404);
+        // An owner's role is never changeable through this endpoint — even by another
+        // owner — so nobody can be silently demoted via the generic role dropdown.
+        if (IsOwnerRow(current))
+            return ApiResult<SchoolUserResponse>.Fail(new Error("conflict", "An owner's role can't be changed here."), 409);
 
         var allowed = AssignableFor(canAssignOwner);
         if (req.Roles.Length == 0 || req.Roles.Any(r => !allowed.Contains(r)))

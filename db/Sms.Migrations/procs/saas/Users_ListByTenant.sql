@@ -17,5 +17,6 @@ BEGIN
     FROM dbo.Users u
     WHERE u.TenantId = @TenantId
       AND ISNULL(u.IsPlatform, 0) = 0
+      AND u.Status <> 'removed'
     ORDER BY u.Email;
 END

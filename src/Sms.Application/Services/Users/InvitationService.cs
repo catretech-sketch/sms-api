@@ -53,7 +53,7 @@ public sealed class InvitationService(
 
         var school = await clients.GetAsync(tid, ct);
         var schoolName = school?.Name ?? "your school";
-        await auth.SendInviteSetupAsync(identifier!, schoolName, row.RoleLabel, TimeSpan.FromHours(24), ct);
+        await auth.SendInviteSetupAsync(identifier!, schoolName, row.RoleLabel, TimeSpan.FromHours(24), ct: ct);
         await invitations.MarkResentAsync(id, DateTime.UtcNow.AddHours(24), ct);
         return ApiResult<object>.Ok(new { resent = true });
     }

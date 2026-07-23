@@ -15,8 +15,10 @@ using Sms.Modules.Academics;
 using Sms.Modules.Attendance;
 using Sms.Modules.Comms;
 using Sms.Modules.Finance;
+using Sms.Modules.Hostel;
 using Sms.Modules.Reporting;
 using Sms.Modules.Sis;
+using Sms.Modules.Sports;
 using Sms.Modules.Staffing;
 using Sms.Modules.Tenancy;
 using Sms.Modules.Transport;
@@ -80,8 +82,10 @@ public static class ServiceCollectionExtensions
         builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
         builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
         builder.Services.AddSingleton(builder.Configuration.GetSection("Smtp").Get<SmtpOptions>() ?? new SmtpOptions());
+        builder.Services.AddSingleton(builder.Configuration.GetSection("Frontend").Get<FrontendOptions>() ?? new FrontendOptions());
         builder.Services.AddSingleton<IEmailQueue, EmailQueue>();
         builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
+        builder.Services.AddSingleton<ISmsSender, LoggingSmsSender>();
         builder.Services.AddSingleton(sp => new EmailOtpSender(
             sp.GetRequiredService<IEmailQueue>(),
             sp.GetRequiredService<ILogger<EmailOtpSender>>(),
@@ -129,6 +133,9 @@ public static class ServiceCollectionExtensions
         builder.Services.AddAttendanceModule();
         builder.Services.AddTransportModule();
         builder.Services.AddBusModule();
+        builder.Services.AddStudentBusModule();
+        builder.Services.AddHostelModule();
+        builder.Services.AddSportsModule();
         builder.Services.AddCommsModule();
         builder.Services.AddReportingModule();
 
