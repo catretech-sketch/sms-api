@@ -15,6 +15,8 @@ public sealed class SmtpEmailSender(SmtpOptions options) : IEmailSender
         mime.Subject = message.Subject;
 
         var builder = new BodyBuilder { TextBody = message.Body };
+        if (!string.IsNullOrWhiteSpace(message.HtmlBody))
+            builder.HtmlBody = message.HtmlBody;
         if (message.AttachmentBytes is { Length: > 0 } bytes
             && !string.IsNullOrWhiteSpace(message.AttachmentFileName))
         {
@@ -22,6 +24,18 @@ public sealed class SmtpEmailSender(SmtpOptions options) : IEmailSender
                 message.AttachmentFileName,
                 bytes,
                 ContentType.Parse(message.AttachmentContentType ?? "application/pdf"));
+        }
+        if (message.ExtraAttachments is { Count: > 0 })
+        {
+            foreach (var a in message.ExtraAttachments)
+            {
+                if (a.Bytes is not { Length: > 0 }) continue;
+                if (string.IsNullOrWhiteSpace(a.FileName)) continue;
+                builder.Attachments.Add(
+                    a.FileName,
+                    a.Bytes,
+                    ContentType.Parse(string.IsNullOrWhiteSpace(a.ContentType) ? "application/octet-stream" : a.ContentType));
+            }
         }
         mime.Body = builder.ToMessageBody();
 
