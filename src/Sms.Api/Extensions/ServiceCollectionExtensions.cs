@@ -15,10 +15,8 @@ using Sms.Modules.Academics;
 using Sms.Modules.Attendance;
 using Sms.Modules.Comms;
 using Sms.Modules.Finance;
-using Sms.Modules.Hostel;
 using Sms.Modules.Reporting;
 using Sms.Modules.Sis;
-using Sms.Modules.Sports;
 using Sms.Modules.Staffing;
 using Sms.Modules.Tenancy;
 using Sms.Modules.Transport;
@@ -133,9 +131,6 @@ public static class ServiceCollectionExtensions
         builder.Services.AddAttendanceModule();
         builder.Services.AddTransportModule();
         builder.Services.AddBusModule();
-        builder.Services.AddStudentBusModule();
-        builder.Services.AddHostelModule();
-        builder.Services.AddSportsModule();
         builder.Services.AddCommsModule();
         builder.Services.AddReportingModule();
 
