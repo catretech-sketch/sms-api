@@ -8,10 +8,13 @@ public interface IAcademicsService
     Task<ApiResult<IReadOnlyList<ClassResponse>>> ListClassesAsync(CancellationToken ct = default);
     Task<ApiResult<ClassResponse>> GetClassAsync(Guid id, CancellationToken ct = default);
     Task<ApiResult<ClassResponse>> CreateClassAsync(CreateClassRequest req, CancellationToken ct = default);
+    Task<ApiResult<ClassResponse>> UpdateClassAsync(Guid id, UpdateClassRequest req, CancellationToken ct = default);
 
     Task<ApiResult<IReadOnlyList<SubjectResponse>>> ListSubjectsAsync(CancellationToken ct = default);
     Task<ApiResult<SubjectResponse>> GetSubjectAsync(Guid id, CancellationToken ct = default);
     Task<ApiResult<SubjectResponse>> CreateSubjectAsync(CreateSubjectRequest req, CancellationToken ct = default);
+    Task<ApiResult<SubjectResponse>> UpdateSubjectAsync(Guid id, UpdateSubjectRequest req, CancellationToken ct = default);
+    Task<ApiResult> DeleteSubjectAsync(Guid id, CancellationToken ct = default);
 
     Task<ApiResult<IReadOnlyList<AttendanceRecordResponse>>> ListAttendanceAsync(
         Guid classId, DateTime date, CancellationToken ct = default);
@@ -50,6 +53,7 @@ public interface IAcademicsService
         CreateCalendarEventRequest req, CancellationToken ct = default);
 
     Task<ApiResult<IReadOnlyList<LibraryBookResponse>>> ListLibraryBooksAsync(CancellationToken ct = default);
+    Task<ApiResult<LibrarySummaryResponse>> GetLibrarySummaryAsync(CancellationToken ct = default);
     Task<ApiResult<LibraryBookResponse>> CreateLibraryBookAsync(
         CreateLibraryBookRequest req, CancellationToken ct = default);
 

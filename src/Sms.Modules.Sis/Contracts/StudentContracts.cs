@@ -7,7 +7,7 @@ public sealed record StudentResponse(
     DateTime? Dob, string? Email, string? Address);
 
 public sealed record CreateStudentRequest(
-    string AdmissionNo, string Name, string? Gender, string? Grade, string? Section, int Roll,
+    string? AdmissionNo, string Name, string? Gender, string? Grade, string? Section, int Roll,
     string? GuardianName, string? GuardianPhone, string? House, int AvatarHue,
     DateTime? Dob, string? Email, string? Address);
 

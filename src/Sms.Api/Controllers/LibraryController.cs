@@ -15,6 +15,11 @@ public sealed class LibraryController(IAcademicsService academics) : ApiControll
     public async Task<IActionResult> List(CancellationToken ct) =>
         FromResult(await academics.ListLibraryBooksAsync(ct));
 
+    [HttpGet("library/summary")]
+    [Authorize(Policy = Policies.Principal)]
+    public async Task<IActionResult> Summary(CancellationToken ct) =>
+        FromResult(await academics.GetLibrarySummaryAsync(ct));
+
     [HttpPost("library")]
     [Authorize(Policy = Policies.Principal)]
     public async Task<IActionResult> Create([FromBody] CreateLibraryBookRequest req, CancellationToken ct) =>

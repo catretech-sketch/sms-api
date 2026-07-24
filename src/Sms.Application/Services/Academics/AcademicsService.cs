@@ -38,6 +38,18 @@ public sealed class AcademicsService(
         return ApiResult<ClassResponse>.Ok((await classes.CreateAsync(tid, req, ct))!, 201);
     }
 
+    public async Task<ApiResult<ClassResponse>> UpdateClassAsync(Guid id, UpdateClassRequest req, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<ClassResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
+        if (await classes.GetAsync(id, ct) is null)
+            return ApiResult<ClassResponse>.Fail(new Error("not_found", "resource not found"), 404);
+        var updated = await classes.UpdateAsync(id, tid, req, ct);
+        return updated is null
+            ? ApiResult<ClassResponse>.Fail(new Error("not_found", "resource not found"), 404)
+            : ApiResult<ClassResponse>.Ok(updated);
+    }
+
     public async Task<ApiResult<IReadOnlyList<SubjectResponse>>> ListSubjectsAsync(CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<SubjectResponse>>.Ok(await subjects.ListAsync(ct));
 
@@ -54,6 +66,28 @@ public sealed class AcademicsService(
         if (tenant.TenantId is not { } tid)
             return ApiResult<SubjectResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
         return ApiResult<SubjectResponse>.Ok((await subjects.CreateAsync(tid, req, ct))!, 201);
+    }
+
+    public async Task<ApiResult<SubjectResponse>> UpdateSubjectAsync(Guid id, UpdateSubjectRequest req, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<SubjectResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
+        if (await subjects.GetAsync(id, ct) is null)
+            return ApiResult<SubjectResponse>.Fail(new Error("not_found", "resource not found"), 404);
+        var updated = await subjects.UpdateAsync(id, tid, req, ct);
+        return updated is null
+            ? ApiResult<SubjectResponse>.Fail(new Error("not_found", "resource not found"), 404)
+            : ApiResult<SubjectResponse>.Ok(updated);
+    }
+
+    public async Task<ApiResult> DeleteSubjectAsync(Guid id, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+        if (await subjects.GetAsync(id, ct) is null)
+            return ApiResult.Fail(new Error("not_found", "resource not found"), 404);
+        await subjects.DeleteAsync(id, tid, ct);
+        return ApiResult.NoContent();
     }
 
     public async Task<ApiResult<IReadOnlyList<AttendanceRecordResponse>>> ListAttendanceAsync(
@@ -199,6 +233,12 @@ public sealed class AcademicsService(
 
     public async Task<ApiResult<IReadOnlyList<LibraryBookResponse>>> ListLibraryBooksAsync(CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<LibraryBookResponse>>.Ok(await library.ListAsync(clock.UtcNow, ct));
+
+    /// Flat late-fee rate (₹/day) applied to overdue books when computing library fines due.
+    private const decimal LibraryFinePerDay = 5m;
+
+    public async Task<ApiResult<LibrarySummaryResponse>> GetLibrarySummaryAsync(CancellationToken ct = default) =>
+        ApiResult<LibrarySummaryResponse>.Ok(await library.SummaryAsync(clock.UtcNow, LibraryFinePerDay, ct));
 
     public async Task<ApiResult<LibraryBookResponse>> CreateLibraryBookAsync(
         CreateLibraryBookRequest req, CancellationToken ct = default)

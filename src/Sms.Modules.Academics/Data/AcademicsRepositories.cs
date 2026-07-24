@@ -13,6 +13,21 @@ public sealed class ClassRepository(IDbConnectionFactory factory) : BaseReposito
         QuerySingleProcAsync<ClassResponse>("dbo.Class_Create",
             new { TenantId = tenantId, r.Name, r.Grade, r.Section, r.Subject, r.Room, r.ClassTeacherId }, ct);
 
+    public Task<ClassResponse?> UpdateAsync(Guid id, Guid tenantId, UpdateClassRequest r, CancellationToken ct = default) =>
+        QuerySingleProcAsync<ClassResponse>("dbo.Class_Update",
+            new
+            {
+                Id = id,
+                TenantId = tenantId,
+                r.Name,
+                r.Grade,
+                r.Section,
+                r.Subject,
+                r.Room,
+                r.ClassTeacherId,
+                r.ClearClassTeacher,
+            }, ct);
+
     public async Task<ClassResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
         (await QueryInlineAsync<ClassResponse>($"SELECT {Cols} FROM dbo.Classes WHERE Id = @id", new { id }, ct))
         .FirstOrDefault();
@@ -29,12 +44,28 @@ public sealed class SubjectRepository(IDbConnectionFactory factory) : BaseReposi
         QuerySingleProcAsync<SubjectResponse>("dbo.Subject_Create",
             new { TenantId = tenantId, r.Name, r.Short, r.TeacherId, r.Color }, ct);
 
+    public Task<SubjectResponse?> UpdateAsync(Guid id, Guid tenantId, UpdateSubjectRequest r, CancellationToken ct = default) =>
+        QuerySingleProcAsync<SubjectResponse>("dbo.Subject_Update",
+            new
+            {
+                Id = id,
+                TenantId = tenantId,
+                r.Name,
+                r.Short,
+                r.TeacherId,
+                r.Color,
+                r.ClearTeacher,
+            }, ct);
+
     public async Task<SubjectResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
         (await QueryInlineAsync<SubjectResponse>($"SELECT {Cols} FROM dbo.Subjects WHERE Id = @id", new { id }, ct))
         .FirstOrDefault();
 
     public Task<IReadOnlyList<SubjectResponse>> ListAsync(CancellationToken ct = default) =>
         QueryInlineAsync<SubjectResponse>($"SELECT {Cols} FROM dbo.Subjects ORDER BY Name", null, ct);
+
+    public Task<int> DeleteAsync(Guid id, Guid tenantId, CancellationToken ct = default) =>
+        ExecuteProcAsync("dbo.Subject_Delete", new { Id = id, TenantId = tenantId }, ct);
 }
 
 public sealed class AttendanceRepository(IDbConnectionFactory factory) : BaseRepository(factory)
@@ -63,4 +94,11 @@ public sealed class AttendanceRepository(IDbConnectionFactory factory) : BaseRep
             "SELECT Id, TenantId, ClassId, StudentId, [Date], Status, MarkedBy FROM dbo.AttendanceRecords " +
             "WHERE ClassId = @classId AND [Date] = @date ORDER BY StudentId",
             new { classId, date = date.Date }, ct);
+
+    /// Every day-mark for the current tenant since a date (RLS-scoped). Used to compute absence streaks.
+    public Task<IReadOnlyList<AttendanceMarkRow>> ListSinceAsync(DateTime since, CancellationToken ct = default) =>
+        QueryInlineAsync<AttendanceMarkRow>(
+            "SELECT StudentId, [Date], Status FROM dbo.AttendanceRecords " +
+            "WHERE [Date] >= @since ORDER BY StudentId, [Date]",
+            new { since = since.Date }, ct);
 }

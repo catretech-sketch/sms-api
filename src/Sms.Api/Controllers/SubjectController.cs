@@ -20,4 +20,12 @@ public sealed class SubjectController(IAcademicsService academics) : ApiControll
     [HttpPost("subjects")]
     public async Task<IActionResult> Create([FromBody] CreateSubjectRequest req, CancellationToken ct) =>
         FromResult(await academics.CreateSubjectAsync(req, ct));
+
+    [HttpPatch("subjects/{id:guid}")]
+    public async Task<IActionResult> Update(Guid id, [FromBody] UpdateSubjectRequest req, CancellationToken ct) =>
+        FromResult(await academics.UpdateSubjectAsync(id, req, ct));
+
+    [HttpDelete("subjects/{id:guid}")]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct) =>
+        FromResult(await academics.DeleteSubjectAsync(id, ct));
 }

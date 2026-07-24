@@ -17,3 +17,6 @@ public sealed record LibraryBookResponse(
     string? IssuedTo, DateTime? DueDate, string Status);
 public sealed record CreateLibraryBookRequest(
     string Title, string Author, string? Subject, string? IssuedTo, DateTime? DueDate, string? Status);
+
+/// Aggregate KPIs for the Operations · Library dashboard. All values derived from LibraryBooks.
+public sealed record LibrarySummaryResponse(int Catalogue, int Members, int Issued, decimal FinesDue);

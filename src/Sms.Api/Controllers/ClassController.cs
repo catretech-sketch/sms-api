@@ -21,6 +21,10 @@ public sealed class ClassController(IAcademicsService academics) : ApiController
     public async Task<IActionResult> Create([FromBody] CreateClassRequest req, CancellationToken ct) =>
         FromResult(await academics.CreateClassAsync(req, ct));
 
+    [HttpPatch("classes/{id:guid}")]
+    public async Task<IActionResult> Update(Guid id, [FromBody] UpdateClassRequest req, CancellationToken ct) =>
+        FromResult(await academics.UpdateClassAsync(id, req, ct));
+
     [HttpGet("classes/{classId:guid}/attendance")]
     public async Task<IActionResult> ListAttendance(Guid classId, [FromQuery] DateTime date, CancellationToken ct) =>
         FromResult(await academics.ListAttendanceAsync(classId, date, ct));
