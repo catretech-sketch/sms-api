@@ -30,6 +30,13 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
             $"SELECT TOP 1 {TripCols} FROM dbo.Trips WHERE DriverId = @driverId AND Status = 'live' ORDER BY StartedAt DESC",
             new { driverId }, ct)).FirstOrDefault();
 
+    /// True when the trip exists in the caller's tenant (RLS) AND is owned by this driver.
+    /// Guards driver-app mutations against acting on a peer's trip within the same school.
+    public async Task<bool> IsOwnedByDriverAsync(Guid tripId, Guid driverId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<int>(
+            "SELECT COUNT(1) FROM dbo.Trips WHERE Id = @tripId AND DriverId = @driverId",
+            new { tripId, driverId }, ct)).First() > 0;
+
     public Task IngestPingsAsync(Guid tenantId, Guid tripId, IReadOnlyList<PingItem> pings, CancellationToken ct = default)
     {
         var table = new DataTable();

@@ -11,6 +11,20 @@ public sealed record BusRosterEntry(Guid StudentId, string StudentName, string I
 public sealed record BusBoardingItem(Guid StudentId, Guid? StopId, string Status, DateTime? At);
 public sealed record BusBoardingRequest(IReadOnlyList<BusBoardingItem> Records);
 
+/// Aggregate KPIs for the Operations · Transport dashboard, derived from the fleet master tables.
+public sealed record TransportSummaryResponse(int Vehicles, int Routes, int Students, int Stops);
+
+/// One row of the live fleet board (admin Live bus tracking screen).
+public sealed record FleetBusResponse(
+    Guid BusId, string BusNo, string? RouteName, string? Driver, string? DriverPhone,
+    int StopCount, int StudentsRiding, string Status,
+    double? Lat, double? Lng, double? SpeedKmh, string? NextStopName, DateTime? LastPingAt);
+
+/// Raw per-bus fleet row before status / next-stop derivation.
+public sealed record FleetBusRow(
+    Guid BusId, string BusNo, string? RouteName, string? Driver, string? DriverPhone,
+    int StopCount, Guid? TripId, double? Lat, double? Lng, double? SpeedKmh, DateTime? LastPingAt, int StudentsRiding);
+
 public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
     private sealed record BusRow(Guid Id, string BusNo, string? RouteName, string? Driver, string? DriverPhone);
@@ -32,8 +46,8 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
     // The bus's current live trip, matched by BusNo (Transport trips carry BusNo, not BusId). Null if none live.
     private async Task<Guid?> CurrentTripIdAsync(Guid busId, CancellationToken ct) =>
         (await QueryInlineAsync<Guid>(
-            @"SELECT TOP 1 t.Id FROM dbo.Trips t JOIN dbo.Buses b ON b.BusNo = t.BusNo
-              WHERE b.Id = @busId AND t.Status = 'live' ORDER BY t.StartedAt DESC",
+            @"SELECT TOP 1 t.Id FROM dbo.Trips t
+              WHERE t.BusId = @busId AND t.Status = 'live' ORDER BY t.StartedAt DESC",
             new { busId }, ct)).Cast<Guid?>().FirstOrDefault();
 
     public async Task<IReadOnlyList<BusRosterEntry>> GetRosterAsync(Guid busId, CancellationToken ct = default)
@@ -46,6 +60,35 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
               WHERE bo.TripId = @tripId ORDER BY s.Name", new { tripId }, ct);
         return rows.Select(r => new BusRosterEntry(r.StudentId, r.StudentName, Initials(r.StudentName), r.StopId, r.Status)).ToList();
     }
+
+    /// Every bus with its current live trip (matched by BusNo), latest GPS ping and boarded count.
+    public Task<IReadOnlyList<FleetBusRow>> FleetAsync(CancellationToken ct = default) =>
+        QueryInlineAsync<FleetBusRow>(
+            @"SELECT b.Id AS BusId, b.BusNo, b.RouteName, b.Driver, b.DriverPhone,
+                (SELECT COUNT(*) FROM dbo.BusStops s WHERE s.BusId = b.Id) AS StopCount,
+                t.Id AS TripId, p.Lat, p.Lng, p.SpeedKmh, p.At AS LastPingAt,
+                ISNULL(bd.Cnt, 0) AS StudentsRiding
+              FROM dbo.Buses b
+              OUTER APPLY (
+                SELECT TOP 1 tt.Id, tt.StartedAt FROM dbo.Trips tt
+                WHERE tt.BusId = b.Id AND tt.Status = 'live' ORDER BY tt.StartedAt DESC) t
+              OUTER APPLY (
+                SELECT TOP 1 pp.Lat, pp.Lng, pp.SpeedKmh, pp.At FROM dbo.TripPings pp
+                WHERE pp.TripId = t.Id ORDER BY pp.At DESC) p
+              OUTER APPLY (
+                SELECT COUNT(*) AS Cnt FROM dbo.Boardings bo
+                WHERE bo.TripId = t.Id AND bo.State = 'boarded') bd
+              ORDER BY b.BusNo", null, ct);
+
+    /// Vehicles/Stops = row counts; Routes = distinct named routes; Students = distinct pupils who have boarded.
+    public async Task<TransportSummaryResponse> SummaryAsync(CancellationToken ct = default) =>
+        (await QueryInlineAsync<TransportSummaryResponse>(
+            @"SELECT
+                (SELECT COUNT(*) FROM dbo.Buses) AS Vehicles,
+                (SELECT COUNT(DISTINCT RouteName) FROM dbo.Buses
+                   WHERE RouteName IS NOT NULL AND LTRIM(RTRIM(RouteName)) <> '') AS Routes,
+                (SELECT COUNT(DISTINCT StudentId) FROM dbo.Boardings) AS Students,
+                (SELECT COUNT(*) FROM dbo.BusStops) AS Stops", null, ct)).First();
 
     public async Task<bool> UpsertBoardingAsync(
         Guid tenantId, Guid busId, IReadOnlyList<BusBoardingItem> records, DateTime now, CancellationToken ct = default)

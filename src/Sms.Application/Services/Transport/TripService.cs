@@ -33,22 +33,38 @@ public sealed class TripService(TripRepository repo, ITenantContext tenant) : IT
 
     public async Task<ApiResult> IngestPingsAsync(Guid tripId, BulkPingRequest req, CancellationToken ct = default)
     {
-        if (tenant.TenantId is not { } tid)
-            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+        if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
+        if (!await repo.IsOwnedByDriverAsync(tripId, uid, ct))
+            return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
         await repo.IngestPingsAsync(tid, tripId, req.Pings, ct);
         return ApiResult.NoContent();
     }
 
-    public async Task<ApiResult<TripSummaryResponse>> EndAsync(Guid tripId, CancellationToken ct = default) =>
-        ApiResult<TripSummaryResponse>.Ok(await repo.EndAsync(tripId, ct));
+    public async Task<ApiResult<TripSummaryResponse>> EndAsync(Guid tripId, CancellationToken ct = default)
+    {
+        if (tenant.UserId is not { } uid)
+            return ApiResult<TripSummaryResponse>.Fail(new Error("forbidden", "no user context"), 403);
+        if (!await repo.IsOwnedByDriverAsync(tripId, uid, ct))
+            return ApiResult<TripSummaryResponse>.Fail(new Error("forbidden", "not your trip"), 403);
+        return ApiResult<TripSummaryResponse>.Ok(await repo.EndAsync(tripId, ct));
+    }
 
-    public async Task<ApiResult<IReadOnlyList<BoardingResponse>>> ListBoardingAsync(Guid tripId, CancellationToken ct = default) =>
-        ApiResult<IReadOnlyList<BoardingResponse>>.Ok(await repo.ListBoardingAsync(tripId, ct));
+    public async Task<ApiResult<IReadOnlyList<BoardingResponse>>> ListBoardingAsync(Guid tripId, CancellationToken ct = default)
+    {
+        if (tenant.UserId is not { } uid)
+            return ApiResult<IReadOnlyList<BoardingResponse>>.Fail(new Error("forbidden", "no user context"), 403);
+        if (!await repo.IsOwnedByDriverAsync(tripId, uid, ct))
+            return ApiResult<IReadOnlyList<BoardingResponse>>.Fail(new Error("forbidden", "not your trip"), 403);
+        return ApiResult<IReadOnlyList<BoardingResponse>>.Ok(await repo.ListBoardingAsync(tripId, ct));
+    }
 
     public async Task<ApiResult> UpsertBoardingAsync(Guid tripId, BoardingRequest req, CancellationToken ct = default)
     {
-        if (tenant.TenantId is not { } tid)
-            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+        if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
+        if (!await repo.IsOwnedByDriverAsync(tripId, uid, ct))
+            return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
         await repo.UpsertBoardingAsync(tid, tripId, req, ct);
         return ApiResult.NoContent();
     }

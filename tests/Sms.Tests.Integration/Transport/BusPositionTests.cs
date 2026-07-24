@@ -98,8 +98,8 @@ public class BusPositionTests(SqlServerFixture fx)
                 });
 
             await conn.ExecuteAsync(
-                "INSERT dbo.Trips (Id, TenantId, BusNo, Status, StartedAt) VALUES (@Id, @TenantId, @BusNo, 'live', @StartedAt)",
-                new { Id = tripId, TenantId = tenantId, BusNo = busNo, StartedAt = DateTime.UtcNow });
+                "INSERT dbo.Trips (Id, TenantId, BusId, BusNo, Status, StartedAt) VALUES (@Id, @TenantId, @BusId, @BusNo, 'live', @StartedAt)",
+                new { Id = tripId, TenantId = tenantId, BusId = busId, BusNo = busNo, StartedAt = DateTime.UtcNow });
 
             await conn.ExecuteAsync(
                 "INSERT dbo.TripPings (Id, TenantId, TripId, Lat, Lng, SpeedKmh, Heading, At) VALUES (@Id, @TenantId, @TripId, @Lat, @Lng, @SpeedKmh, @Heading, @At)",
