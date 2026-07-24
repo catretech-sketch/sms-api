@@ -89,6 +89,80 @@ public sealed class PayslipRepository(IDbConnectionFactory factory) : BaseReposi
             new { userId }, ct);
 }
 
+// ---- Payroll (salary master + monthly run/approve) ----
+public sealed record SalaryProfileResponse(
+    Guid TenantId, string PersonType, Guid PersonId, decimal BasicSalary, decimal Hra, decimal Allowances,
+    decimal Epf, decimal ProfTax, decimal OtherDeductions, string? Uan,
+    string? BankHolder, string? BankAccount, string? BankName, string? Ifsc, string? BankBranch);
+
+public sealed record UpsertSalaryProfileRequest(
+    decimal BasicSalary, decimal Hra, decimal Allowances, decimal Epf, decimal ProfTax, decimal OtherDeductions,
+    string? Uan, string? BankHolder, string? BankAccount, string? BankName, string? Ifsc, string? BankBranch);
+
+// ---- Salary structure templates keyed by role/designation ----
+public sealed record SalaryStructureResponse(
+    Guid TenantId, string PersonType, string RoleKey,
+    decimal Basic, decimal Hra, decimal Allowances, decimal Epf, decimal ProfTax, decimal OtherDeductions);
+
+public sealed record UpsertSalaryStructureRequest(
+    string PersonType, string RoleKey,
+    decimal Basic, decimal Hra, decimal Allowances, decimal Epf, decimal ProfTax, decimal OtherDeductions);
+
+public sealed record PayrollRunResponse(
+    Guid Id, Guid TenantId, string Period, int Year, string? Month, string Status,
+    int StaffCount, decimal Gross, decimal Deductions, decimal Net,
+    Guid? RunBy, DateTime? RunAt, Guid? ApprovedBy, DateTime? ApprovedAt);
+
+public sealed record PayrollRunLineResponse(
+    string PersonType, Guid PersonId, string Name, string? Role, string? Dept,
+    decimal Basic, decimal Hra, decimal Allowances, decimal Epf, decimal ProfTax, decimal OtherDeductions,
+    decimal Gross, decimal Deductions, decimal Net);
+
+public sealed class PayrollRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+{
+    public Task<SalaryProfileResponse?> UpsertSalaryProfileAsync(
+        Guid tenantId, string personType, Guid personId, UpsertSalaryProfileRequest r, CancellationToken ct = default) =>
+        QuerySingleProcAsync<SalaryProfileResponse>("dbo.SalaryProfile_Upsert", new
+        {
+            TenantId = tenantId, PersonType = personType, PersonId = personId,
+            r.BasicSalary, r.Hra, r.Allowances, r.Epf, r.ProfTax, r.OtherDeductions,
+            r.Uan, r.BankHolder, r.BankAccount, r.BankName, r.Ifsc, r.BankBranch,
+        }, ct);
+
+    public Task<IReadOnlyList<SalaryProfileResponse>> ListSalaryProfilesAsync(Guid tenantId, CancellationToken ct = default) =>
+        QueryProcAsync<SalaryProfileResponse>("dbo.SalaryProfile_List", new { TenantId = tenantId }, ct);
+
+    public Task<SalaryStructureResponse?> UpsertSalaryStructureAsync(
+        Guid tenantId, UpsertSalaryStructureRequest r, CancellationToken ct = default) =>
+        QuerySingleProcAsync<SalaryStructureResponse>("dbo.SalaryStructure_Upsert", new
+        {
+            TenantId = tenantId, r.PersonType, r.RoleKey,
+            r.Basic, r.Hra, r.Allowances, r.Epf, r.ProfTax, r.OtherDeductions,
+        }, ct);
+
+    public Task<IReadOnlyList<SalaryStructureResponse>> ListSalaryStructuresAsync(Guid tenantId, CancellationToken ct = default) =>
+        QueryProcAsync<SalaryStructureResponse>("dbo.SalaryStructure_List", new { TenantId = tenantId }, ct);
+
+    public Task<PayrollRunResponse?> GetRunAsync(Guid tenantId, string period, CancellationToken ct = default) =>
+        QuerySingleProcAsync<PayrollRunResponse>("dbo.PayrollRun_Get", new { TenantId = tenantId, Period = period }, ct);
+
+    public Task<IReadOnlyList<PayrollRunLineResponse>> ListRunLinesAsync(Guid tenantId, string period, CancellationToken ct = default) =>
+        QueryProcAsync<PayrollRunLineResponse>("dbo.PayrollRunLine_ListByPeriod", new { TenantId = tenantId, Period = period }, ct);
+
+    public Task<PayrollRunResponse?> SaveRunAsync(
+        Guid tenantId, string period, int year, string? month, int staffCount,
+        decimal gross, decimal deductions, decimal net, Guid? runBy, string linesJson, CancellationToken ct = default) =>
+        QuerySingleProcAsync<PayrollRunResponse>("dbo.PayrollRun_Save", new
+        {
+            TenantId = tenantId, Period = period, Year = year, Month = month, StaffCount = staffCount,
+            Gross = gross, Deductions = deductions, Net = net, RunBy = runBy, Lines = linesJson,
+        }, ct);
+
+    public Task<PayrollRunResponse?> ApproveRunAsync(Guid tenantId, string period, Guid? approvedBy, CancellationToken ct = default) =>
+        QuerySingleProcAsync<PayrollRunResponse>("dbo.PayrollRun_Approve",
+            new { TenantId = tenantId, Period = period, ApprovedBy = approvedBy }, ct);
+}
+
 public static class FinanceModule
 {
     public static IServiceCollection AddFinanceModule(this IServiceCollection services)
@@ -96,6 +170,7 @@ public static class FinanceModule
         services.AddScoped<FeeRepository>();
         services.AddScoped<FeeInvoiceRepository>();
         services.AddScoped<PayslipRepository>();
+        services.AddScoped<PayrollRepository>();
         return services;
     }
 }
