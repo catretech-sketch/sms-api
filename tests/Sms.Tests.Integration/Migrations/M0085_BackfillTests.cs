@@ -106,6 +106,73 @@ WHERE t.Id = @teacherId
         var linkedUserId = await conn.QuerySingleAsync<Guid?>(
             "SELECT UserId FROM dbo.Teachers WHERE Id = @teacherId", new { teacherId });
         linkedUserId.Should().BeNull("two different Users rows each matched (one by phone, one by email), so this is ambiguous and must not be auto-linked");
+
+        // Now run the migration's report-insert SQL (same predicate/guard as M0085's Up()) and
+        // assert the "reported" half actually happens: a row lands in the report table with
+        // Reason='ambiguous' and MatchCount=2 for this teacher.
+        await conn.ExecuteAsync(@"
+INSERT INTO dbo._Migration_UnmatchedDirectoryRows (SourceTable, SourceId, TenantId, Reason, MatchCount)
+SELECT 'Teachers', t.Id, t.TenantId, CASE WHEN x.Cnt = 0 THEN 'no_match' ELSE 'ambiguous' END, x.Cnt
+FROM dbo.Teachers t
+CROSS APPLY (
+    SELECT COUNT(*) AS Cnt FROM dbo.Users u2
+    WHERE u2.TenantId = t.TenantId
+      AND ((t.Email IS NOT NULL AND u2.Email IS NOT NULL
+              AND LOWER(LTRIM(RTRIM(u2.Email))) = LOWER(LTRIM(RTRIM(t.Email))))
+        OR (t.Phone IS NOT NULL AND u2.Phone IS NOT NULL AND u2.Phone = t.Phone))
+) x
+WHERE t.Id = @teacherId AND t.UserId IS NULL AND x.Cnt <> 1
+  AND NOT EXISTS (
+    SELECT 1 FROM dbo._Migration_UnmatchedDirectoryRows r
+    WHERE r.SourceTable = 'Teachers' AND r.SourceId = t.Id);", new { teacherId });
+
+        var report = await conn.QuerySingleAsync(
+            "SELECT Reason, MatchCount FROM dbo._Migration_UnmatchedDirectoryRows WHERE SourceTable = 'Teachers' AND SourceId = @teacherId",
+            new { teacherId });
+        ((string)report.Reason).Should().Be("ambiguous");
+        ((int)report.MatchCount).Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Report_insert_is_idempotent_when_rerun_outside_the_migration_gate()
+    {
+        await using var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        var tenantId = Guid.NewGuid();
+
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@v", new { v = tenantId });
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'IsPlatform', @value=@v", new { v = 0 });
+
+        var teacherId = Guid.NewGuid();
+        await conn.ExecuteAsync(
+            "INSERT dbo.Teachers (Id, TenantId, Name, Email) VALUES (@teacherId, @tenantId, 'Unmatched Teacher', 'nobody@x.com')",
+            new { teacherId, tenantId });
+
+        const string reportInsertSql = @"
+INSERT INTO dbo._Migration_UnmatchedDirectoryRows (SourceTable, SourceId, TenantId, Reason, MatchCount)
+SELECT 'Teachers', t.Id, t.TenantId, CASE WHEN x.Cnt = 0 THEN 'no_match' ELSE 'ambiguous' END, x.Cnt
+FROM dbo.Teachers t
+CROSS APPLY (
+    SELECT COUNT(*) AS Cnt FROM dbo.Users u2
+    WHERE u2.TenantId = t.TenantId
+      AND ((t.Email IS NOT NULL AND u2.Email IS NOT NULL
+              AND LOWER(LTRIM(RTRIM(u2.Email))) = LOWER(LTRIM(RTRIM(t.Email))))
+        OR (t.Phone IS NOT NULL AND u2.Phone IS NOT NULL AND u2.Phone = t.Phone))
+) x
+WHERE t.Id = @teacherId AND t.UserId IS NULL AND x.Cnt <> 1
+  AND NOT EXISTS (
+    SELECT 1 FROM dbo._Migration_UnmatchedDirectoryRows r
+    WHERE r.SourceTable = 'Teachers' AND r.SourceId = t.Id);";
+
+        // Simulate re-running the raw SQL outside FluentMigrator's normal VersionInfo gate (e.g. a
+        // manual hotfix run twice by accident): the NOT EXISTS guard must prevent a duplicate row.
+        await conn.ExecuteAsync(reportInsertSql, new { teacherId });
+        await conn.ExecuteAsync(reportInsertSql, new { teacherId });
+
+        var rowCount = await conn.QuerySingleAsync<int>(
+            "SELECT COUNT(*) FROM dbo._Migration_UnmatchedDirectoryRows WHERE SourceTable = 'Teachers' AND SourceId = @teacherId",
+            new { teacherId });
+        rowCount.Should().Be(1, "the NOT EXISTS guard must make the report INSERT idempotent when re-run");
     }
 
     [Fact]
