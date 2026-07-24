@@ -11,8 +11,26 @@ public sealed record ChatMessageResponse(Guid Id, Guid ThreadId, Guid? SenderId,
 public sealed record SendMessageRequest(string Text);
 public sealed record AnnouncementResponse(
     Guid Id, Guid TenantId, string Title, string? Body, DateTime Date, string? From, string? Role,
-    string Type, bool Pinned, string? Audience);
-public sealed record CreateAnnouncementRequest(string Title, string Body, string? Type, string? Audience);
+    string Type, bool Pinned, string? Audience)
+{
+    /// Set after create — how many emails were queued (not a DB column).
+    public int Reach { get; init; }
+}
+public sealed record CreateAnnouncementRequest(
+    string Title,
+    string Body,
+    string? Type,
+    string? Audience,
+    IReadOnlyList<string>? Emails = null,
+    IReadOnlyList<string>? Phones = null,
+    IReadOnlyList<string>? Channels = null,
+    string? SchoolName = null,
+    string? EventDate = null,
+    string? EventKind = null,
+    /// Optional user-uploaded file (base64, no data: prefix) attached to email.
+    string? AttachmentBase64 = null,
+    string? AttachmentFileName = null,
+    string? AttachmentContentType = null);
 public sealed record ComplaintResponse(
     Guid Id, Guid TenantId, string Subject, string? From, string? Category, string Priority, string Status,
     string? Age, string? Assignee, string? Body);
