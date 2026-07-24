@@ -21,6 +21,6 @@ public sealed class ReportingController(IReportingService reporting) : ApiContro
 
     [HttpGet("principal/attendance")]
     [Authorize(Policy = Policies.Principal)]
-    public async Task<IActionResult> GetPrincipalAttendance(CancellationToken ct) =>
-        FromResult(await reporting.GetPrincipalAttendanceAsync(ct));
+    public async Task<IActionResult> GetPrincipalAttendance([FromQuery] DateTime? date, CancellationToken ct) =>
+        FromResult(await reporting.GetPrincipalAttendanceAsync(date, ct));
 }

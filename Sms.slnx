@@ -8,9 +8,11 @@
     <Project Path="src/Sms.Modules.Attendance/Sms.Modules.Attendance.csproj" />
     <Project Path="src/Sms.Modules.Comms/Sms.Modules.Comms.csproj" />
     <Project Path="src/Sms.Modules.Finance/Sms.Modules.Finance.csproj" />
+    <Project Path="src/Sms.Modules.Hostel/Sms.Modules.Hostel.csproj" />
     <Project Path="src/Sms.Modules.Identity/Sms.Modules.Identity.csproj" />
     <Project Path="src/Sms.Modules.Reporting/Sms.Modules.Reporting.csproj" />
     <Project Path="src/Sms.Modules.Sis/Sms.Modules.Sis.csproj" />
+    <Project Path="src/Sms.Modules.Sports/Sms.Modules.Sports.csproj" />
     <Project Path="src/Sms.Modules.Staffing/Sms.Modules.Staffing.csproj" />
     <Project Path="src/Sms.Modules.Tenancy/Sms.Modules.Tenancy.csproj" />
     <Project Path="src/Sms.Modules.Transport/Sms.Modules.Transport.csproj" />

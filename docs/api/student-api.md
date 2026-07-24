@@ -74,6 +74,7 @@
 - **`GET /v1/ptm`** → PTMMeeting[]: `id`·`date`·`time`·`teacher`·`subject`·`child`·`mode`·`status` (`confirmed`·`pending`).
 - **`PATCH /v1/ptm/{id}`** `{ "status": "confirmed"|"pending" }` → PTMMeeting.
 - **`GET /v1/children/{child_id}/transport`** → Transport: `bus_no`·`driver`·`plate`·`eta`·`pickup_stop`·`next_stops[]` (`stop`·`eta`·`done`·`you?`). (Reuses Phase-4 live trips.)
+- **`GET /v1/me/children/bus`** → live bus position for the caller's linked child/children: `student_id`·`student_name`·`admission_no`·`bus_id`·`bus_no`·`route_name?`·`status` (`idle`·`on_route`·`at_stop`·`delayed`)·`lat?`·`lng?`·`speed_kmh?`·`next_stop_name?`·`last_ping_at?`. **Strictly self-scoped:** resolves the parent's own student via `Users.StudentId` → `Students.AdmissionNo` and returns only that child's assigned bus's active trip. Never accepts a student/bus id from the client; all reads are RLS tenant-scoped, so identical bus numbers/routes/GPS in other schools can never leak. Empty array when the account is not linked to a student or the child has no bus assigned.
 - **`GET /v1/children/{child_id}/attendance`** → `{ "days": [ { "d", "kind": "present"|"absent"|"late"|"off"|"future" } ], "flags": [ { "id","tone": "absent"|"late","date","reason","action" } ] }`.
 - **`GET /v1/children/{child_id}/leave`** → LeaveRequest[] · **`POST /v1/leave`** `{ "child_id","from_date","to_date","reason","note" }` → LeaveRequest: `id`·`child_id`·`type?`·`from_date`·`to_date`·`reason`·`note`·`status` (`pending`·`approved`·`rejected`).
 

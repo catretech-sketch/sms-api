@@ -141,6 +141,7 @@ public sealed class TenancyService(
         Guid id, UpdateSchoolProfileRequest req, CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(req.Name)
+            && string.IsNullOrWhiteSpace(req.Slug)
             && string.IsNullOrWhiteSpace(req.Country)
             && string.IsNullOrWhiteSpace(req.Address)
             && string.IsNullOrWhiteSpace(req.ContactName)
@@ -152,9 +153,22 @@ public sealed class TenancyService(
             return ApiResult<ClientResponse>.Fail(new Error("invalid_request", "No profile fields to update."), 422);
         }
 
+        string? slug = null;
+        if (!string.IsNullOrWhiteSpace(req.Slug))
+        {
+            slug = NormalizeSchoolSlug(req.Slug);
+            if (slug is null)
+                return ApiResult<ClientResponse>.Fail(
+                    new Error("invalid_request", "school id must be 3–40 characters: letters, numbers, hyphens"), 422);
+            if (await clients.SlugTakenByOtherAsync(id, slug, ct))
+                return ApiResult<ClientResponse>.Fail(
+                    new Error("slug_taken", "That school id is already in use. Choose another."), 409);
+        }
+
         var patch = req with
         {
             Name = string.IsNullOrWhiteSpace(req.Name) ? null : req.Name.Trim(),
+            Slug = slug,
             Country = string.IsNullOrWhiteSpace(req.Country) ? null : req.Country.Trim(),
             Address = string.IsNullOrWhiteSpace(req.Address) ? null : req.Address.Trim(),
             ContactName = string.IsNullOrWhiteSpace(req.ContactName) ? null : req.ContactName.Trim(),
@@ -162,10 +176,27 @@ public sealed class TenancyService(
             ContactPhone = string.IsNullOrWhiteSpace(req.ContactPhone) ? null : req.ContactPhone.Trim(),
         };
 
-        var row = await clients.UpdateProfileAsync(id, patch, ct);
-        return row is null
-            ? ApiResult<ClientResponse>.Fail(new Error("not_found", "resource not found"), 404)
-            : ApiResult<ClientResponse>.Ok(row.ToResponse());
+        try
+        {
+            var row = await clients.UpdateProfileAsync(id, patch, ct);
+            return row is null
+                ? ApiResult<ClientResponse>.Fail(new Error("not_found", "resource not found"), 404)
+                : ApiResult<ClientResponse>.Ok(row.ToResponse());
+        }
+        catch (SqlException ex) when (ex.Number is 2601 or 2627)
+        {
+            return ApiResult<ClientResponse>.Fail(
+                new Error("slug_taken", "That school id is already in use. Choose another."), 409);
+        }
+    }
+
+    /// <summary>Lowercase slug; null when invalid.</summary>
+    private static string? NormalizeSchoolSlug(string raw)
+    {
+        var slug = raw.Trim().ToLowerInvariant();
+        if (slug.Length is < 3 or > 40) return null;
+        if (!System.Text.RegularExpressions.Regex.IsMatch(slug, @"^[a-z0-9]+(?:-[a-z0-9]+)*$")) return null;
+        return slug;
     }
 
     public async Task<ApiResult<ClientResponse>> SetClientStatusAsync(Guid id, SetStatusRequest req, CancellationToken ct = default)

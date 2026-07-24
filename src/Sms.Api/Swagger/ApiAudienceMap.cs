@@ -36,6 +36,7 @@ public static class ApiAudienceMap
         ("v1/me/plans",      [SchoolAdmin]),
         ("v1/me/upgrade-requests", [SchoolAdmin]),
         ("v1/me/switch-school", [SchoolAdmin]),
+        ("v1/me/children",   [Student]),                // parent app · child's live bus
         ("v1/webhooks/razorpay", All),
         ("health",           All),
 
@@ -60,6 +61,9 @@ public static class ApiAudienceMap
         ("v1/staff",         [SchoolAdmin]),               // HR staff records
 
         ("v1/bus",           [Teacher]),                   // bus routes + boarding for teacher app
+        ("v1/transport",     [SchoolAdmin]),               // admin Operations · Transport KPIs
+        ("v1/hostel",        [SchoolAdmin]),               // admin Operations · Hostel
+        ("v1/sports",        [SchoolAdmin]),               // admin Operations · Sports
         ("v1/users",         [SchoolAdmin]),
 
         ("v1/students",      [SchoolAdmin, Teacher, Student]),
@@ -72,6 +76,7 @@ public static class ApiAudienceMap
         ("v1/homework",      [Teacher, Student]),
         ("v1/fees",          [SchoolAdmin, Student]),
         ("v1/payslips",      [SchoolAdmin, Teacher, Staff]),
+        ("v1/payroll",       [SchoolAdmin]),               // salary master + monthly run/approve
         ("v1/principal",     [Teacher]),
         ("v1/approvals",     [SchoolAdmin, Teacher]),
         ("v1/leave",         [SchoolAdmin, Staff, Student]),
@@ -81,6 +86,7 @@ public static class ApiAudienceMap
         ("v1/notifications", [SchoolAdmin, Student]),
         ("v1/timetable",     [Teacher]),
         ("v1/calendar",      [Teacher, Student]),
+        ("v1/library/summary", [SchoolAdmin]),             // admin Operations · Library KPIs
         ("v1/library",       [Teacher]),
         ("v1/assignments",   [Teacher, Student]),
         ("v1/me/attendance", [Teacher, Staff]),            // geofenced self check-in

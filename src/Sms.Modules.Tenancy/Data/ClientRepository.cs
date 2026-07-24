@@ -28,6 +28,15 @@ public sealed class ClientRepository(IDbConnectionFactory factory) : BaseReposit
         return n == 1;
     }
 
+    /// <summary>True when another tenant already owns this slug.</summary>
+    public async Task<bool> SlugTakenByOtherAsync(Guid id, string slug, CancellationToken ct = default)
+    {
+        var n = (await QueryInlineAsync<int>(
+            "SELECT CASE WHEN EXISTS (SELECT 1 FROM dbo.Tenants WHERE Slug = @slug AND Id <> @id) THEN 1 ELSE 0 END",
+            new { slug, id }, ct)).FirstOrDefault();
+        return n == 1;
+    }
+
     /// <summary>Pick an unused slug; appends -NNNN or a short guid suffix on collision.</summary>
     public async Task<string> AllocateUniqueSlugAsync(string desired, CancellationToken ct = default)
     {
@@ -59,6 +68,7 @@ public sealed class ClientRepository(IDbConnectionFactory factory) : BaseReposit
         {
             Id = id,
             r.Name,
+            r.Slug,
             r.Country,
             r.Address,
             r.ContactName,

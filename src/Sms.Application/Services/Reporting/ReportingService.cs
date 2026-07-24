@@ -9,7 +9,7 @@ public interface IReportingService
 {
     Task<ApiResult<DashboardStatsResponse>> GetDashboardStatsAsync(CancellationToken ct = default);
     Task<ApiResult<PrincipalOverviewResponse>> GetPrincipalOverviewAsync(CancellationToken ct = default);
-    Task<ApiResult<PrincipalAttendanceResponse>> GetPrincipalAttendanceAsync(CancellationToken ct = default);
+    Task<ApiResult<PrincipalAttendanceResponse>> GetPrincipalAttendanceAsync(DateTime? date = null, CancellationToken ct = default);
 }
 
 public sealed class ReportingService(ReportingRepository repo, IClock clock) : IReportingService
@@ -20,6 +20,6 @@ public sealed class ReportingService(ReportingRepository repo, IClock clock) : I
     public async Task<ApiResult<PrincipalOverviewResponse>> GetPrincipalOverviewAsync(CancellationToken ct = default) =>
         ApiResult<PrincipalOverviewResponse>.Ok(await repo.GetPrincipalOverviewAsync(clock.UtcNow, ct));
 
-    public async Task<ApiResult<PrincipalAttendanceResponse>> GetPrincipalAttendanceAsync(CancellationToken ct = default) =>
-        ApiResult<PrincipalAttendanceResponse>.Ok(await repo.GetPrincipalAttendanceAsync(clock.UtcNow, ct));
+    public async Task<ApiResult<PrincipalAttendanceResponse>> GetPrincipalAttendanceAsync(DateTime? date = null, CancellationToken ct = default) =>
+        ApiResult<PrincipalAttendanceResponse>.Ok(await repo.GetPrincipalAttendanceAsync((date ?? clock.UtcNow).Date, ct));
 }

@@ -7,6 +7,8 @@
     <ProjectReference Include="..\Sms.Modules.Staffing\Sms.Modules.Staffing.csproj" />
     <ProjectReference Include="..\Sms.Modules.Academics\Sms.Modules.Academics.csproj" />
     <ProjectReference Include="..\Sms.Modules.Finance\Sms.Modules.Finance.csproj" />
+    <ProjectReference Include="..\Sms.Modules.Hostel\Sms.Modules.Hostel.csproj" />
+    <ProjectReference Include="..\Sms.Modules.Sports\Sms.Modules.Sports.csproj" />
     <ProjectReference Include="..\Sms.Modules.Attendance\Sms.Modules.Attendance.csproj" />
     <ProjectReference Include="..\Sms.Modules.Transport\Sms.Modules.Transport.csproj" />
     <ProjectReference Include="..\Sms.Modules.Comms\Sms.Modules.Comms.csproj" />

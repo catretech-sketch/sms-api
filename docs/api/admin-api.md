@@ -99,6 +99,16 @@ Required: `id` · `name` · `gender` · `role` (e.g. "Bus Driver") · `category`
 ### 3.11 Attendance (roll-call) — `/v1/classes/{class_id}/attendance`
 `GET …?date=YYYY-MM-DD` → `AttendanceRecord[]` (`student_id`·`status` `present`·`absent`·`late`·`leave`·`holiday`·`date`). `POST …` bulk upsert `{ "date", "records": [...] }` (shared with teacher app, §3C).
 
+### 3.12 Operations (KPI dashboards)
+All summaries are per-tenant aggregates for the **Operations** screen. Access: principal/admin/owner.
+- **Library — `GET /v1/library/summary`:** `catalogue` (total books) · `members` (distinct active borrowers) · `issued` (currently out) · `fines_due` (overdue days × ₹5/day). Derived from `LibraryBooks`.
+- **Transport — `GET /v1/transport/summary`:** `vehicles` · `routes` (distinct named routes) · `students` (distinct pupils boarded) · `stops`. Derived from `Buses`/`BusStops`/`Boardings`.
+- **Transport fleet — `GET /v1/transport/fleet`:** live board rows (bus + current trip + latest GPS ping + boarded count + derived `status`). Trip→bus linkage is by `BusId` (never bus number).
+- **Student→bus roster — `/v1/transport/buses/{busId}/students`:** `GET` lists assigned students (`student_id`·`admission_no`·`bus_no`·`stop_name?`). `PUT /{studentId}` assigns (optional body `{ "stop_id" }`; one active bus per student, upsert). `DELETE /{studentId}` unassigns. Bus/student existence is RLS-scoped, so cross-tenant ids 404.
+- **Driver trip mutations (Staff app, `/v1/staff/trips/{tripId}/…`):** ping ingest, `end`, and boarding upsert now verify the trip is owned by the calling driver (`Trips.DriverId = caller`) → 403 otherwise, preventing a same-school driver from acting on a peer's trip.
+- **Hostel — `/v1/hostel`:** `GET /summary` → `blocks`·`rooms`·`residents`·`occupancy_pct`. Masters: `GET/POST /blocks` (`name`·`warden`), `GET/POST /rooms` (`block_id`·`room_no`·`capacity`; response adds `block_name`·`residents`), `GET/POST /residents` (`room_id`·`student_name`·`student_id?`; response adds `room_no`).
+- **Sports — `/v1/sports`:** `GET /summary` → `teams`·`events`·`athletes` (Σ roster)·`medals` (current year). Masters: `GET/POST /teams` (`name`·`sport`·`coach`·`athletes`), `GET/POST /events` (`name`·`event_date`·`venue`), `GET/POST /medals` (`kind` `gold`·`silver`·`bronze` · `title` · `year?` defaults to current year).
+
 ---
 
 ## 4. Lists

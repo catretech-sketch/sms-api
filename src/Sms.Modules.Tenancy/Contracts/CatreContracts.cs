@@ -19,6 +19,7 @@ public sealed record CreateClientRequest(
 /// <summary>Partial update of school branding / contact. Null fields are left unchanged; Logo/Image use Set* flags.</summary>
 public sealed record UpdateSchoolProfileRequest(
     string? Name = null,
+    string? Slug = null,
     string? Country = null,
     string? Address = null,
     string? ContactName = null,

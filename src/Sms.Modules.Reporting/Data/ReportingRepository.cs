@@ -70,17 +70,55 @@ SELECT
     public async Task<PrincipalAttendanceResponse> GetPrincipalAttendanceAsync(DateTime today, CancellationToken ct = default)
     {
         var d = today.Date;
+        /* Prefer live Students matched by Grade+Section (or ClassLabel=Name).
+           Classes.StudentCount is often 0 when enrolments don't bump the counter. */
         var classes = await QueryInlineAsync<PrincipalClassAttendance>(@"
 SELECT c.Id AS ClassId, c.Name AS ClassName,
-       ISNULL(a.Present, 0) AS Present, c.StudentCount AS Total,
-       CAST(CASE WHEN c.StudentCount > 0 THEN 100.0 * ISNULL(a.Present,0) / c.StudentCount ELSE 0 END AS decimal(5,1)) AS Pct
+       ISNULL(a.Present, 0) AS Present,
+       CASE
+         WHEN c.StudentCount > 0 THEN c.StudentCount
+         ELSE ISNULL(sc.Cnt, 0)
+       END AS Total,
+       CAST(CASE
+         WHEN (CASE WHEN c.StudentCount > 0 THEN c.StudentCount ELSE ISNULL(sc.Cnt, 0) END) > 0
+         THEN 100.0 * ISNULL(a.Present, 0)
+              / (CASE WHEN c.StudentCount > 0 THEN c.StudentCount ELSE ISNULL(sc.Cnt, 0) END)
+         ELSE 0 END AS decimal(5,1)) AS Pct
 FROM dbo.Classes c
-OUTER APPLY (SELECT COUNT(*) AS Present FROM dbo.AttendanceRecords ar
-             WHERE ar.ClassId = c.Id AND ar.[Date] = @d AND ar.Status IN ('present','late')) a
+OUTER APPLY (
+  SELECT COUNT(*) AS Present FROM dbo.AttendanceRecords ar
+  WHERE ar.ClassId = c.Id AND ar.[Date] = @d AND ar.Status IN ('present','late')
+) a
+OUTER APPLY (
+  SELECT COUNT(*) AS Cnt FROM dbo.Students s
+  WHERE s.Status = N'active'
+    AND (
+      (c.Grade IS NOT NULL AND c.Section IS NOT NULL
+        AND s.Grade = c.Grade AND s.Section = c.Section)
+      OR (c.Name IS NOT NULL AND s.ClassLabel = c.Name)
+    )
+) sc
 ORDER BY c.Name", new { d }, ct);
 
         int presentTotal = classes.Sum(c => c.Present);
         int studentTotal = classes.Sum(c => c.Total);
+
+        /* School-wide roll when class counters are still empty but students exist. */
+        if (studentTotal <= 0)
+        {
+            var active = await QueryInlineAsync<int>(
+                "SELECT COUNT(*) FROM dbo.Students WHERE Status = N'active'", null, ct);
+            studentTotal = active.Count > 0 ? active[0] : 0;
+            if (presentTotal <= 0)
+            {
+                var present = await QueryInlineAsync<int>(
+                    @"SELECT COUNT(*) FROM dbo.AttendanceRecords
+                      WHERE [Date] = @d AND Status IN ('present','late')",
+                    new { d }, ct);
+                presentTotal = present.Count > 0 ? present[0] : 0;
+            }
+        }
+
         decimal overall = studentTotal > 0 ? Math.Round(100m * presentTotal / studentTotal, 1) : 0m;
         var staff = await LoadStaffAsync(d, ct);
         return new PrincipalAttendanceResponse(d, presentTotal, studentTotal, overall, classes, staff);
