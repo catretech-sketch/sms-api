@@ -11,6 +11,37 @@ public sealed record PunchRequest(string Kind, DateTime At, double Lat, double L
 public sealed record TeacherAttendanceDayResponse(DateTime Date, CheckEventResponse? CheckIn, CheckEventResponse? CheckOut);
 public sealed record TeacherAttendanceSummaryResponse(int DaysPresent, int DaysFlagged, double TotalHours);
 
+/// Per-school absence-alert configuration: streak thresholds + optional daily auto-send schedule.
+public sealed record AttendanceAlertConfigResponse(
+    int NoticeDays, int EmailDays, bool AutoSend, string AutoTime, string AutoChannel, DateTime? LastAutoSentDate);
+public sealed record UpsertAttendanceAlertConfigRequest(
+    int NoticeDays, int EmailDays, bool AutoSend, string? AutoTime, string? AutoChannel);
+
+/// One tenant whose daily absence-alert auto-send is due right now.
+public sealed record DueAlertTenant(Guid TenantId, int NoticeDays, int EmailDays, string AutoChannel);
+
+public sealed class AttendanceAlertConfigRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+{
+    public Task<AttendanceAlertConfigResponse?> GetAsync(Guid tenantId, CancellationToken ct = default) =>
+        QuerySingleProcAsync<AttendanceAlertConfigResponse>(
+            "dbo.AttendanceAlertConfig_Get", new { TenantId = tenantId }, ct);
+
+    public Task<AttendanceAlertConfigResponse?> UpsertAsync(
+        Guid tenantId, UpsertAttendanceAlertConfigRequest r, CancellationToken ct = default) =>
+        QuerySingleProcAsync<AttendanceAlertConfigResponse>(
+            "dbo.AttendanceAlertConfig_Upsert",
+            new { TenantId = tenantId, r.NoticeDays, r.EmailDays, r.AutoSend, r.AutoTime, r.AutoChannel }, ct);
+
+    /// Tenants due for a daily auto-send. MUST be called on a platform session so RLS returns all rows.
+    public Task<IReadOnlyList<DueAlertTenant>> ListDueAsync(DateTime today, int nowMinutes, CancellationToken ct = default) =>
+        QueryProcAsync<DueAlertTenant>(
+            "dbo.AttendanceAlertConfig_ListDue", new { Today = today.Date, NowMinutes = nowMinutes }, ct);
+
+    /// Marks that today's sweep has run for a tenant (call on that tenant's session context).
+    public Task MarkAutoSentAsync(Guid tenantId, DateTime date, CancellationToken ct = default) =>
+        ExecuteProcAsync("dbo.AttendanceAlertConfig_MarkAutoSent", new { TenantId = tenantId, Date = date.Date }, ct);
+}
+
 public sealed class CheckInRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
     private const double AccuracyCapMeters = 30;
@@ -115,6 +146,7 @@ public static class AttendanceModule
     public static IServiceCollection AddAttendanceModule(this IServiceCollection services)
     {
         services.AddScoped<CheckInRepository>();
+        services.AddScoped<AttendanceAlertConfigRepository>();
         return services;
     }
 }
