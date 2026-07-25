@@ -19,6 +19,8 @@ public sealed class AnnouncementController(IAnnouncementService announcements) :
     public async Task<IActionResult> Create([FromBody] CreateAnnouncementRequest req, CancellationToken ct)
     {
         var role = User.FindFirst("role")?.Value;
-        return FromResult(await announcements.CreateAsync(req, role, ct));
+        var sub = User.FindFirst("sub")?.Value;
+        Guid? creatorUserId = Guid.TryParse(sub, out var uid) ? uid : null;
+        return FromResult(await announcements.CreateAsync(req, creatorUserId, role, ct));
     }
 }

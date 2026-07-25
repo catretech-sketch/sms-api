@@ -107,7 +107,7 @@ public sealed class AbsenceAlertWorker(
         // Persist an announcement row for the history feed.
         await comms.CreateAnnouncementAsync(cfg.TenantId,
             new CreateAnnouncementRequest(summaryTitle, BuildAnnouncementBody(flagged, students, cfg), "attendance", "parents"),
-            "system", "system", ct);
+            null, "system", ct);
 
         // Email escalation for streaks at/above the email threshold, when the channel allows it.
         var emailed = 0;

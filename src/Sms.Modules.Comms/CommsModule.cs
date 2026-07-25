@@ -95,15 +95,17 @@ public sealed class CommsRepository(IDbConnectionFactory factory) : BaseReposito
     }
 
     public Task<IReadOnlyList<AnnouncementResponse>> ListAnnouncementsAsync(string? audience, CancellationToken ct = default) =>
-        QueryInlineAsync<AnnouncementResponse>(
-            "SELECT Id, TenantId, Title, Body, [Date], [From], Role, Type, Pinned, Audience FROM dbo.Announcements " +
-            "WHERE (@audience IS NULL OR Audience IS NULL OR Audience = @audience) ORDER BY [Date] DESC",
-            new { audience }, ct);
+        QueryInlineAsync<AnnouncementResponse>(@"
+SELECT a.Id, a.TenantId, a.Title, a.Body, a.[Date], COALESCE(u.Name, a.Role) AS [From], a.Role, a.Type, a.Pinned, a.Audience
+FROM dbo.Announcements a
+LEFT JOIN dbo.Users u ON u.Id = a.CreatorUserId
+WHERE (@audience IS NULL OR a.Audience IS NULL OR a.Audience = @audience)
+ORDER BY a.[Date] DESC", new { audience }, ct);
 
     public Task<AnnouncementResponse?> CreateAnnouncementAsync(
-        Guid tenantId, CreateAnnouncementRequest r, string? from, string? role, CancellationToken ct = default) =>
+        Guid tenantId, CreateAnnouncementRequest r, Guid? creatorUserId, string? role, CancellationToken ct = default) =>
         QuerySingleProcAsync<AnnouncementResponse>("dbo.Announcement_Create",
-            new { TenantId = tenantId, r.Title, r.Body, From = from, Role = role, r.Type, r.Audience }, ct);
+            new { TenantId = tenantId, r.Title, r.Body, From = role, Role = role, CreatorUserId = creatorUserId, r.Type, r.Audience }, ct);
 }
 
 public static class CommsModule

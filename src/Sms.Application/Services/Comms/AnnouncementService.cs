@@ -15,7 +15,8 @@ namespace Sms.Application.Services.Comms;
 public interface IAnnouncementService
 {
     Task<ApiResult<IReadOnlyList<AnnouncementResponse>>> ListAsync(string? audience, CancellationToken ct = default);
-    Task<ApiResult<AnnouncementResponse>> CreateAsync(CreateAnnouncementRequest req, string? role, CancellationToken ct = default);
+    Task<ApiResult<AnnouncementResponse>> CreateAsync(
+        CreateAnnouncementRequest req, Guid? creatorUserId, string? role, CancellationToken ct = default);
 }
 
 public sealed class AnnouncementService(
@@ -33,7 +34,8 @@ public sealed class AnnouncementService(
     public async Task<ApiResult<IReadOnlyList<AnnouncementResponse>>> ListAsync(string? audience, CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<AnnouncementResponse>>.Ok(await repo.ListAnnouncementsAsync(audience, ct));
 
-    public async Task<ApiResult<AnnouncementResponse>> CreateAsync(CreateAnnouncementRequest req, string? role, CancellationToken ct = default)
+    public async Task<ApiResult<AnnouncementResponse>> CreateAsync(
+        CreateAnnouncementRequest req, Guid? creatorUserId, string? role, CancellationToken ct = default)
     {
         if (tenant.TenantId is not { } tid)
             return ApiResult<AnnouncementResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
@@ -48,7 +50,7 @@ public sealed class AnnouncementService(
         var channels = ParseChannels(req.Channels);
         var normalized = new CreateAnnouncementRequest(title, body, type, audience);
 
-        var created = await repo.CreateAnnouncementAsync(tid, normalized, role, role, ct);
+        var created = await repo.CreateAnnouncementAsync(tid, normalized, creatorUserId, role, ct);
         if (created is null)
             return ApiResult<AnnouncementResponse>.Fail(new Error("internal_error", "failed to create announcement"), 500);
 
