@@ -25,6 +25,7 @@ public interface IAuthService
         string method = "code", string? customMessage = null, CancellationToken ct = default);
     Task<ApiResult> ResetPasswordAsync(ResetPasswordRequest req, CancellationToken ct = default);
     Task<ApiResult> SetPasswordAsync(SetPasswordRequest req, CancellationToken ct = default);
+    Task<ApiResult> UpdatePhotoAsync(UpdatePhotoRequest req, CancellationToken ct = default);
     Task<ApiResult<object>> GetMeAsync(ClaimsPrincipal user, CancellationToken ct = default);
     Task<ApiResult> LogoutAsync(RefreshRequest req, CancellationToken ct = default);
 }
@@ -212,6 +213,24 @@ public sealed class AuthService(
         if (tenant.UserId is not { } uid)
             return ApiResult.Fail(new Error("unauthorized", "unauthorized"), 401);
         await users.SetPasswordAsync(uid, hasher.Hash(req.Password), ct);
+        return ApiResult.NoContent();
+    }
+
+    public async Task<ApiResult> UpdatePhotoAsync(UpdatePhotoRequest req, CancellationToken ct = default)
+    {
+        if (tenant.UserId is not { } uid)
+            return ApiResult.Fail(new Error("unauthorized", "unauthorized"), 401);
+
+        if (req.PhotoUrl is { Length: > 400_000 })
+            return ApiResult.Fail(new Error("invalid_request", "photo is too large (max ~300KB)"), 422);
+        if (req.PhotoUrl is { Length: > 0 } &&
+            !req.PhotoUrl.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase) &&
+            !req.PhotoUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase) &&
+            !req.PhotoUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return ApiResult.Fail(new Error("invalid_request", "photo must be an image data URL or http(s) URL"), 422);
+
+        var photoUrl = string.IsNullOrWhiteSpace(req.PhotoUrl) ? null : req.PhotoUrl.Trim();
+        await users.SetPhotoAsync(uid, photoUrl, ct);
         return ApiResult.NoContent();
     }
 

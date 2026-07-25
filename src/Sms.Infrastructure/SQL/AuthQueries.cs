@@ -8,6 +8,7 @@ public static class AuthQueries
     public const string GetById = "dbo.User_GetById";
     public const string GetRoles = "dbo.UserRoles_GetByUser";
     public const string SetPassword = "dbo.User_SetPassword";
+    public const string SetPhoto = "dbo.User_SetPhoto";
     public const string OtpInsert = "dbo.Otp_Insert";
     public const string OtpGetActive = "dbo.Otp_GetActive";
     public const string OtpConsume = "dbo.Otp_Consume";

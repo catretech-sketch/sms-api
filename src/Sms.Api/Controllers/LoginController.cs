@@ -45,6 +45,11 @@ public sealed class LoginController(IAuthService auth) : ApiControllerBase
     public async Task<IActionResult> SetPassword([FromBody] SetPasswordRequest req, CancellationToken ct) =>
         FromResult(await auth.SetPasswordAsync(req, ct));
 
+    [HttpPatch("~/v1/me/photo")]
+    [Authorize]
+    public async Task<IActionResult> UpdatePhoto([FromBody] UpdatePhotoRequest req, CancellationToken ct) =>
+        FromResult(await auth.UpdatePhotoAsync(req, ct));
+
     [HttpGet("me")]
     [Authorize]
     public async Task<IActionResult> Me(CancellationToken ct) => FromResult(await auth.GetMeAsync(User, ct));

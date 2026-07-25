@@ -149,4 +149,63 @@ public class AuthFlowTests(SqlServerFixture fx)
         doc.RootElement.GetProperty("data").GetProperty("photo_url").ValueKind
             .Should().Be(System.Text.Json.JsonValueKind.Null);
     }
+
+    [Fact]
+    public async Task UpdatePhoto_sets_and_then_clears_the_signed_in_users_photo()
+    {
+        var hasher = new PasswordHasher();
+        var ctx = new TenantContext(); ctx.Set(null, Guid.NewGuid(), true);
+        var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
+        var email = $"setphoto{Guid.NewGuid():N}@x.com";
+        await using (var c = await factory.OpenAsync())
+            await c.ExecuteAsync(
+                "INSERT dbo.Users (Id, Email, PasswordHash, IsPlatform) VALUES (NEWID(),@e,@h,1)",
+                new { e = email, h = hasher.Hash("Pass123!") });
+
+        await using var app = AppWithDb();
+        var client = app.CreateClient();
+        var login = await client.PostAsJsonAsync("/v1/auth/login", new { email, password = "Pass123!" });
+        var token = System.Text.Json.JsonDocument.Parse(await login.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("data").GetProperty("access_token").GetString();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var set = await client.PatchAsJsonAsync("/v1/me/photo", new { photo_url = "https://cdn.example.com/a.png" });
+        set.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var me1 = await client.GetAsync("/v1/auth/me");
+        using (var doc1 = System.Text.Json.JsonDocument.Parse(await me1.Content.ReadAsStringAsync()))
+            doc1.RootElement.GetProperty("data").GetProperty("photo_url").GetString()
+                .Should().Be("https://cdn.example.com/a.png");
+
+        var clear = await client.PatchAsJsonAsync("/v1/me/photo", new { photo_url = (string?)null });
+        clear.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var me2 = await client.GetAsync("/v1/auth/me");
+        using var doc2 = System.Text.Json.JsonDocument.Parse(await me2.Content.ReadAsStringAsync());
+        doc2.RootElement.GetProperty("data").GetProperty("photo_url").ValueKind
+            .Should().Be(System.Text.Json.JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task UpdatePhoto_rejects_a_value_that_is_not_a_data_uri_or_http_url()
+    {
+        var hasher = new PasswordHasher();
+        var ctx = new TenantContext(); ctx.Set(null, Guid.NewGuid(), true);
+        var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
+        var email = $"badphoto{Guid.NewGuid():N}@x.com";
+        await using (var c = await factory.OpenAsync())
+            await c.ExecuteAsync(
+                "INSERT dbo.Users (Id, Email, PasswordHash, IsPlatform) VALUES (NEWID(),@e,@h,1)",
+                new { e = email, h = hasher.Hash("Pass123!") });
+
+        await using var app = AppWithDb();
+        var client = app.CreateClient();
+        var login = await client.PostAsJsonAsync("/v1/auth/login", new { email, password = "Pass123!" });
+        var token = System.Text.Json.JsonDocument.Parse(await login.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("data").GetProperty("access_token").GetString();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var res = await client.PatchAsJsonAsync("/v1/me/photo", new { photo_url = "not-a-valid-value" });
+        res.StatusCode.Should().Be((HttpStatusCode)422);
+    }
 }

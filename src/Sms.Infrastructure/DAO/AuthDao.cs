@@ -42,6 +42,9 @@ public sealed class AuthDao(IDbConnectionFactory factory) : BaseRepository(facto
     public Task SetPasswordAsync(Guid userId, string passwordHash, CancellationToken ct = default) =>
         ExecuteProcAsync(AuthQueries.SetPassword, new { UserId = userId, PasswordHash = passwordHash }, ct);
 
+    public Task SetPhotoAsync(Guid userId, string? photoUrl, CancellationToken ct = default) =>
+        ExecuteProcAsync(AuthQueries.SetPhoto, new { UserId = userId, PhotoUrl = photoUrl }, ct);
+
     public Task OtpInsertAsync(string identifier, string channel, string codeHash,
         DateTime expiresAt, CancellationToken ct = default) =>
         ExecuteProcAsync(AuthQueries.OtpInsert,
