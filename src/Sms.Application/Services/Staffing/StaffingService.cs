@@ -1,4 +1,5 @@
 using Sms.Application.Common;
+using Sms.Application.Interfaces.DAO;
 using Sms.Modules.Staffing.Contracts;
 using Sms.Modules.Staffing.Data;
 using Sms.Shared.Kernel.Http;
@@ -31,6 +32,7 @@ public sealed class StaffingService(
     TeacherRepository teachers,
     StaffRepository staff,
     LeaveRepository leave,
+    IAuthDao users,
     ITenantContext tenant) : IStaffingService
 {
     public async Task<ApiResult<CursorPage<TeacherResponse>>> ListTeachersAsync(
@@ -61,6 +63,18 @@ public sealed class StaffingService(
     {
         if (await teachers.GetAsync(id, ct) is null)
             return ApiResult<TeacherResponse>.Fail(new Error("not_found", "resource not found"), 404);
+
+        if (req.SetPhoto)
+        {
+            if (ImageUrlValidation.Validate(req.PhotoUrl) is { } error)
+                return ApiResult<TeacherResponse>.Fail(error, 422);
+            var userId = await teachers.GetUserIdAsync(id, ct);
+            if (userId is null)
+                return ApiResult<TeacherResponse>.Fail(new Error("no_linked_user",
+                    "This teacher hasn't accepted their sign-in invite yet — the photo can be set once they have."), 409);
+            await users.SetPhotoAsync(userId.Value, ImageUrlValidation.Normalize(req.PhotoUrl), ct);
+        }
+
         var updated = (await teachers.UpdateAsync(id, req, ct))!;
         return ApiResult<TeacherResponse>.Ok(updated);
     }
@@ -93,6 +107,18 @@ public sealed class StaffingService(
     {
         if (await staff.GetAsync(id, ct) is null)
             return ApiResult<StaffResponse>.Fail(new Error("not_found", "resource not found"), 404);
+
+        if (req.SetPhoto)
+        {
+            if (ImageUrlValidation.Validate(req.PhotoUrl) is { } error)
+                return ApiResult<StaffResponse>.Fail(error, 422);
+            var userId = await staff.GetUserIdAsync(id, ct);
+            if (userId is null)
+                return ApiResult<StaffResponse>.Fail(new Error("no_linked_user",
+                    "This staff member hasn't accepted their sign-in invite yet — the photo can be set once they have."), 409);
+            await users.SetPhotoAsync(userId.Value, ImageUrlValidation.Normalize(req.PhotoUrl), ct);
+        }
+
         var updated = (await staff.UpdateAsync(id, req, ct))!;
         return ApiResult<StaffResponse>.Ok(updated);
     }

@@ -18,9 +18,16 @@ public sealed record CreateTeacherRequest(
     string? ClassTeacher, string? Phone, string? Email, int Exp, decimal Rating, decimal Result, int Load,
     int AvatarHue, bool Top, string? EmployeeCode = null);
 
+/// <summary>SetPhoto distinguishes "leave the photo untouched" (SetPhoto=false, the
+/// common case for other field edits) from "set/clear it" (SetPhoto=true; PhotoUrl
+/// null clears it) — see Students.PhotoUrl for the identical pattern. Written through
+/// to the linked Users row (Users.PhotoUrl is the single source of truth read by
+/// GET /auth/me); fails with `no_linked_user` if this teacher has no UserId yet
+/// (not yet invited/accepted).</summary>
 public sealed record UpdateTeacherRequest(
     string? Name, string? Department, string? Designation, IReadOnlyList<string>? Subjects,
-    string? ClassTeacher, string? Phone, string? Email, string? Status);
+    string? ClassTeacher, string? Phone, string? Email, string? Status,
+    string? PhotoUrl = null, bool SetPhoto = false);
 
 // ---- Staff ----
 public sealed record StaffResponse(
@@ -32,9 +39,10 @@ public sealed record CreateStaffRequest(
     string Name, string? Gender, string? Role, string? Category, string? Department, string? Phone,
     string? Shift, string? Route, int AvatarHue, string? EmployeeCode = null);
 
+/// <summary>SetPhoto/PhotoUrl: same pattern as UpdateTeacherRequest, above.</summary>
 public sealed record UpdateStaffRequest(
     string? Name, string? Role, string? Category, string? Department, string? Phone, string? Shift,
-    string? Route, string? Status);
+    string? Route, string? Status, string? PhotoUrl = null, bool SetPhoto = false);
 
 public static class StaffingMappers
 {

@@ -36,6 +36,12 @@ public sealed class TeacherRepository(IDbConnectionFactory factory) : BaseReposi
         (await QueryInlineAsync<TeacherRow>($"SELECT {Cols} FROM dbo.Teachers WHERE Id = @id", new { id }, ct))
         .FirstOrDefault()?.ToResponse();
 
+    /// Null when this teacher row has never been linked to a Users row (not yet
+    /// invited/accepted) — best-effort linkage, see M0084_Identity_Link_Foundation.
+    public async Task<Guid?> GetUserIdAsync(Guid id, CancellationToken ct = default) =>
+        (await QueryInlineAsync<Guid?>("SELECT UserId FROM dbo.Teachers WHERE Id = @id", new { id }, ct))
+        .FirstOrDefault();
+
     public async Task<IReadOnlyList<TeacherResponse>> ListAsync(
         string? q, string? dept, string? status, CancellationToken ct = default)
     {
@@ -68,6 +74,12 @@ public sealed class StaffRepository(IDbConnectionFactory factory) : BaseReposito
 
     public async Task<StaffResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
         (await QueryInlineAsync<StaffResponse>($"SELECT {Cols} FROM dbo.Staff WHERE Id = @id", new { id }, ct))
+        .FirstOrDefault();
+
+    /// Null when this staff row has never been linked to a Users row (not yet
+    /// invited/accepted) — best-effort linkage, see M0084_Identity_Link_Foundation.
+    public async Task<Guid?> GetUserIdAsync(Guid id, CancellationToken ct = default) =>
+        (await QueryInlineAsync<Guid?>("SELECT UserId FROM dbo.Staff WHERE Id = @id", new { id }, ct))
         .FirstOrDefault();
 
     public Task<IReadOnlyList<StaffResponse>> ListAsync(string? q, string? cat, CancellationToken ct = default) =>
