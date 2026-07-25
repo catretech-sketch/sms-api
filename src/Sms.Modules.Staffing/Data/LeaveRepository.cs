@@ -28,7 +28,11 @@ public sealed class LeaveRepository(IDbConnectionFactory factory) : BaseReposito
             new { requesterId }, ct);
 
     public Task<IReadOnlyList<LeaveResponse>> ListByStatusAsync(string status, CancellationToken ct = default) =>
-        QueryInlineAsync<LeaveResponse>(
-            $"SELECT {Cols} FROM dbo.LeaveRequests WHERE Status = @status ORDER BY AppliedOn DESC",
-            new { status }, ct);
+        QueryInlineAsync<LeaveResponse>(@"
+SELECT lr.Id, lr.TenantId, lr.RequesterId, lr.ChildId, lr.Type, lr.FromDate, lr.ToDate,
+       lr.Reason, lr.Substitute, lr.Status, lr.AppliedOn, lr.DecidedNote, u.Name AS RequesterName
+FROM dbo.LeaveRequests lr
+LEFT JOIN dbo.Users u ON u.Id = lr.RequesterId
+WHERE lr.Status = @status
+ORDER BY lr.AppliedOn DESC", new { status }, ct);
 }
