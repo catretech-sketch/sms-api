@@ -9,6 +9,24 @@ public sealed class ClassRepository(IDbConnectionFactory factory) : BaseReposito
 {
     private const string Cols = "Id, TenantId, Name, Grade, Section, Subject, Room, StudentCount, ClassTeacherId";
 
+    // Live count via OUTER APPLY, falling back to the stored (stubbed) column only if the
+    // fallback-count query itself returns NULL (no matching Students rows at all, vs. a
+    // genuine zero). Matches Students to a class the same way ReportingRepository does:
+    // Grade+Section when both are set, else the free-text ClassLabel/Name.
+    private const string ClassSelectWithLiveCount = @"
+SELECT c.Id, c.TenantId, c.Name, c.Grade, c.Section, c.Subject, c.Room,
+       CASE WHEN sc.Cnt IS NOT NULL THEN sc.Cnt ELSE c.StudentCount END AS StudentCount,
+       c.ClassTeacherId
+FROM dbo.Classes c
+OUTER APPLY (
+    SELECT COUNT(*) AS Cnt FROM dbo.Students s
+    WHERE s.Status = N'active'
+      AND (
+        (c.Grade IS NOT NULL AND c.Section IS NOT NULL AND s.Grade = c.Grade AND s.Section = c.Section)
+        OR (c.Name IS NOT NULL AND s.ClassLabel = c.Name)
+      )
+) sc";
+
     public Task<ClassResponse?> CreateAsync(Guid tenantId, CreateClassRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<ClassResponse>("dbo.Class_Create",
             new { TenantId = tenantId, r.Name, r.Grade, r.Section, r.Subject, r.Room, r.ClassTeacherId }, ct);
@@ -29,11 +47,11 @@ public sealed class ClassRepository(IDbConnectionFactory factory) : BaseReposito
             }, ct);
 
     public async Task<ClassResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
-        (await QueryInlineAsync<ClassResponse>($"SELECT {Cols} FROM dbo.Classes WHERE Id = @id", new { id }, ct))
+        (await QueryInlineAsync<ClassResponse>($"{ClassSelectWithLiveCount} WHERE c.Id = @id", new { id }, ct))
         .FirstOrDefault();
 
     public Task<IReadOnlyList<ClassResponse>> ListAsync(CancellationToken ct = default) =>
-        QueryInlineAsync<ClassResponse>($"SELECT {Cols} FROM dbo.Classes ORDER BY Name", null, ct);
+        QueryInlineAsync<ClassResponse>($"{ClassSelectWithLiveCount} ORDER BY c.Name", null, ct);
 }
 
 public sealed class SubjectRepository(IDbConnectionFactory factory) : BaseRepository(factory)
