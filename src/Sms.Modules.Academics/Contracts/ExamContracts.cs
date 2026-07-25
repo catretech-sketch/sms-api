@@ -12,14 +12,15 @@ public sealed record UpdateExamRequest(string? Status, bool? Published, decimal?
 public sealed record ExamPaperResponse(
     Guid Id, Guid TenantId, Guid? ExamId, Guid? ClassId, string? Name, string? Subject, Guid? SubjectId,
     DateTime? Date, string? StartTime, int? DurationMin, int MaxMarks, string? Room,
-    string? Invigilator1, string? Invigilator2, string Status);
+    string? Invigilator1, string? Invigilator2, string Status, string? Topics = null);
 public sealed record CreateExamPaperRequest(
     Guid? ExamId, Guid? ClassId, string? Name, string? Subject, Guid? SubjectId, DateTime? Date,
-    string? StartTime, int? DurationMin, int MaxMarks, string? Room, string? Invigilator1, string? Invigilator2);
+    string? StartTime, int? DurationMin, int MaxMarks, string? Room, string? Invigilator1, string? Invigilator2,
+    string? Topics = null);
 
 public sealed record UpdateExamPaperRequest(
     string? Name, string? Subject, Guid? SubjectId, DateTime? Date, string? StartTime, int? DurationMin,
-    int? MaxMarks, string? Room, string? Invigilator1, string? Invigilator2, string? Status);
+    int? MaxMarks, string? Room, string? Invigilator1, string? Invigilator2, string? Status, string? Topics = null);
 
 // ---- Grade ----
 public sealed record GradeResponse(

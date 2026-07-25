@@ -9,7 +9,7 @@ public sealed class ExamRepository(IDbConnectionFactory factory) : BaseRepositor
         "Id, TenantId, Name, Type, Grades, FromDate, ToDate, SubjectCount, Status, MarksEnteredPct, Published";
     private const string PaperCols =
         "Id, TenantId, ExamId, ClassId, Name, Subject, SubjectId, [Date], StartTime, DurationMin, MaxMarks, " +
-        "Room, Invigilator1, Invigilator2, Status";
+        "Room, Invigilator1, Invigilator2, Status, Topics";
     private const string GradeCols =
         "Id, TenantId, StudentId, StudentName, ExamPaperId, Marks, MaxMarks, Grade, Gpa, Pass, [Date]";
 
@@ -34,7 +34,7 @@ public sealed class ExamRepository(IDbConnectionFactory factory) : BaseRepositor
         QuerySingleProcAsync<ExamPaperResponse>("dbo.ExamPaper_Create", new
         {
             TenantId = tenantId, r.ExamId, r.ClassId, r.Name, r.Subject, r.SubjectId, r.Date, r.StartTime,
-            r.DurationMin, r.MaxMarks, r.Room, r.Invigilator1, r.Invigilator2
+            r.DurationMin, r.MaxMarks, r.Room, r.Invigilator1, r.Invigilator2, r.Topics
         }, ct);
 
     public async Task<ExamPaperResponse?> GetExamPaperAsync(Guid id, CancellationToken ct = default) =>
@@ -50,7 +50,7 @@ public sealed class ExamRepository(IDbConnectionFactory factory) : BaseRepositor
         QuerySingleProcAsync<ExamPaperResponse>("dbo.ExamPaper_Update", new
         {
             Id = id, r.Name, r.Subject, r.SubjectId, r.Date, r.StartTime, r.DurationMin,
-            r.MaxMarks, r.Room, r.Invigilator1, r.Invigilator2, r.Status
+            r.MaxMarks, r.Room, r.Invigilator1, r.Invigilator2, r.Status, r.Topics
         }, ct);
 
     public Task<int> DeleteExamPaperAsync(Guid id, CancellationToken ct = default) =>
