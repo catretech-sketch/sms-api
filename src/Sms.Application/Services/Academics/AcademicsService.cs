@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Sms.Application.Common;
 using Sms.Modules.Academics.Contracts;
 using Sms.Modules.Academics.Data;
@@ -209,8 +210,19 @@ public sealed class AcademicsService(
         return ApiResult<HomeworkResponse>.Ok((await homework.SetStatusAsync(id, "submitted", ct))!);
     }
 
-    public async Task<ApiResult<IReadOnlyList<TimetableSlotResponse>>> ListTimetableAsync(CancellationToken ct = default) =>
-        ApiResult<IReadOnlyList<TimetableSlotResponse>>.Ok(await timetable.ListAsync(ct));
+    public async Task<ApiResult<IReadOnlyList<TimetableSlotResponse>>> ListTimetableAsync(
+        ClaimsPrincipal caller, CancellationToken ct = default)
+    {
+        var roles = caller.FindAll("role").Select(c => c.Value).ToArray();
+        var isPrincipal = roles.Any(r => r.Split('.').LastOrDefault() == "principal");
+        if (isPrincipal)
+            return ApiResult<IReadOnlyList<TimetableSlotResponse>>.Ok(await timetable.ListAsync(ct));
+
+        var sub = caller.FindFirst("sub")?.Value;
+        if (sub is null || !Guid.TryParse(sub, out var userId))
+            return ApiResult<IReadOnlyList<TimetableSlotResponse>>.Fail(new Error("unauthorized", "unauthorized"), 401);
+        return ApiResult<IReadOnlyList<TimetableSlotResponse>>.Ok(await timetable.ListForTeacherAsync(userId, ct));
+    }
 
     public async Task<ApiResult<TimetableSlotResponse>> CreateTimetableSlotAsync(
         CreateTimetableSlotRequest req, CancellationToken ct = default)

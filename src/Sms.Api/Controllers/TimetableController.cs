@@ -13,7 +13,7 @@ public sealed class TimetableController(IAcademicsService academics) : ApiContro
     [HttpGet("timetable")]
     [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
     public async Task<IActionResult> List(CancellationToken ct) =>
-        FromResult(await academics.ListTimetableAsync(ct));
+        FromResult(await academics.ListTimetableAsync(User, ct));
 
     [HttpPost("timetable")]
     [Authorize(Policy = Policies.Principal)]

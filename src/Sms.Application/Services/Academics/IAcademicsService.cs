@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Sms.Application.Common;
 using Sms.Modules.Academics.Contracts;
 
@@ -44,7 +45,8 @@ public interface IAcademicsService
         Guid id, SetHomeworkStatusRequest req, CancellationToken ct = default);
     Task<ApiResult<HomeworkResponse>> SubmitHomeworkAsync(Guid id, CancellationToken ct = default);
 
-    Task<ApiResult<IReadOnlyList<TimetableSlotResponse>>> ListTimetableAsync(CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<TimetableSlotResponse>>> ListTimetableAsync(
+        ClaimsPrincipal caller, CancellationToken ct = default);
     Task<ApiResult<TimetableSlotResponse>> CreateTimetableSlotAsync(
         CreateTimetableSlotRequest req, CancellationToken ct = default);
 

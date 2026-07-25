@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Dapper;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
@@ -23,12 +24,16 @@ public class TimetableTests(SqlServerFixture fx)
             b.UseSetting("Jwt:SigningKey", Key);
         });
 
-    private static HttpClient Client(WebApplicationFactory<Program> app, Guid tenantId, params string[] roles)
+    private static HttpClient Client(WebApplicationFactory<Program> app, Guid tenantId, params string[] roles) =>
+        ClientForUser(app, tenantId, Guid.NewGuid(), roles);
+
+    private static HttpClient ClientForUser(
+        WebApplicationFactory<Program> app, Guid tenantId, Guid userId, params string[] roles)
     {
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, roles, isPlatform: false);
+        var token = jwt.IssueAccess(userId, tenantId, roles, isPlatform: false);
         var c = app.CreateClient();
         c.DefaultRequestHeaders.Authorization = new("Bearer", token);
         return c;
@@ -46,8 +51,26 @@ public class TimetableTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        var teacherUserId = Guid.NewGuid();
         var principal = Client(app, tenantId, Policies.Principal);
-        var teacher = Client(app, tenantId, Policies.Teacher);
+        var teacher = ClientForUser(app, tenantId, teacherUserId, Policies.Teacher);
+
+        // Teacher must be linked (Teachers.UserId) and assigned to the subject the
+        // slot is created for — /timetable now scopes teachers to their own slots.
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId) VALUES (@teacherUserId, @tenantId)", new { teacherUserId, tenantId });
+            var teacherId = Guid.NewGuid();
+            await conn.ExecuteAsync(
+                "INSERT dbo.Teachers (Id, TenantId, Name, UserId) VALUES (@teacherId, @tenantId, 'T1', @teacherUserId)",
+                new { teacherId, tenantId, teacherUserId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Subjects (Id, TenantId, Name, TeacherId) VALUES (NEWID(), @tenantId, 'Mathematics', @teacherId)",
+                new { tenantId, teacherId });
+        }
 
         // POST as principal → 201
         var slot = await Data(await principal.PostAsJsonAsync("/v1/timetable", new
