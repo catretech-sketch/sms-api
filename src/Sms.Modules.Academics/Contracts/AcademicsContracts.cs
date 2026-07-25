@@ -1,9 +1,22 @@
 namespace Sms.Modules.Academics.Contracts;
 
 // ---- Class ----
+// NextPeriod is a trailing init-only property with a secondary 10-param constructor, not a
+// primary-constructor parameter: Dapper materializes via a constructor matching the exact
+// column count of whatever query ran, and Class_Create/Class_Update still return the
+// original 9 columns while ListAsync/GetAsync now return 10 (+ NextPeriod).
 public sealed record ClassResponse(
     Guid Id, Guid TenantId, string Name, string? Grade, string? Section, string? Subject,
-    string? Room, int StudentCount, Guid? ClassTeacherId);
+    string? Room, int StudentCount, Guid? ClassTeacherId)
+{
+    public string? NextPeriod { get; init; }
+
+    public ClassResponse(
+        Guid Id, Guid TenantId, string Name, string? Grade, string? Section, string? Subject,
+        string? Room, int StudentCount, Guid? ClassTeacherId, string? NextPeriod)
+        : this(Id, TenantId, Name, Grade, Section, Subject, Room, StudentCount, ClassTeacherId) =>
+        this.NextPeriod = NextPeriod;
+}
 public sealed record CreateClassRequest(
     string Name, string? Grade, string? Section, string? Subject, string? Room, Guid? ClassTeacherId);
 

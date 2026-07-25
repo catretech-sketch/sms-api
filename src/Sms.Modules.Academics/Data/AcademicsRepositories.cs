@@ -12,11 +12,18 @@ public sealed class ClassRepository(IDbConnectionFactory factory) : BaseReposito
     // Live count via OUTER APPLY, falling back to the stored (stubbed) column only if the
     // fallback-count query itself returns NULL (no matching Students rows at all, vs. a
     // genuine zero). Matches Students to a class the same way ReportingRepository does:
-    // Grade+Section when both are set, else the free-text ClassLabel/Name.
-    private const string ClassSelectWithLiveCount = @"
+    // Grade+Section when both are set, else the free-text ClassLabel/Name. Also derives
+    // NextPeriod from the next upcoming TimetableSlot for the class today.
+    //
+    // Known limitation: StartTime is compared as an "HH:mm" string against a UTC-formatted
+    // current time (matching TimetableSlots.StartTime's existing nvarchar(10) shape) - if
+    // the school's local timezone differs from UTC, "next period" could be off. Timezone
+    // handling for timetables is a pre-existing condition across this module, not introduced
+    // by this fix.
+    private const string ClassSelectWithLiveCountAndNextPeriod = @"
 SELECT c.Id, c.TenantId, c.Name, c.Grade, c.Section, c.Subject, c.Room,
        CASE WHEN sc.Cnt IS NOT NULL THEN sc.Cnt ELSE c.StudentCount END AS StudentCount,
-       c.ClassTeacherId
+       c.ClassTeacherId, np.Subject AS NextPeriod
 FROM dbo.Classes c
 OUTER APPLY (
     SELECT COUNT(*) AS Cnt FROM dbo.Students s
@@ -25,7 +32,15 @@ OUTER APPLY (
         (c.Grade IS NOT NULL AND c.Section IS NOT NULL AND s.Grade = c.Grade AND s.Section = c.Section)
         OR (c.Name IS NOT NULL AND s.ClassLabel = c.Name)
       )
-) sc";
+) sc
+OUTER APPLY (
+    SELECT TOP 1 ts.Subject
+    FROM dbo.TimetableSlots ts
+    WHERE ts.ClassId = c.Id
+      AND ts.[Day] = LEFT(DATENAME(WEEKDAY, GETUTCDATE()), 3)
+      AND ts.StartTime > FORMAT(GETUTCDATE(), 'HH:mm')
+    ORDER BY ts.Period
+) np";
 
     public Task<ClassResponse?> CreateAsync(Guid tenantId, CreateClassRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<ClassResponse>("dbo.Class_Create",
@@ -47,11 +62,11 @@ OUTER APPLY (
             }, ct);
 
     public async Task<ClassResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
-        (await QueryInlineAsync<ClassResponse>($"{ClassSelectWithLiveCount} WHERE c.Id = @id", new { id }, ct))
+        (await QueryInlineAsync<ClassResponse>($"{ClassSelectWithLiveCountAndNextPeriod} WHERE c.Id = @id", new { id }, ct))
         .FirstOrDefault();
 
     public Task<IReadOnlyList<ClassResponse>> ListAsync(CancellationToken ct = default) =>
-        QueryInlineAsync<ClassResponse>($"{ClassSelectWithLiveCount} ORDER BY c.Name", null, ct);
+        QueryInlineAsync<ClassResponse>($"{ClassSelectWithLiveCountAndNextPeriod} ORDER BY c.Name", null, ct);
 }
 
 public sealed class SubjectRepository(IDbConnectionFactory factory) : BaseRepository(factory)
