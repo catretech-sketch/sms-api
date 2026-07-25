@@ -88,10 +88,10 @@ public class BusRosterTests(SqlServerFixture fx)
                     new { Id = student2Id, TenantId = tenantId, AdmissionNo = "S002", Name = "Bob Jones" }
                 });
 
-            // Live Trip (BusNo links to bus)
+            // Live Trip (BusId links to bus; BusNo kept for legacy/back-compat only)
             await conn.ExecuteAsync(
-                "INSERT dbo.Trips (Id, TenantId, BusNo, Status, StartedAt) VALUES (@Id, @TenantId, @BusNo, 'live', @StartedAt)",
-                new { Id = tripId, TenantId = tenantId, BusNo = busNo, StartedAt = DateTime.UtcNow });
+                "INSERT dbo.Trips (Id, TenantId, BusId, BusNo, Status, StartedAt) VALUES (@Id, @TenantId, @BusId, @BusNo, 'live', @StartedAt)",
+                new { Id = tripId, TenantId = tenantId, BusId = busId, BusNo = busNo, StartedAt = DateTime.UtcNow });
 
             // Boardings: one boarded, one absent
             await conn.ExecuteAsync(

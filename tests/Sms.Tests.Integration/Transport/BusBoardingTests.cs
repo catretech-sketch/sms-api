@@ -86,8 +86,8 @@ public class BusBoardingTests(SqlServerFixture fx)
                 });
 
             await conn.ExecuteAsync(
-                "INSERT dbo.Trips (Id, TenantId, BusNo, Status, StartedAt) VALUES (@Id, @TenantId, @BusNo, 'live', @StartedAt)",
-                new { Id = Guid.NewGuid(), TenantId = tenantId, BusNo = busNo, StartedAt = DateTime.UtcNow });
+                "INSERT dbo.Trips (Id, TenantId, BusId, BusNo, Status, StartedAt) VALUES (@Id, @TenantId, @BusId, @BusNo, 'live', @StartedAt)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, BusId = busId, BusNo = busNo, StartedAt = DateTime.UtcNow });
         });
 
         var client = TeacherClient(app, tenantId);
