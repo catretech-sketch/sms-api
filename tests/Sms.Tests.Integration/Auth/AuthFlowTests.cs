@@ -208,4 +208,28 @@ public class AuthFlowTests(SqlServerFixture fx)
         var res = await client.PatchAsJsonAsync("/v1/me/photo", new { photo_url = "not-a-valid-value" });
         res.StatusCode.Should().Be((HttpStatusCode)422);
     }
+
+    [Fact]
+    public async Task UpdatePhoto_rejects_a_value_over_400000_characters()
+    {
+        var hasher = new PasswordHasher();
+        var ctx = new TenantContext(); ctx.Set(null, Guid.NewGuid(), true);
+        var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
+        var email = $"bigphoto{Guid.NewGuid():N}@x.com";
+        await using (var c = await factory.OpenAsync())
+            await c.ExecuteAsync(
+                "INSERT dbo.Users (Id, Email, PasswordHash, IsPlatform) VALUES (NEWID(),@e,@h,1)",
+                new { e = email, h = hasher.Hash("Pass123!") });
+
+        await using var app = AppWithDb();
+        var client = app.CreateClient();
+        var login = await client.PostAsJsonAsync("/v1/auth/login", new { email, password = "Pass123!" });
+        var token = System.Text.Json.JsonDocument.Parse(await login.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("data").GetProperty("access_token").GetString();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var oversized = "data:image/png;base64," + new string('a', 400_001);
+        var res = await client.PatchAsJsonAsync("/v1/me/photo", new { photo_url = oversized });
+        res.StatusCode.Should().Be((HttpStatusCode)422);
+    }
 }

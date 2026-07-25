@@ -111,4 +111,21 @@ public class StudentPhotoTests(SqlServerFixture fx)
             new { photo_url = "not-a-valid-value", set_photo = true });
         res.StatusCode.Should().Be((HttpStatusCode)422);
     }
+
+    [Fact]
+    public async Task Rejects_a_photo_value_over_400000_characters()
+    {
+        var tenantId = Guid.NewGuid();
+        var studentId = Guid.NewGuid();
+        await SeedStudentAsync(fx, tenantId, studentId);
+
+        await using var app = AppWithDb(fx);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", TeacherToken(tenantId));
+
+        var oversized = "data:image/png;base64," + new string('a', 400_001);
+        var res = await client.PatchAsJsonAsync($"/v1/students/{studentId}",
+            new { photo_url = oversized, set_photo = true });
+        res.StatusCode.Should().Be((HttpStatusCode)422);
+    }
 }
