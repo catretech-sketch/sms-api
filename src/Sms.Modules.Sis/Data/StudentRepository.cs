@@ -7,13 +7,13 @@ public sealed class StudentRepository(IDbConnectionFactory factory) : BaseReposi
 {
     private const string Cols =
         "Id, TenantId, AdmissionNo, Name, Gender, Grade, Section, ClassLabel, Roll, GuardianName, " +
-        "GuardianPhone, AttendancePct, FeeStatus, FeeDue, Status, House, AvatarHue, Dob, Email, Address";
+        "GuardianPhone, AttendancePct, FeeStatus, FeeDue, Status, House, AvatarHue, Dob, Email, Address, PhotoUrl";
 
     private const string ColsWithLivePct = @"
 s.Id, s.TenantId, s.AdmissionNo, s.Name, s.Gender, s.Grade, s.Section, s.ClassLabel, s.Roll,
 s.GuardianName, s.GuardianPhone,
 CAST(CASE WHEN att.TotalDays > 0 THEN 100.0 * att.PresentDays / att.TotalDays ELSE 0 END AS decimal(5,2)) AS AttendancePct,
-s.FeeStatus, s.FeeDue, s.Status, s.House, s.AvatarHue, s.Dob, s.Email, s.Address
+s.FeeStatus, s.FeeDue, s.Status, s.House, s.AvatarHue, s.Dob, s.Email, s.Address, s.PhotoUrl
 FROM dbo.Students s
 OUTER APPLY (
     SELECT COUNT(*) AS TotalDays,
@@ -33,7 +33,7 @@ OUTER APPLY (
         QuerySingleProcAsync<StudentResponse>("dbo.Student_Update", new
         {
             Id = id, r.Name, r.Grade, r.Section, r.Roll, r.GuardianName, r.GuardianPhone,
-            r.House, r.FeeStatus, r.FeeDue, r.Status
+            r.House, r.FeeStatus, r.FeeDue, r.Status, r.PhotoUrl, r.SetPhoto
         }, ct);
 
     public async Task<StudentResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
