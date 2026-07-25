@@ -3,9 +3,22 @@ using Sms.Shared.Kernel.Data;
 
 namespace Sms.Modules.Comms;
 
+// Online is a trailing init-only property with a secondary 10-param constructor, not a
+// primary-constructor parameter: Dapper materializes via a constructor matching the exact
+// column count of whatever query ran, and Thread_Create still returns the original 9
+// columns while ListThreadsAsync now returns 10 (+ Online).
 public sealed record ChatThreadResponse(
     Guid Id, Guid TenantId, string Name, string? Role, string? LastMessage, DateTime? LastAt,
-    int Unread, bool Group, Guid? ChildId);
+    int Unread, bool Group, Guid? ChildId)
+{
+    public bool Online { get; init; }
+
+    public ChatThreadResponse(
+        Guid Id, Guid TenantId, string Name, string? Role, string? LastMessage, DateTime? LastAt,
+        int Unread, bool Group, Guid? ChildId, bool Online)
+        : this(Id, TenantId, Name, Role, LastMessage, LastAt, Unread, Group, ChildId) =>
+        this.Online = Online;
+}
 public sealed record CreateThreadRequest(string Name, string? Role, bool Group, Guid? ChildId);
 public sealed record ChatMessageResponse(Guid Id, Guid ThreadId, Guid? SenderId, string Text, DateTime SentAt, bool IsMine);
 public sealed record SendMessageRequest(string Text);
@@ -70,10 +83,19 @@ public sealed class CommsRepository(IDbConnectionFactory factory) : BaseReposito
         QuerySingleProcAsync<NotificationResponse>("dbo.Notification_Create",
             new { TenantId = tenantId, r.Icon, r.Tone, r.Title, r.Body }, ct);
 
+    // Known limitation: ChatThreads.Name/Role are free-text, not an FK to Users - there's no
+    // reliable per-thread "which Users row is this" link today. Presence is matched
+    // best-effort by TenantId+Name, which may miss (or mismatch) threads whose contact name
+    // doesn't exactly match a Users.Name. A proper ChatThreads.ContactUserId FK is a
+    // follow-up, out of scope here.
     public Task<IReadOnlyList<ChatThreadResponse>> ListThreadsAsync(CancellationToken ct = default) =>
-        QueryInlineAsync<ChatThreadResponse>(
-            "SELECT Id, TenantId, Name, Role, LastMessage, LastAt, Unread, IsGroup AS [Group], ChildId " +
-            "FROM dbo.ChatThreads ORDER BY LastAt DESC", null, ct);
+        QueryInlineAsync<ChatThreadResponse>(@"
+SELECT th.Id, th.TenantId, th.Name, th.Role, th.LastMessage, th.LastAt, th.Unread, th.IsGroup AS [Group], th.ChildId,
+       CAST(CASE WHEN u.LastSeenAt IS NOT NULL AND u.LastSeenAt > DATEADD(MINUTE, -5, SYSUTCDATETIME())
+            THEN 1 ELSE 0 END AS bit) AS Online
+FROM dbo.ChatThreads th
+LEFT JOIN dbo.Users u ON u.TenantId = th.TenantId AND u.Name = th.Name
+ORDER BY th.LastAt DESC", null, ct);
 
     public Task<ChatThreadResponse?> CreateThreadAsync(Guid tenantId, CreateThreadRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<ChatThreadResponse>("dbo.Thread_Create",

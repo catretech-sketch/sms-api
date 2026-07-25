@@ -35,6 +35,7 @@ app.UseCors("sms");
 app.UseRateLimiter();
 app.UseAuthentication();
 app.UseMiddleware<TenantResolutionMiddleware>();
+app.UseMiddleware<Sms.Api.Middleware.LastSeenTouchMiddleware>();
 app.UseMiddleware<BillingStateMiddleware>();
 app.UseAuthorization();
 
