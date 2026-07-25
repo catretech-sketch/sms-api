@@ -47,7 +47,7 @@ public sealed class LoginController(IAuthService auth) : ApiControllerBase
 
     [HttpGet("me")]
     [Authorize]
-    public IActionResult Me() => FromResult(auth.GetMe(User));
+    public async Task<IActionResult> Me(CancellationToken ct) => FromResult(await auth.GetMeAsync(User, ct));
 
     [HttpPost("logout")]
     [AllowAnonymous]

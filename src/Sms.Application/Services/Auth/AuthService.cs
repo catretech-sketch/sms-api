@@ -25,7 +25,7 @@ public interface IAuthService
         string method = "code", string? customMessage = null, CancellationToken ct = default);
     Task<ApiResult> ResetPasswordAsync(ResetPasswordRequest req, CancellationToken ct = default);
     Task<ApiResult> SetPasswordAsync(SetPasswordRequest req, CancellationToken ct = default);
-    ApiResult<object> GetMe(ClaimsPrincipal user);
+    Task<ApiResult<object>> GetMeAsync(ClaimsPrincipal user, CancellationToken ct = default);
     Task<ApiResult> LogoutAsync(RefreshRequest req, CancellationToken ct = default);
 }
 
@@ -40,7 +40,8 @@ public sealed class AuthService(
     FrontendOptions frontend,
     ClientRepository clients,
     ITenantContext tenant,
-    IInvitationDao invitations) : IAuthService
+    IInvitationDao invitations,
+    IProfileDao profiles) : IAuthService
 {
     public async Task<ApiResult<TokenResponse>> LoginAsync(LoginRequest req, CancellationToken ct = default)
     {
@@ -214,18 +215,57 @@ public sealed class AuthService(
         return ApiResult.NoContent();
     }
 
-    public ApiResult<object> GetMe(ClaimsPrincipal user)
+    public async Task<ApiResult<object>> GetMeAsync(ClaimsPrincipal user, CancellationToken ct = default)
     {
         var sub = user.FindFirst("sub")?.Value;
-        if (sub is null)
+        if (sub is null || !Guid.TryParse(sub, out var userId))
             return ApiResult<object>.Fail(new Error("unauthorized", "unauthorized"), 401);
+
+        var record = await users.GetByIdAsync(userId, ct);
+        if (record is null)
+            return ApiResult<object>.Fail(new Error("unauthorized", "unauthorized"), 401);
+
+        var roles = user.FindAll("role").Select(c => c.Value).ToArray();
+        var (title, classroom) = await ResolveProfileAsync(record.Id, roles, ct);
+
+        string? tenantName = null;
+        if (record.TenantId is Guid tid)
+        {
+            var school = await clients.GetAsync(tid, ct);
+            tenantName = school?.Name;
+        }
+
         return ApiResult<object>.Ok(new
         {
             id = sub,
             tenant_id = user.FindFirst("tenant_id")?.Value,
-            roles = user.FindAll("role").Select(c => c.Value).ToArray(),
-            is_platform = user.FindFirst("is_platform")?.Value == "1"
+            roles,
+            is_platform = user.FindFirst("is_platform")?.Value == "1",
+            name = record.Name,
+            email = record.Email,
+            phone = record.Phone,
+            tenant_name = tenantName,
+            must_set_password = record.MustSetPassword,
+            title,
+            classroom,
         });
+    }
+
+    /// Role-agnostic profile resolution: base identity always comes from Users (already
+    /// on `record`); role-specific fields are looked up via a small dispatch so adding a
+    /// Parent/Student branch later (for sms-staff/sms-student) is additive, not a rewrite.
+    private async Task<(string? Title, string? Classroom)> ResolveProfileAsync(
+        Guid userId, IReadOnlyList<string> roles, CancellationToken ct)
+    {
+        var lastSegment = roles.Select(r => r.Split('.').LastOrDefault() ?? r).FirstOrDefault();
+        return lastSegment switch
+        {
+            "teacher" => (
+                await profiles.GetTeacherTitleByUserIdAsync(userId, ct),
+                await profiles.GetClassroomNameByTeacherUserIdAsync(userId, ct)),
+            "principal" => (null, null),
+            _ => (await profiles.GetStaffTitleByUserIdAsync(userId, ct), null),
+        };
     }
 
     public async Task<ApiResult> LogoutAsync(RefreshRequest req, CancellationToken ct = default)
