@@ -98,4 +98,55 @@ public class AuthFlowTests(SqlServerFixture fx)
         using var doc = System.Text.Json.JsonDocument.Parse(await me.Content.ReadAsStringAsync());
         doc.RootElement.GetProperty("data").GetProperty("is_platform").GetBoolean().Should().BeTrue();
     }
+
+    [Fact]
+    public async Task Me_returns_photo_url_when_set_directly_on_the_row()
+    {
+        var hasher = new PasswordHasher();
+        var ctx = new TenantContext(); ctx.Set(null, Guid.NewGuid(), true);
+        var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
+        var email = $"photo{Guid.NewGuid():N}@x.com";
+        const string photoUrl = "https://cdn.example.com/avatars/a.png";
+        await using (var c = await factory.OpenAsync())
+            await c.ExecuteAsync(
+                "INSERT dbo.Users (Id, Email, PasswordHash, IsPlatform, PhotoUrl) VALUES (NEWID(),@e,@h,1,@p)",
+                new { e = email, h = hasher.Hash("Pass123!"), p = photoUrl });
+
+        await using var app = AppWithDb();
+        var client = app.CreateClient();
+        var login = await client.PostAsJsonAsync("/v1/auth/login", new { email, password = "Pass123!" });
+        var token = System.Text.Json.JsonDocument.Parse(await login.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("data").GetProperty("access_token").GetString();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var me = await client.GetAsync("/v1/auth/me");
+        me.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = System.Text.Json.JsonDocument.Parse(await me.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("data").GetProperty("photo_url").GetString().Should().Be(photoUrl);
+    }
+
+    [Fact]
+    public async Task Me_returns_null_photo_url_when_unset()
+    {
+        var hasher = new PasswordHasher();
+        var ctx = new TenantContext(); ctx.Set(null, Guid.NewGuid(), true);
+        var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
+        var email = $"nophoto{Guid.NewGuid():N}@x.com";
+        await using (var c = await factory.OpenAsync())
+            await c.ExecuteAsync(
+                "INSERT dbo.Users (Id, Email, PasswordHash, IsPlatform) VALUES (NEWID(),@e,@h,1)",
+                new { e = email, h = hasher.Hash("Pass123!") });
+
+        await using var app = AppWithDb();
+        var client = app.CreateClient();
+        var login = await client.PostAsJsonAsync("/v1/auth/login", new { email, password = "Pass123!" });
+        var token = System.Text.Json.JsonDocument.Parse(await login.Content.ReadAsStringAsync())
+            .RootElement.GetProperty("data").GetProperty("access_token").GetString();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var me = await client.GetAsync("/v1/auth/me");
+        using var doc = System.Text.Json.JsonDocument.Parse(await me.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("data").GetProperty("photo_url").ValueKind
+            .Should().Be(System.Text.Json.JsonValueKind.Null);
+    }
 }

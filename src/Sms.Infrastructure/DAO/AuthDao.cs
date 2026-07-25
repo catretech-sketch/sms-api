@@ -18,21 +18,21 @@ public sealed class AuthDao(IDbConnectionFactory factory) : BaseRepository(facto
 
     public Task<IReadOnlyList<UserRecord>> ListByEmailAsync(string email, CancellationToken ct = default) =>
         QueryInlineAsync<UserRecord>(
-            "SELECT Id, TenantId, Email, StudentId, Phone, PasswordHash, IsPlatform, Status, Name, MustSetPassword " +
+            "SELECT Id, TenantId, Email, StudentId, Phone, PasswordHash, IsPlatform, Status, Name, MustSetPassword, CreatedAt, PhotoUrl " +
             "FROM dbo.Users WHERE Email = @Email " +
             "ORDER BY CASE WHEN IsPlatform = 1 THEN 0 ELSE 1 END, CreatedAt",
             new { Email = email }, ct);
 
     public Task<IReadOnlyList<UserRecord>> ListByPhoneAsync(string phone, CancellationToken ct = default) =>
         QueryInlineAsync<UserRecord>(
-            "SELECT Id, TenantId, Email, StudentId, Phone, PasswordHash, IsPlatform, Status, Name, MustSetPassword " +
+            "SELECT Id, TenantId, Email, StudentId, Phone, PasswordHash, IsPlatform, Status, Name, MustSetPassword, CreatedAt, PhotoUrl " +
             "FROM dbo.Users WHERE Phone = @Phone " +
             "ORDER BY CASE WHEN IsPlatform = 1 THEN 0 ELSE 1 END, CreatedAt",
             new { Phone = phone }, ct);
 
     public async Task<UserRecord?> GetByEmailAndTenantAsync(string email, Guid tenantId, CancellationToken ct = default) =>
         (await QueryInlineAsync<UserRecord>(
-            "SELECT Id, TenantId, Email, StudentId, Phone, PasswordHash, IsPlatform, Status, Name, MustSetPassword " +
+            "SELECT Id, TenantId, Email, StudentId, Phone, PasswordHash, IsPlatform, Status, Name, MustSetPassword, CreatedAt, PhotoUrl " +
             "FROM dbo.Users WHERE Email = @Email AND TenantId = @TenantId",
             new { Email = email, TenantId = tenantId }, ct)).FirstOrDefault();
 

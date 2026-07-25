@@ -248,6 +248,7 @@ public sealed class AuthService(
             must_set_password = record.MustSetPassword,
             title,
             classroom,
+            photo_url = record.PhotoUrl,
         });
     }
 
