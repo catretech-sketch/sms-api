@@ -114,7 +114,11 @@ public class BusPositionTests(SqlServerFixture fx)
         data.GetProperty("next_stop_name").GetString().Should().Be(stop3Name);
         data.GetProperty("lat").GetDouble().Should().Be(pingLat);
         data.GetProperty("lng").GetDouble().Should().Be(pingLng);
-        data.GetProperty("eta_minutes").ValueKind.Should().Be(JsonValueKind.Null);
+        // A real SpeedKmh (20) and a next stop are present, so ETA is now a computed
+        // value instead of the old hardcoded null.
+        var eta = data.GetProperty("eta_minutes");
+        eta.ValueKind.Should().NotBe(JsonValueKind.Null);
+        eta.GetInt32().Should().BeGreaterThan(0);
     }
 
     [Fact]

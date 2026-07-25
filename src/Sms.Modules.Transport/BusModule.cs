@@ -109,7 +109,8 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
     }
 
     private sealed record StopRow(string Name, int Seq, double Lat, double Lng);
-    private sealed record PingRow2(double Lat, double Lng);
+    // SpeedKmh is NOT NULL (default 0) on dbo.TripPings — "missing" reads as 0, not null.
+    private sealed record PingRow2(double Lat, double Lng, double SpeedKmh);
 
     public async Task<BusPositionResponse> GetPositionAsync(Guid busId, CancellationToken ct = default)
     {
@@ -117,7 +118,7 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
             "SELECT Name, Seq, Lat, Lng FROM dbo.BusStops WHERE BusId = @busId ORDER BY Seq", new { busId }, ct);
         var tripId = await CurrentTripIdAsync(busId, ct);
         PingRow2? ping = tripId is null ? null : (await QueryInlineAsync<PingRow2>(
-            "SELECT TOP 1 Lat, Lng FROM dbo.TripPings WHERE TripId = @tripId ORDER BY At DESC",
+            "SELECT TOP 1 Lat, Lng, SpeedKmh FROM dbo.TripPings WHERE TripId = @tripId ORDER BY At DESC",
             new { tripId }, ct)).FirstOrDefault();
 
         if (ping is null || stops.Count == 0)
@@ -130,8 +131,18 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
             if (dist < best) { best = dist; nearest = i; }
         }
         double progress = stops.Count > 1 ? Math.Round((double)nearest / (stops.Count - 1), 3) : 0;
-        string? next = nearest + 1 < stops.Count ? stops[nearest + 1].Name : null;
-        return new BusPositionResponse(busId, nearest, progress, ping.Lat, ping.Lng, next, null);
+        int? nextIndex = nearest + 1 < stops.Count ? nearest + 1 : null;
+        string? next = nextIndex is int ni ? stops[ni].Name : null;
+
+        int? etaMinutes = null;
+        if (nextIndex is int idx && ping.SpeedKmh > 1.0) // ignore near-stationary/missing-speed noise
+        {
+            var distToNextMeters = Haversine(ping.Lat, ping.Lng, stops[idx].Lat, stops[idx].Lng);
+            var etaHours = (distToNextMeters / 1000.0) / ping.SpeedKmh;
+            etaMinutes = (int)Math.Round(etaHours * 60);
+        }
+
+        return new BusPositionResponse(busId, nearest, progress, ping.Lat, ping.Lng, next, etaMinutes);
     }
 
     private static double Haversine(double lat1, double lng1, double lat2, double lng2)
