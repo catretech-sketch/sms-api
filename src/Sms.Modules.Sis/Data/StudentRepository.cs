@@ -9,6 +9,19 @@ public sealed class StudentRepository(IDbConnectionFactory factory) : BaseReposi
         "Id, TenantId, AdmissionNo, Name, Gender, Grade, Section, ClassLabel, Roll, GuardianName, " +
         "GuardianPhone, AttendancePct, FeeStatus, FeeDue, Status, House, AvatarHue, Dob, Email, Address";
 
+    private const string ColsWithLivePct = @"
+s.Id, s.TenantId, s.AdmissionNo, s.Name, s.Gender, s.Grade, s.Section, s.ClassLabel, s.Roll,
+s.GuardianName, s.GuardianPhone,
+CAST(CASE WHEN att.TotalDays > 0 THEN 100.0 * att.PresentDays / att.TotalDays ELSE 0 END AS decimal(5,2)) AS AttendancePct,
+s.FeeStatus, s.FeeDue, s.Status, s.House, s.AvatarHue, s.Dob, s.Email, s.Address
+FROM dbo.Students s
+OUTER APPLY (
+    SELECT COUNT(*) AS TotalDays,
+           SUM(CASE WHEN ar.Status IN ('present','late') THEN 1 ELSE 0 END) AS PresentDays
+    FROM dbo.AttendanceRecords ar
+    WHERE ar.StudentId = s.Id
+) att";
+
     public Task<StudentResponse?> CreateAsync(Guid tenantId, CreateStudentRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<StudentResponse>("dbo.Student_Create", new
         {
@@ -24,16 +37,16 @@ public sealed class StudentRepository(IDbConnectionFactory factory) : BaseReposi
         }, ct);
 
     public async Task<StudentResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
-        (await QueryInlineAsync<StudentResponse>($"SELECT {Cols} FROM dbo.Students WHERE Id = @id", new { id }, ct))
+        (await QueryInlineAsync<StudentResponse>($"SELECT {ColsWithLivePct} WHERE s.Id = @id", new { id }, ct))
         .FirstOrDefault();
 
     public Task<IReadOnlyList<StudentResponse>> ListAsync(
         string? q, string? grade, string? status, string? fee, CancellationToken ct = default) =>
         QueryInlineAsync<StudentResponse>(
-            $"SELECT {Cols} FROM dbo.Students WHERE " +
-            "(@q IS NULL OR Name LIKE '%' + @q + '%' OR AdmissionNo LIKE '%' + @q + '%' OR ClassLabel LIKE '%' + @q + '%') " +
-            "AND (@grade IS NULL OR Grade = @grade) AND (@status IS NULL OR Status = @status) " +
-            "AND (@fee IS NULL OR FeeStatus = @fee) ORDER BY Name",
+            $"SELECT {ColsWithLivePct} WHERE " +
+            "(@q IS NULL OR s.Name LIKE '%' + @q + '%' OR s.AdmissionNo LIKE '%' + @q + '%' OR s.ClassLabel LIKE '%' + @q + '%') " +
+            "AND (@grade IS NULL OR s.Grade = @grade) AND (@status IS NULL OR s.Status = @status) " +
+            "AND (@fee IS NULL OR s.FeeStatus = @fee) ORDER BY s.Name",
             new { q, grade, status, fee }, ct);
 
     /// Students belonging to a class, matched by the class's Grade+Section (no ClassId exists).
@@ -50,7 +63,7 @@ public sealed class StudentRepository(IDbConnectionFactory factory) : BaseReposi
         }
 
         var rows = await QueryInlineAsync<StudentResponse>(
-            $@"SELECT TOP (@limit) {Cols} FROM dbo.Students s
+            $@"SELECT TOP (@limit) {ColsWithLivePct}
                WHERE EXISTS (SELECT 1 FROM dbo.Classes c
                              WHERE c.Id = @classId AND c.Grade = s.Grade AND c.Section = s.Section)
                  AND (@lastName IS NULL OR s.Name > @lastName
