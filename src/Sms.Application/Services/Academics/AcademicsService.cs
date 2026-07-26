@@ -12,6 +12,7 @@ public sealed class AcademicsService(
     ClassRepository classes,
     SubjectRepository subjects,
     AttendanceRepository attendance,
+    StaffAttendanceRepository staffAttendance,
     ExamRepository exams,
     HomeworkRepository homework,
     TimetableRepository timetable,
@@ -21,6 +22,11 @@ public sealed class AcademicsService(
     ITenantContext tenant,
     IClock clock) : IAcademicsService
 {
+    private static string? NormPersonType(string? t)
+    {
+        var v = (t ?? "").Trim().ToLowerInvariant();
+        return v is "teacher" or "staff" ? v : null;
+    }
     public async Task<ApiResult<IReadOnlyList<ClassResponse>>> ListClassesAsync(CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<ClassResponse>>.Ok(await classes.ListAsync(ct));
 
@@ -104,6 +110,45 @@ public sealed class AcademicsService(
         return ApiResult.NoContent();
     }
 
+    public async Task<ApiResult<IReadOnlyList<AttendanceRecordResponse>>> ListAttendanceForStudentAsync(
+        Guid studentId, DateTime from, DateTime to, CancellationToken ct = default) =>
+        ApiResult<IReadOnlyList<AttendanceRecordResponse>>.Ok(
+            await attendance.ListForStudentAsync(studentId, from, to, ct));
+
+    public async Task<ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>> ListStaffAttendanceAsync(
+        string personType, DateTime date, CancellationToken ct = default)
+    {
+        var type = NormPersonType(personType);
+        if (type is null)
+            return ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>.Fail(
+                new Error("invalid_request", "personType must be 'teacher' or 'staff'"), 400);
+        return ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>.Ok(
+            await staffAttendance.ListAsync(type, date, ct));
+    }
+
+    public async Task<ApiResult> BulkUpsertStaffAttendanceAsync(
+        BulkStaffAttendanceRequest req, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+        var type = NormPersonType(req.PersonType);
+        if (type is null)
+            return ApiResult.Fail(new Error("invalid_request", "personType must be 'teacher' or 'staff'"), 400);
+        await staffAttendance.BulkUpsertAsync(tid, type, req.Date, tenant.UserId, req.Records, ct);
+        return ApiResult.NoContent();
+    }
+
+    public async Task<ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>> ListStaffAttendanceForPersonAsync(
+        string personType, Guid personId, DateTime from, DateTime to, CancellationToken ct = default)
+    {
+        var type = NormPersonType(personType);
+        if (type is null)
+            return ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>.Fail(
+                new Error("invalid_request", "personType must be 'teacher' or 'staff'"), 400);
+        return ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>.Ok(
+            await staffAttendance.ListForPersonAsync(type, personId, from, to, ct));
+    }
+
     public async Task<ApiResult<IReadOnlyList<ExamResponse>>> ListExamsAsync(CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<ExamResponse>>.Ok(await exams.ListExamsAsync(ct));
 
@@ -173,6 +218,22 @@ public sealed class AcademicsService(
         if (tenant.TenantId is not { } tid)
             return ApiResult<GradeResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
         return ApiResult<GradeResponse>.Ok((await exams.UpsertGradeAsync(tid, req, ct))!);
+    }
+
+    public async Task<ApiResult<IReadOnlyList<ExamAttendanceRecordResponse>>> ListExamAttendanceAsync(
+        Guid examPaperId, CancellationToken ct = default) =>
+        ApiResult<IReadOnlyList<ExamAttendanceRecordResponse>>.Ok(
+            await exams.ListExamAttendanceAsync(examPaperId, ct));
+
+    public async Task<ApiResult> BulkUpsertExamAttendanceAsync(
+        Guid examPaperId, BulkExamAttendanceRequest req, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+        if (await exams.GetExamPaperAsync(examPaperId, ct) is null)
+            return ApiResult.Fail(new Error("not_found", "resource not found"), 404);
+        await exams.BulkUpsertExamAttendanceAsync(tid, examPaperId, tenant.UserId, req.Records, ct);
+        return ApiResult.NoContent();
     }
 
     public async Task<ApiResult<IReadOnlyList<HomeworkResponse>>> ListHomeworkAsync(

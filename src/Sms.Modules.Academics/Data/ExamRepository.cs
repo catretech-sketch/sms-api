@@ -1,3 +1,5 @@
+using System.Data;
+using Dapper;
 using Sms.Modules.Academics.Contracts;
 using Sms.Shared.Kernel.Data;
 
@@ -64,5 +66,29 @@ public sealed class ExamRepository(IDbConnectionFactory factory) : BaseRepositor
     public Task<IReadOnlyList<GradeResponse>> ListGradesAsync(Guid examPaperId, CancellationToken ct = default) =>
         QueryInlineAsync<GradeResponse>(
             $"SELECT {GradeCols} FROM dbo.Grades WHERE ExamPaperId = @examPaperId ORDER BY StudentName",
+            new { examPaperId }, ct);
+
+    // Exam attendance — admin roll-call for one paper, distinct from Grades (marks/scores).
+    public Task BulkUpsertExamAttendanceAsync(Guid tenantId, Guid examPaperId, Guid? markedBy,
+        IReadOnlyList<ExamAttendanceUpsertRow> rows, CancellationToken ct = default)
+    {
+        var table = new DataTable();
+        table.Columns.Add("StudentId", typeof(Guid));
+        table.Columns.Add("Status", typeof(string));
+        foreach (var r in rows) table.Rows.Add(r.StudentId, r.Status);
+
+        var p = new DynamicParameters();
+        p.Add("@TenantId", tenantId);
+        p.Add("@ExamPaperId", examPaperId);
+        p.Add("@MarkedBy", markedBy);
+        p.Add("@Rows", table.AsTableValuedParameter("dbo.ExamAttendanceTvp"));
+        return ExecuteProcAsync("dbo.ExamAttendance_BulkUpsert", p, ct);
+    }
+
+    public Task<IReadOnlyList<ExamAttendanceRecordResponse>> ListExamAttendanceAsync(
+        Guid examPaperId, CancellationToken ct = default) =>
+        QueryInlineAsync<ExamAttendanceRecordResponse>(
+            "SELECT Id, TenantId, ExamPaperId, StudentId, Status, MarkedBy FROM dbo.ExamAttendanceRecords " +
+            "WHERE ExamPaperId = @examPaperId ORDER BY StudentId",
             new { examPaperId }, ct);
 }

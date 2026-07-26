@@ -21,6 +21,14 @@ public interface IAcademicsService
         Guid classId, DateTime date, CancellationToken ct = default);
     Task<ApiResult> BulkUpsertAttendanceAsync(
         Guid classId, BulkAttendanceRequest req, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<AttendanceRecordResponse>>> ListAttendanceForStudentAsync(
+        Guid studentId, DateTime from, DateTime to, CancellationToken ct = default);
+
+    Task<ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>> ListStaffAttendanceAsync(
+        string personType, DateTime date, CancellationToken ct = default);
+    Task<ApiResult> BulkUpsertStaffAttendanceAsync(BulkStaffAttendanceRequest req, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>> ListStaffAttendanceForPersonAsync(
+        string personType, Guid personId, DateTime from, DateTime to, CancellationToken ct = default);
 
     Task<ApiResult<IReadOnlyList<ExamResponse>>> ListExamsAsync(CancellationToken ct = default);
     Task<ApiResult<ExamResponse>> GetExamAsync(Guid id, CancellationToken ct = default);
@@ -36,6 +44,11 @@ public interface IAcademicsService
 
     Task<ApiResult<IReadOnlyList<GradeResponse>>> ListGradesAsync(Guid examPaperId, CancellationToken ct = default);
     Task<ApiResult<GradeResponse>> UpsertGradeAsync(UpsertGradeRequest req, CancellationToken ct = default);
+
+    Task<ApiResult<IReadOnlyList<ExamAttendanceRecordResponse>>> ListExamAttendanceAsync(
+        Guid examPaperId, CancellationToken ct = default);
+    Task<ApiResult> BulkUpsertExamAttendanceAsync(
+        Guid examPaperId, BulkExamAttendanceRequest req, CancellationToken ct = default);
 
     Task<ApiResult<IReadOnlyList<HomeworkResponse>>> ListHomeworkAsync(
         Guid? studentId, string? status, CancellationToken ct = default);

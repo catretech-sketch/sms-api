@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Sms.Application.Services.Academics;
 using Sms.Application.Services.Sis;
 using Sms.Modules.Sis.Contracts;
 using Sms.Shared.Kernel.Authz;
@@ -8,7 +9,7 @@ namespace Sms.Api.Controllers;
 
 [Route("v1")]
 [Authorize]
-public sealed class StudentController(ISisService sis) : ApiControllerBase
+public sealed class StudentController(ISisService sis, IAcademicsService academics) : ApiControllerBase
 {
     [HttpGet("students")]
     public async Task<IActionResult> List(
@@ -33,4 +34,10 @@ public sealed class StudentController(ISisService sis) : ApiControllerBase
     public async Task<IActionResult> ListByClass(
         Guid classId, [FromQuery] int? limit, [FromQuery] string? cursor, CancellationToken ct) =>
         FromCursorResult(await sis.ListClassStudentsAsync(classId, limit, cursor, ct));
+
+    [HttpGet("students/{studentId:guid}/attendance")]
+    public async Task<IActionResult> ListAttendance(
+        Guid studentId, [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken ct) =>
+        FromResult(await academics.ListAttendanceForStudentAsync(
+            studentId, from ?? DateTime.UtcNow.AddDays(-90), to ?? DateTime.UtcNow, ct));
 }

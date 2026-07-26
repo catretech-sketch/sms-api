@@ -134,4 +134,47 @@ public sealed class AttendanceRepository(IDbConnectionFactory factory) : BaseRep
             "SELECT StudentId, [Date], Status FROM dbo.AttendanceRecords " +
             "WHERE [Date] >= @since ORDER BY StudentId, [Date]",
             new { since = since.Date }, ct);
+
+    public Task<IReadOnlyList<AttendanceRecordResponse>> ListForStudentAsync(
+        Guid studentId, DateTime from, DateTime to, CancellationToken ct = default) =>
+        QueryInlineAsync<AttendanceRecordResponse>(
+            "SELECT Id, TenantId, ClassId, StudentId, [Date], Status, MarkedBy FROM dbo.AttendanceRecords " +
+            "WHERE StudentId = @studentId AND [Date] BETWEEN @from AND @to ORDER BY [Date]",
+            new { studentId, from = from.Date, to = to.Date }, ct);
+}
+
+/// Admin/principal marking a teacher or staff member's daily attendance — distinct from
+/// Sms.Modules.Attendance, which is self check-in/out punches for the logged-in user.
+public sealed class StaffAttendanceRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+{
+    public Task BulkUpsertAsync(Guid tenantId, string personType, DateTime date, Guid? markedBy,
+        IReadOnlyList<StaffAttendanceUpsertRow> rows, CancellationToken ct = default)
+    {
+        var table = new DataTable();
+        table.Columns.Add("PersonId", typeof(Guid));
+        table.Columns.Add("Status", typeof(string));
+        foreach (var r in rows) table.Rows.Add(r.PersonId, r.Status);
+
+        var p = new DynamicParameters();
+        p.Add("@TenantId", tenantId);
+        p.Add("@PersonType", personType);
+        p.Add("@Date", date.Date);
+        p.Add("@MarkedBy", markedBy);
+        p.Add("@Rows", table.AsTableValuedParameter("dbo.StaffAttendanceTvp"));
+        return ExecuteProcAsync("dbo.StaffAttendance_BulkUpsert", p, ct);
+    }
+
+    public Task<IReadOnlyList<StaffAttendanceRecordResponse>> ListAsync(
+        string personType, DateTime date, CancellationToken ct = default) =>
+        QueryInlineAsync<StaffAttendanceRecordResponse>(
+            "SELECT Id, TenantId, PersonType, PersonId, [Date], Status, MarkedBy FROM dbo.StaffAttendanceRecords " +
+            "WHERE PersonType = @personType AND [Date] = @date ORDER BY PersonId",
+            new { personType, date = date.Date }, ct);
+
+    public Task<IReadOnlyList<StaffAttendanceRecordResponse>> ListForPersonAsync(
+        string personType, Guid personId, DateTime from, DateTime to, CancellationToken ct = default) =>
+        QueryInlineAsync<StaffAttendanceRecordResponse>(
+            "SELECT Id, TenantId, PersonType, PersonId, [Date], Status, MarkedBy FROM dbo.StaffAttendanceRecords " +
+            "WHERE PersonType = @personType AND PersonId = @personId AND [Date] BETWEEN @from AND @to ORDER BY [Date]",
+            new { personType, personId, from = from.Date, to = to.Date }, ct);
 }

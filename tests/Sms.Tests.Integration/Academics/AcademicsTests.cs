@@ -102,4 +102,56 @@ public class AcademicsTests(SqlServerFixture fx)
     private static string? FindStatus(JsonElement list, Guid studentId) =>
         list.EnumerateArray().First(e => e.GetProperty("student_id").GetGuid() == studentId)
             .GetProperty("status").GetString();
+
+    [Fact]
+    public async Task Student_attendance_history_returns_records_across_dates_in_range()
+    {
+        await using var app = App();
+        var client = TenantClient(app, Guid.NewGuid());
+
+        var classId = (await Data(await client.PostAsJsonAsync("/v1/classes",
+            new { name = "X-C", grade = "X", section = "C" }), HttpStatusCode.Created)).GetProperty("id").GetGuid();
+        var studentId = Guid.NewGuid();
+
+        (await client.PostAsJsonAsync($"/v1/classes/{classId}/attendance", new
+        {
+            date = "2026-04-27",
+            records = new[] { new { student_id = studentId, status = "present" } }
+        })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        (await client.PostAsJsonAsync($"/v1/classes/{classId}/attendance", new
+        {
+            date = "2026-04-28",
+            records = new[] { new { student_id = studentId, status = "absent" } }
+        })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var history = await Data(
+            await client.GetAsync($"/v1/students/{studentId}/attendance?from=2026-04-01&to=2026-04-30"),
+            HttpStatusCode.OK);
+        history.GetArrayLength().Should().Be(2);
+        history[0].GetProperty("status").GetString().Should().Be("present");
+        history[1].GetProperty("status").GetString().Should().Be("absent");
+    }
+
+    [Fact]
+    public async Task Student_attendance_history_excludes_records_outside_range()
+    {
+        await using var app = App();
+        var client = TenantClient(app, Guid.NewGuid());
+
+        var classId = (await Data(await client.PostAsJsonAsync("/v1/classes",
+            new { name = "X-D", grade = "X", section = "D" }), HttpStatusCode.Created)).GetProperty("id").GetGuid();
+        var studentId = Guid.NewGuid();
+
+        (await client.PostAsJsonAsync($"/v1/classes/{classId}/attendance", new
+        {
+            date = "2026-01-15",
+            records = new[] { new { student_id = studentId, status = "present" } }
+        })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var history = await Data(
+            await client.GetAsync($"/v1/students/{studentId}/attendance?from=2026-04-01&to=2026-04-30"),
+            HttpStatusCode.OK);
+        history.GetArrayLength().Should().Be(0);
+    }
 }

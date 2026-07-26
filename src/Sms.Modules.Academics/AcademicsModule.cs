@@ -10,6 +10,7 @@ public static class AcademicsModule
         services.AddScoped<ClassRepository>();
         services.AddScoped<SubjectRepository>();
         services.AddScoped<AttendanceRepository>();
+        services.AddScoped<StaffAttendanceRepository>();
         services.AddScoped<ExamRepository>();
         services.AddScoped<HomeworkRepository>();
         services.AddScoped<TimetableRepository>();

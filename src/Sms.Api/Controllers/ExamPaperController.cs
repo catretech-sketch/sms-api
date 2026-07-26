@@ -33,4 +33,14 @@ public sealed class ExamPaperController(IAcademicsService academics) : ApiContro
     [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct) =>
         FromResult(await academics.DeleteExamPaperAsync(id, ct));
+
+    [HttpGet("exam-papers/{id:guid}/attendance")]
+    public async Task<IActionResult> ListAttendance(Guid id, CancellationToken ct) =>
+        FromResult(await academics.ListExamAttendanceAsync(id, ct));
+
+    [HttpPut("exam-papers/{id:guid}/attendance")]
+    [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
+    public async Task<IActionResult> BulkUpsertAttendance(
+        Guid id, [FromBody] BulkExamAttendanceRequest req, CancellationToken ct) =>
+        FromResult(await academics.BulkUpsertExamAttendanceAsync(id, req, ct));
 }

@@ -46,3 +46,16 @@ public sealed record AttendanceUpsertRow(Guid StudentId, string Status);
 public sealed record BulkAttendanceRequest(DateTime Date, IReadOnlyList<AttendanceUpsertRow> Records);
 /// Lightweight day-mark used by the absence-alert worker to compute streaks.
 public sealed record AttendanceMarkRow(Guid StudentId, DateTime Date, string Status);
+
+// ---- Staff/teacher attendance (admin roll-call for someone else, not self check-in) ----
+public sealed record StaffAttendanceRecordResponse(
+    Guid Id, Guid TenantId, string PersonType, Guid PersonId, DateTime Date, string Status, Guid? MarkedBy);
+public sealed record StaffAttendanceUpsertRow(Guid PersonId, string Status);
+public sealed record BulkStaffAttendanceRequest(
+    string PersonType, DateTime Date, IReadOnlyList<StaffAttendanceUpsertRow> Records);
+
+// ---- Exam attendance (roll-call for one exam paper — the paper already carries its own date) ----
+public sealed record ExamAttendanceRecordResponse(
+    Guid Id, Guid TenantId, Guid ExamPaperId, Guid StudentId, string Status, Guid? MarkedBy);
+public sealed record ExamAttendanceUpsertRow(Guid StudentId, string Status);
+public sealed record BulkExamAttendanceRequest(IReadOnlyList<ExamAttendanceUpsertRow> Records);
