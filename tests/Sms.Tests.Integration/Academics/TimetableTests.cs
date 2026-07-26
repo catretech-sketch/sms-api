@@ -97,6 +97,55 @@ public class TimetableTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Principal_list_includes_teacher_name_derived_from_the_subject_assignment()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var principal = Client(app, tenantId, Policies.Principal);
+
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            var teacherId = Guid.NewGuid();
+            await conn.ExecuteAsync(
+                "INSERT dbo.Teachers (Id, TenantId, Name) VALUES (@teacherId, @tenantId, 'Asha Rao')",
+                new { teacherId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Subjects (Id, TenantId, Name, TeacherId) VALUES (NEWID(), @tenantId, 'Science', @teacherId)",
+                new { tenantId, teacherId });
+        }
+
+        var slot = await Data(await principal.PostAsJsonAsync("/v1/timetable", new
+        {
+            day = "Tue", period = 2, subject = "Science"
+        }), HttpStatusCode.Created);
+        var slotId = slot.GetProperty("id").GetGuid();
+
+        var list = await Data(await principal.GetAsync("/v1/timetable"), HttpStatusCode.OK);
+        var item = list.EnumerateArray().First(e => e.GetProperty("id").GetGuid() == slotId);
+        item.GetProperty("teacher_name").GetString().Should().Be("Asha Rao");
+    }
+
+    [Fact]
+    public async Task Principal_list_leaves_teacher_name_null_when_subject_has_no_assigned_teacher()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var principal = Client(app, tenantId, Policies.Principal);
+
+        var slot = await Data(await principal.PostAsJsonAsync("/v1/timetable", new
+        {
+            day = "Wed", period = 3, subject = "Unassigned Subject"
+        }), HttpStatusCode.Created);
+        var slotId = slot.GetProperty("id").GetGuid();
+
+        var list = await Data(await principal.GetAsync("/v1/timetable"), HttpStatusCode.OK);
+        var item = list.EnumerateArray().First(e => e.GetProperty("id").GetGuid() == slotId);
+        item.GetProperty("teacher_name").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
     public async Task StudentOrParent_gets_403_on_get_and_post()
     {
         await using var app = App();

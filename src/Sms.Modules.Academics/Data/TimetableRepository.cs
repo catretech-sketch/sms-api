@@ -10,8 +10,12 @@ public sealed class TimetableRepository(IDbConnectionFactory factory) : BaseRepo
         "ts.Id, ts.TenantId, ts.[Day], ts.Period, ts.Subject, ts.ClassId, ts.ClassName, ts.Room, ts.StartTime, ts.EndTime";
 
     public Task<IReadOnlyList<TimetableSlotResponse>> ListAsync(CancellationToken ct = default) =>
-        QueryInlineAsync<TimetableSlotResponse>(
-            $"SELECT {Cols} FROM dbo.TimetableSlots ORDER BY [Day], Period", null, ct);
+        QueryInlineAsync<TimetableSlotResponse>($@"
+SELECT {TeacherCols}, t.Name AS TeacherName
+FROM dbo.TimetableSlots ts
+LEFT JOIN dbo.Subjects sub ON sub.Name = ts.Subject
+LEFT JOIN dbo.Teachers t ON t.Id = sub.TeacherId
+ORDER BY ts.[Day], ts.Period", null, ct);
 
     /// Slots derivable as "this teacher's own": either they're the linked class-teacher
     /// for the slot's class, or they're the assigned teacher for a subject whose name

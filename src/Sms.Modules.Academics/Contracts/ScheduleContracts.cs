@@ -1,8 +1,21 @@
 namespace Sms.Modules.Academics.Contracts;
 
+// TeacherName is a trailing init-only property with a secondary constructor, not a primary-
+// constructor parameter: Dapper materializes via a constructor matching the exact column count
+// of whatever query ran, and TimetableSlot_Create/GetAsync still return the original 10 columns
+// while the principal-facing ListAsync now returns 11 (+ TeacherName).
 public sealed record TimetableSlotResponse(
     Guid Id, Guid TenantId, string Day, int Period, string? Subject, Guid? ClassId, string? ClassName,
-    string? Room, string? StartTime, string? EndTime);
+    string? Room, string? StartTime, string? EndTime)
+{
+    public string? TeacherName { get; init; }
+
+    public TimetableSlotResponse(
+        Guid Id, Guid TenantId, string Day, int Period, string? Subject, Guid? ClassId, string? ClassName,
+        string? Room, string? StartTime, string? EndTime, string? TeacherName)
+        : this(Id, TenantId, Day, Period, Subject, ClassId, ClassName, Room, StartTime, EndTime) =>
+        this.TeacherName = TeacherName;
+}
 public sealed record CreateTimetableSlotRequest(
     string Day, int Period, string? Subject, Guid? ClassId, string? ClassName, string? Room,
     string? StartTime, string? EndTime);
