@@ -97,7 +97,72 @@ public class TimetableTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task Principal_list_includes_teacher_name_derived_from_the_subject_assignment()
+    public async Task Principal_list_includes_teacher_name_derived_from_the_slots_own_teacher_id()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var principal = Client(app, tenantId, Policies.Principal);
+        Guid teacherId;
+
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            teacherId = Guid.NewGuid();
+            await conn.ExecuteAsync(
+                "INSERT dbo.Teachers (Id, TenantId, Name) VALUES (@teacherId, @tenantId, 'Asha Rao')",
+                new { teacherId, tenantId });
+        }
+
+        var slot = await Data(await principal.PostAsJsonAsync("/v1/timetable", new
+        {
+            day = "Tue", period = 2, subject = "Science", teacher_id = teacherId
+        }), HttpStatusCode.Created);
+        var slotId = slot.GetProperty("id").GetGuid();
+
+        var list = await Data(await principal.GetAsync("/v1/timetable"), HttpStatusCode.OK);
+        var item = list.EnumerateArray().First(e => e.GetProperty("id").GetGuid() == slotId);
+        item.GetProperty("teacher_name").GetString().Should().Be("Asha Rao");
+    }
+
+    [Fact]
+    public async Task Slots_own_teacher_id_wins_over_the_subjects_default_teacher()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var principal = Client(app, tenantId, Policies.Principal);
+        Guid slotTeacherId;
+
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            var subjectDefaultTeacherId = Guid.NewGuid();
+            slotTeacherId = Guid.NewGuid();
+            await conn.ExecuteAsync(
+                "INSERT dbo.Teachers (Id, TenantId, Name) VALUES (@subjectDefaultTeacherId, @tenantId, 'Default Teacher')",
+                new { subjectDefaultTeacherId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Teachers (Id, TenantId, Name) VALUES (@slotTeacherId, @tenantId, 'Period Teacher')",
+                new { slotTeacherId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Subjects (Id, TenantId, Name, TeacherId) VALUES (NEWID(), @tenantId, 'Science', @subjectDefaultTeacherId)",
+                new { tenantId, subjectDefaultTeacherId });
+        }
+
+        var slot = await Data(await principal.PostAsJsonAsync("/v1/timetable", new
+        {
+            day = "Wed", period = 4, subject = "Science", teacher_id = slotTeacherId
+        }), HttpStatusCode.Created);
+        var slotId = slot.GetProperty("id").GetGuid();
+
+        var list = await Data(await principal.GetAsync("/v1/timetable"), HttpStatusCode.OK);
+        var item = list.EnumerateArray().First(e => e.GetProperty("id").GetGuid() == slotId);
+        item.GetProperty("teacher_name").GetString().Should().Be("Period Teacher");
+    }
+
+    [Fact]
+    public async Task Falls_back_to_the_subjects_default_teacher_when_the_slot_has_no_teacher_id()
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();

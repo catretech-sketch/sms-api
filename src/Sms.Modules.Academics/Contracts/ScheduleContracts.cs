@@ -18,7 +18,7 @@ public sealed record TimetableSlotResponse(
 }
 public sealed record CreateTimetableSlotRequest(
     string Day, int Period, string? Subject, Guid? ClassId, string? ClassName, string? Room,
-    string? StartTime, string? EndTime);
+    string? StartTime, string? EndTime, Guid? TeacherId = null);
 
 public sealed record CalendarEventResponse(
     Guid Id, Guid TenantId, string Title, DateTime Date, string? Time, string Type, string? Description);
