@@ -232,6 +232,16 @@ public sealed class AcademicsService(
         return ApiResult<TimetableSlotResponse>.Ok((await timetable.CreateAsync(tid, req, ct))!, 201);
     }
 
+    public async Task<ApiResult> DeleteTimetableSlotAsync(Guid id, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+        if (await timetable.GetAsync(id, ct) is null)
+            return ApiResult.Fail(new Error("not_found", "resource not found"), 404);
+        await timetable.DeleteAsync(id, tid, ct);
+        return ApiResult.NoContent();
+    }
+
     public async Task<ApiResult<IReadOnlyList<CalendarEventResponse>>> ListCalendarEventsAsync(CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<CalendarEventResponse>>.Ok(await calendar.ListAsync(ct));
 

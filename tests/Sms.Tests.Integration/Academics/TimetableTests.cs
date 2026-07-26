@@ -126,4 +126,62 @@ public class TimetableTests(SqlServerFixture fx)
         });
         postRes.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
+
+    [Fact]
+    public async Task Principal_can_create_then_delete_a_slot()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var principal = Client(app, tenantId, Policies.Principal);
+
+        var slot = await Data(await principal.PostAsJsonAsync("/v1/timetable", new
+        {
+            day = "Thu", period = 4, subject = "History"
+        }), HttpStatusCode.Created);
+        var slotId = slot.GetProperty("id").GetGuid();
+
+        var del = await principal.DeleteAsync($"/v1/timetable/{slotId}");
+        del.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var list = await Data(await principal.GetAsync("/v1/timetable"), HttpStatusCode.OK);
+        foreach (var item in list.EnumerateArray())
+            item.GetProperty("id").GetGuid().Should().NotBe(slotId);
+    }
+
+    [Fact]
+    public async Task Teacher_gets_403_on_delete()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var principal = Client(app, tenantId, Policies.Principal);
+        var teacher = Client(app, tenantId, Policies.Teacher);
+
+        var slot = await Data(await principal.PostAsJsonAsync("/v1/timetable", new
+        {
+            day = "Fri", period = 5, subject = "Geography"
+        }), HttpStatusCode.Created);
+        var slotId = slot.GetProperty("id").GetGuid();
+
+        var del = await teacher.DeleteAsync($"/v1/timetable/{slotId}");
+        del.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task Deleting_a_slot_from_another_tenant_returns_404()
+    {
+        await using var app = App();
+        var tenantA = Guid.NewGuid();
+        var tenantB = Guid.NewGuid();
+        var principalA = Client(app, tenantA, Policies.Principal);
+        var principalB = Client(app, tenantB, Policies.Principal);
+
+        var slot = await Data(await principalA.PostAsJsonAsync("/v1/timetable", new
+        {
+            day = "Mon", period = 6, subject = "Art"
+        }), HttpStatusCode.Created);
+        var slotId = slot.GetProperty("id").GetGuid();
+
+        var del = await principalB.DeleteAsync($"/v1/timetable/{slotId}");
+        del.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

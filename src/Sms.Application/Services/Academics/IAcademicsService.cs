@@ -49,6 +49,7 @@ public interface IAcademicsService
         ClaimsPrincipal caller, CancellationToken ct = default);
     Task<ApiResult<TimetableSlotResponse>> CreateTimetableSlotAsync(
         CreateTimetableSlotRequest req, CancellationToken ct = default);
+    Task<ApiResult> DeleteTimetableSlotAsync(Guid id, CancellationToken ct = default);
 
     Task<ApiResult<IReadOnlyList<CalendarEventResponse>>> ListCalendarEventsAsync(CancellationToken ct = default);
     Task<ApiResult<CalendarEventResponse>> CreateCalendarEventAsync(

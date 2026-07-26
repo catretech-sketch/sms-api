@@ -32,4 +32,12 @@ ORDER BY ts.[Day], ts.Period", new { teacherUserId }, ct);
         {
             TenantId = tenantId, r.Day, r.Period, r.Subject, r.ClassId, r.ClassName, r.Room, r.StartTime, r.EndTime
         }, ct);
+
+    public async Task<TimetableSlotResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
+        (await QueryInlineAsync<TimetableSlotResponse>(
+            $"SELECT {Cols} FROM dbo.TimetableSlots WHERE Id = @id", new { id }, ct))
+        .FirstOrDefault();
+
+    public Task<int> DeleteAsync(Guid id, Guid tenantId, CancellationToken ct = default) =>
+        ExecuteProcAsync("dbo.TimetableSlot_Delete", new { Id = id, TenantId = tenantId }, ct);
 }

@@ -19,4 +19,9 @@ public sealed class TimetableController(IAcademicsService academics) : ApiContro
     [Authorize(Policy = Policies.Principal)]
     public async Task<IActionResult> Create([FromBody] CreateTimetableSlotRequest req, CancellationToken ct) =>
         FromResult(await academics.CreateTimetableSlotAsync(req, ct));
+
+    [HttpDelete("timetable/{id:guid}")]
+    [Authorize(Policy = Policies.Principal)]
+    public async Task<IActionResult> Delete(Guid id, CancellationToken ct) =>
+        FromResult(await academics.DeleteTimetableSlotAsync(id, ct));
 }
