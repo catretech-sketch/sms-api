@@ -44,7 +44,10 @@ public class ClassStudentCountLiveTests(SqlServerFixture fx)
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, new[] { Policies.Teacher }, isPlatform: false);
+        // Uses an admin token, not a teacher token: this test verifies live student-count
+        // computation, not class-visibility scoping — a teacher token with no class/subject
+        // linkage now correctly sees zero classes (see ClassesScopingTests).
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, new[] { Policies.SchoolAdmin }, isPlatform: false);
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
 

@@ -11,7 +11,7 @@ public sealed class ClassController(IAcademicsService academics) : ApiController
 {
     [HttpGet("classes")]
     public async Task<IActionResult> List(CancellationToken ct) =>
-        FromResult(await academics.ListClassesAsync(ct));
+        FromResult(await academics.ListClassesAsync(User, ct));
 
     [HttpGet("classes/{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct) =>

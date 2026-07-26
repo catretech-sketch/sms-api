@@ -6,7 +6,7 @@ namespace Sms.Application.Services.Academics;
 
 public interface IAcademicsService
 {
-    Task<ApiResult<IReadOnlyList<ClassResponse>>> ListClassesAsync(CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<ClassResponse>>> ListClassesAsync(ClaimsPrincipal caller, CancellationToken ct = default);
     Task<ApiResult<ClassResponse>> GetClassAsync(Guid id, CancellationToken ct = default);
     Task<ApiResult<ClassResponse>> CreateClassAsync(CreateClassRequest req, CancellationToken ct = default);
     Task<ApiResult<ClassResponse>> UpdateClassAsync(Guid id, UpdateClassRequest req, CancellationToken ct = default);

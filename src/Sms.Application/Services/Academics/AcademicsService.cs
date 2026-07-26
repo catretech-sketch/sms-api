@@ -27,8 +27,23 @@ public sealed class AcademicsService(
         var v = (t ?? "").Trim().ToLowerInvariant();
         return v is "teacher" or "staff" ? v : null;
     }
-    public async Task<ApiResult<IReadOnlyList<ClassResponse>>> ListClassesAsync(CancellationToken ct = default) =>
-        ApiResult<IReadOnlyList<ClassResponse>>.Ok(await classes.ListAsync(ct));
+    // Only narrows for a caller whose SOLE role is "teacher" — principal/admin/owner tokens
+    // (however else combined) keep seeing every class, matching sms-admin's and the
+    // principal screens' existing expectation of an unscoped list.
+    public async Task<ApiResult<IReadOnlyList<ClassResponse>>> ListClassesAsync(
+        ClaimsPrincipal caller, CancellationToken ct = default)
+    {
+        var roles = caller.FindAll("role").Select(c => c.Value.Split('.').LastOrDefault()).ToArray();
+        var isTeacherOnly = roles.Contains("teacher") &&
+            !roles.Any(r => r is "principal" or "admin" or "owner");
+        if (!isTeacherOnly)
+            return ApiResult<IReadOnlyList<ClassResponse>>.Ok(await classes.ListAsync(ct));
+
+        var sub = caller.FindFirst("sub")?.Value;
+        if (sub is null || !Guid.TryParse(sub, out var userId))
+            return ApiResult<IReadOnlyList<ClassResponse>>.Fail(new Error("unauthorized", "unauthorized"), 401);
+        return ApiResult<IReadOnlyList<ClassResponse>>.Ok(await classes.ListForTeacherAsync(userId, ct));
+    }
 
     public async Task<ApiResult<ClassResponse>> GetClassAsync(Guid id, CancellationToken ct = default)
     {

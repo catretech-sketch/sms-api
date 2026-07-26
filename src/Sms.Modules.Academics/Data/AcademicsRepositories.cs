@@ -67,6 +67,37 @@ OUTER APPLY (
 
     public Task<IReadOnlyList<ClassResponse>> ListAsync(CancellationToken ct = default) =>
         QueryInlineAsync<ClassResponse>($"{ClassSelectWithLiveCountAndNextPeriod} ORDER BY c.Name", null, ct);
+
+    /// Classes this teacher is associated with: they're the class-teacher, or they have any
+    /// published timetable slot for it (directly assigned, or via the subject's default
+    /// teacher) — the same linkage TimetableRepository.ListForTeacherAsync already uses.
+    public Task<IReadOnlyList<ClassResponse>> ListForTeacherAsync(Guid teacherUserId, CancellationToken ct = default) =>
+        QueryInlineAsync<ClassResponse>(@"
+SELECT DISTINCT c.Id, c.TenantId, c.Name, c.Grade, c.Section, c.Subject, c.Room,
+       CASE WHEN sc.Cnt IS NOT NULL THEN sc.Cnt ELSE c.StudentCount END AS StudentCount,
+       c.ClassTeacherId, np.Subject AS NextPeriod
+FROM dbo.Classes c
+JOIN dbo.Teachers t ON t.UserId = @teacherUserId
+LEFT JOIN dbo.TimetableSlots ts ON ts.ClassId = c.Id
+LEFT JOIN dbo.Subjects sub ON sub.Name = ts.Subject
+OUTER APPLY (
+    SELECT COUNT(*) AS Cnt FROM dbo.Students s
+    WHERE s.Status = N'active'
+      AND (
+        (c.Grade IS NOT NULL AND c.Section IS NOT NULL AND s.Grade = c.Grade AND s.Section = c.Section)
+        OR (c.Name IS NOT NULL AND s.ClassLabel = c.Name)
+      )
+) sc
+OUTER APPLY (
+    SELECT TOP 1 ts2.Subject
+    FROM dbo.TimetableSlots ts2
+    WHERE ts2.ClassId = c.Id
+      AND ts2.[Day] = LEFT(DATENAME(WEEKDAY, GETUTCDATE()), 3)
+      AND ts2.StartTime > FORMAT(GETUTCDATE(), 'HH:mm')
+    ORDER BY ts2.Period
+) np
+WHERE c.ClassTeacherId = t.Id OR ts.TeacherId = t.Id OR sub.TeacherId = t.Id
+ORDER BY c.Name", new { teacherUserId }, ct);
 }
 
 public sealed class SubjectRepository(IDbConnectionFactory factory) : BaseRepository(factory)
