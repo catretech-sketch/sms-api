@@ -85,15 +85,19 @@ public class TimetableTests(SqlServerFixture fx)
         slot.GetProperty("room").GetString().Should().Be("101");
         var slotId = slot.GetProperty("id").GetGuid();
 
-        // GET as teacher → 200, slot appears in list
+        // GET as teacher → 200, slot appears in list, with the teacher's own name
+        // resolved via the subject's default teacher (the slot itself has no
+        // explicit teacher_id, so it falls back to Subjects.TeacherId — same
+        // resolution the principal-facing list already applies).
         var list = await Data(await teacher.GetAsync("/v1/timetable"), HttpStatusCode.OK);
         list.GetArrayLength().Should().BeGreaterThanOrEqualTo(1);
-        var found = false;
+        JsonElement? found = null;
         foreach (var item in list.EnumerateArray())
         {
-            if (item.GetProperty("id").GetGuid() == slotId) { found = true; break; }
+            if (item.GetProperty("id").GetGuid() == slotId) { found = item; break; }
         }
-        found.Should().BeTrue("created slot should appear in the teacher's timetable list");
+        found.Should().NotBeNull("created slot should appear in the teacher's timetable list");
+        found!.Value.GetProperty("teacher_name").GetString().Should().Be("T1");
     }
 
     [Fact]

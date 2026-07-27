@@ -31,11 +31,13 @@ ORDER BY ts.[Day], ts.Period", null, ct);
     /// whole-tenant leak.
     public Task<IReadOnlyList<TimetableSlotResponse>> ListForTeacherAsync(Guid teacherUserId, CancellationToken ct = default) =>
         QueryInlineAsync<TimetableSlotResponse>($@"
-SELECT {TeacherCols}
+SELECT {TeacherCols}, COALESCE(t1.Name, t2.Name) AS TeacherName
 FROM dbo.TimetableSlots ts
 JOIN dbo.Teachers t ON t.UserId = @teacherUserId
 LEFT JOIN dbo.Classes c ON c.Id = ts.ClassId
 LEFT JOIN dbo.Subjects sub ON sub.Name = ts.Subject
+LEFT JOIN dbo.Teachers t1 ON t1.Id = ts.TeacherId
+LEFT JOIN dbo.Teachers t2 ON t2.Id = sub.TeacherId
 WHERE c.ClassTeacherId = t.Id OR ts.TeacherId = t.Id OR sub.TeacherId = t.Id
 ORDER BY ts.[Day], ts.Period", new { teacherUserId }, ct);
 
