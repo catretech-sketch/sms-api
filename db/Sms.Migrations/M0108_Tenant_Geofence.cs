@@ -50,12 +50,14 @@ BEGIN
 
     IF @SetGeofence = 1 AND @Lat IS NOT NULL AND @Lng IS NOT NULL AND (@Lat <> 0 OR @Lng <> 0)
     BEGIN
+        DECLARE @RadiusMeters int = ISNULL(@GeofenceRadiusMeters, 250);
+        DECLARE @LocationName nvarchar(200) = COALESCE(@Name, (SELECT Name FROM dbo.Tenants WHERE Id = @Id));
         EXEC dbo.SchoolLocation_Upsert
             @TenantId = @Id,
             @Lat = @Lat,
             @Lng = @Lng,
-            @RadiusMeters = ISNULL(@GeofenceRadiusMeters, 250),
-            @Name = COALESCE(@Name, (SELECT Name FROM dbo.Tenants WHERE Id = @Id));
+            @RadiusMeters = @RadiusMeters,
+            @Name = @LocationName;
     END
 
     SELECT Id, Name, Slug, Country, Status, PlanId, PlanName, Tier, Mrr, StudentsCount, StaffCount, StorageGb,

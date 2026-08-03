@@ -31,6 +31,7 @@ public sealed class AttendanceController(IAttendanceService attendance) : ApiCon
         FromResult(await attendance.GetHistoryAsync(limit, offset_minutes, ct));
 
     [HttpGet("summary")]
-    public async Task<IActionResult> GetSummary([FromQuery] string? month, CancellationToken ct) =>
-        FromResult(await attendance.GetSummaryAsync(month, ct));
+    public async Task<IActionResult> GetSummary(
+        [FromQuery] string? month, [FromQuery] int? offset_minutes, CancellationToken ct) =>
+        FromResult(await attendance.GetSummaryAsync(month, offset_minutes, ct));
 }

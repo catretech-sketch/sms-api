@@ -152,13 +152,19 @@ public sealed class CheckInRepository(IDbConnectionFactory factory) : BaseReposi
     }
 
     public async Task<TeacherAttendanceSummaryResponse> GetSummaryAsync(
-        Guid userId, int year, int month, CancellationToken ct = default)
+        Guid userId, int year, int month, TimeSpan utcOffset, CancellationToken ct = default)
     {
         var rows = await QueryInlineAsync<CheckInRow>(
             "SELECT Kind, At, Lat, Lng, AccuracyMeters, DistanceMeters, Verified FROM dbo.CheckIns " +
-            "WHERE UserId = @userId AND YEAR(At) = @year AND MONTH(At) = @month", new { userId, year, month }, ct);
+            "WHERE UserId = @userId", new { userId }, ct);
 
-        var byDay = rows.GroupBy(r => r.At.Date).ToList();
+        var inMonth = rows.Where(r =>
+        {
+            var local = r.At.Add(utcOffset);
+            return local.Year == year && local.Month == month;
+        }).ToList();
+
+        var byDay = inMonth.GroupBy(r => DateOnly.FromDateTime(r.At.Add(utcOffset))).ToList();
         int daysPresent = byDay.Count(g => g.Any(x => x.Kind == "in"));
         int daysFlagged = byDay.Count(g => g.Any(x => !x.Verified));
         double totalHours = byDay.Sum(g =>

@@ -1,32 +1,11 @@
 CREATE OR ALTER PROCEDURE dbo.Thread_Create
-    @TenantId uniqueidentifier,
-    @OwnerUserId uniqueidentifier,
-    @Name nvarchar(120),
-    @Role nvarchar(40),
-    @IsGroup bit,
-    @ChildId uniqueidentifier
+    @TenantId uniqueidentifier, @Name nvarchar(120), @Role nvarchar(40), @IsGroup bit, @ChildId uniqueidentifier
 AS
 BEGIN
     SET NOCOUNT ON;
-
-    DECLARE @Existing uniqueidentifier;
-    SELECT TOP 1 @Existing = Id
-    FROM dbo.ChatThreads
-    WHERE TenantId = @TenantId
-      AND OwnerUserId = @OwnerUserId
-      AND Name = @Name;
-
-    IF @Existing IS NOT NULL
-    BEGIN
-        SELECT Id, TenantId, Name, Role, LastMessage, LastAt, Unread, IsGroup AS [Group], ChildId
-        FROM dbo.ChatThreads
-        WHERE Id = @Existing;
-        RETURN;
-    END
-
     DECLARE @Id uniqueidentifier = NEWID();
-    INSERT dbo.ChatThreads (Id, TenantId, OwnerUserId, Name, Role, IsGroup, ChildId)
-    VALUES (@Id, @TenantId, @OwnerUserId, @Name, @Role, ISNULL(@IsGroup, 0), @ChildId);
+    INSERT dbo.ChatThreads (Id, TenantId, Name, Role, IsGroup, ChildId)
+    VALUES (@Id, @TenantId, @Name, @Role, ISNULL(@IsGroup, 0), @ChildId);
 
     SELECT Id, TenantId, Name, Role, LastMessage, LastAt, Unread, IsGroup AS [Group], ChildId
     FROM dbo.ChatThreads WHERE Id = @Id;

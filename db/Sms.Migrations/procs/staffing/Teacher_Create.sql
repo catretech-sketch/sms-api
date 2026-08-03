@@ -41,6 +41,7 @@ BEGIN
     WHERE Id = @TenantId;
 
     SELECT Id, TenantId, Name, Gender, Department, Designation, SubjectsCsv, ClassTeacher, Phone, Email,
-           Exp, Rating, AttendancePct, Result, Load, Status, AvatarHue, [Top], EmployeeCode
+           Exp, Rating, AttendancePct, Result, Load, Status, AvatarHue, [Top], EmployeeCode,
+           CAST(NULL AS nvarchar(512)) AS PhotoUrl
     FROM dbo.Teachers WHERE Id = @Id;
 END

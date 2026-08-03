@@ -84,13 +84,19 @@ public class BusRosterTests(SqlServerFixture fx)
                 "INSERT dbo.BusAssignments (TenantId, TeacherUserId, BusId) VALUES (@TenantId, @TeacherUserId, @BusId)",
                 new { TenantId = tenantId, TeacherUserId = userId, BusId = busId });
 
-            // Students
             await conn.ExecuteAsync(
                 "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name) VALUES (@Id, @TenantId, @AdmissionNo, @Name)",
+                new { Id = student1Id, TenantId = tenantId, AdmissionNo = "S001", Name = "Alice Smith" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name) VALUES (@Id, @TenantId, @AdmissionNo, @Name)",
+                new { Id = student2Id, TenantId = tenantId, AdmissionNo = "S002", Name = "Bob Jones" });
+
+            await conn.ExecuteAsync(
+                "INSERT dbo.StudentBusAssignments (Id, TenantId, StudentId, BusId) VALUES (@Id, @TenantId, @StudentId, @BusId)",
                 new[]
                 {
-                    new { Id = student1Id, TenantId = tenantId, AdmissionNo = "S001", Name = "Alice Smith" },
-                    new { Id = student2Id, TenantId = tenantId, AdmissionNo = "S002", Name = "Bob Jones" }
+                    new { Id = Guid.NewGuid(), TenantId = tenantId, StudentId = student1Id, BusId = busId },
+                    new { Id = Guid.NewGuid(), TenantId = tenantId, StudentId = student2Id, BusId = busId }
                 });
 
             // Live Trip (BusId links to bus; BusNo kept for legacy/back-compat only)

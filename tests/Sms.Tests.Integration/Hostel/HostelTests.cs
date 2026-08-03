@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 using Xunit;
 
 namespace Sms.Tests.Integration.Hostel;
@@ -46,6 +47,7 @@ public class HostelTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var principal = Client(app, tenantId, Policies.Principal);
 
         var block = await Data(await principal.PostAsJsonAsync("/v1/hostel/blocks",
@@ -72,7 +74,9 @@ public class HostelTests(SqlServerFixture fx)
     public async Task Empty_tenant_summary_is_all_zero()
     {
         await using var app = App();
-        var principal = Client(app, Guid.NewGuid(), Policies.Principal);
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var principal = Client(app, tenantId, Policies.Principal);
 
         var summary = await Data(await principal.GetAsync("/v1/hostel/summary"), HttpStatusCode.OK);
         summary.GetProperty("blocks").GetInt32().Should().Be(0);

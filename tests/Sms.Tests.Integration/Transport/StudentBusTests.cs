@@ -8,6 +8,7 @@ using Microsoft.Data.SqlClient;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 
 namespace Sms.Tests.Integration.Transport;
 
@@ -82,6 +83,7 @@ public class StudentBusTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var studentId = Guid.NewGuid();
         Guid busId = default;
 
@@ -110,6 +112,7 @@ public class StudentBusTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var studentId = Guid.NewGuid();
         Guid bus1 = default, bus2 = default;
 
@@ -138,6 +141,7 @@ public class StudentBusTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var studentId = Guid.NewGuid();
 
         await Seed(fx.ConnectionString, tenantId, conn => conn.ExecuteAsync(

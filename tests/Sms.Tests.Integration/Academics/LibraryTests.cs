@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 using Xunit;
 
 namespace Sms.Tests.Integration.Academics;
@@ -47,6 +48,7 @@ public class LibraryTests(SqlServerFixture fx)
         // THE KEY ASSERTION — proves overdue derivation
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var principal = Client(app, tenantId, Policies.Principal);
         var teacher = Client(app, tenantId, Policies.Teacher);
 
@@ -84,6 +86,7 @@ public class LibraryTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var principal = Client(app, tenantId, Policies.Principal);
         var teacher = Client(app, tenantId, Policies.Teacher);
 

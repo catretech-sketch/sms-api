@@ -4,10 +4,12 @@ using System.Text.Json;
 using Dapper;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Data.SqlClient;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Data;
 using Sms.Shared.Kernel.Tenancy;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 using Xunit;
 
 namespace Sms.Tests.Integration.Staffing;
@@ -45,15 +47,17 @@ public class StaffingPhotoTests(SqlServerFixture fx)
 
     private static async Task<Guid> SeedLinkedTeacherAsync(SqlServerFixture fx, Guid tenantId)
     {
-        var ctx = new TenantContext(); ctx.Set(tenantId, Guid.NewGuid(), false);
-        var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var userId = Guid.NewGuid();
         var teacherId = Guid.NewGuid();
-        await using var c = await factory.OpenAsync();
-        await c.ExecuteAsync(
+        await using var conn = new SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'IsPlatform', @value=1");
+        await conn.ExecuteAsync(
             "INSERT dbo.Users (Id, TenantId, Email, IsPlatform) VALUES (@userId, @tenantId, @email, 0)",
             new { userId, tenantId, email = $"teacher{Guid.NewGuid():N}@x.com" });
-        await c.ExecuteAsync(
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+        await conn.ExecuteAsync(
             "INSERT dbo.Teachers (Id, TenantId, Name, UserId) VALUES (@teacherId, @tenantId, 'Linked Teacher', @userId)",
             new { teacherId, tenantId, userId });
         return teacherId;
@@ -143,7 +147,7 @@ public class StaffingPhotoTests(SqlServerFixture fx)
         var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
         await using var c = await factory.OpenAsync();
         await c.ExecuteAsync(
-            "UPDATE u SET PhotoUrl = @photo FROM dbo.Users u JOIN dbo.Teachers t ON t.UserId = u.Id WHERE t.Id = @teacherId",
+            "UPDATE u SET PhotoUrl = @photoUrl FROM dbo.Users u JOIN dbo.Teachers t ON t.UserId = u.Id WHERE t.Id = @teacherId",
             new { photoUrl, teacherId });
 
         await using var app = App();
@@ -162,15 +166,18 @@ public class StaffingPhotoTests(SqlServerFixture fx)
         var tenantA = Guid.NewGuid();
         var tenantB = Guid.NewGuid();
         var email = $"multi{Guid.NewGuid():N}@x.com";
-        var ctx = new TenantContext(); ctx.Set(tenantA, Guid.NewGuid(), false);
-        var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantA, tier: "platinum");
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantB, tier: "platinum");
         var userA = Guid.NewGuid();
         var userB = Guid.NewGuid();
         var teacherId = Guid.NewGuid();
-        await using var c = await factory.OpenAsync();
+        await using var c = new SqlConnection(fx.ConnectionString);
+        await c.OpenAsync();
+        await c.ExecuteAsync("EXEC sp_set_session_context @key=N'IsPlatform', @value=1");
         await c.ExecuteAsync(
             "INSERT dbo.Users (Id, TenantId, Email, IsPlatform) VALUES (@userA, @tenantA, @email, 0), (@userB, @tenantB, @email, 0)",
             new { userA, userB, tenantA, tenantB, email });
+        await c.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantA", new { tenantA });
         await c.ExecuteAsync(
             "INSERT dbo.Teachers (Id, TenantId, Name, UserId, Email) VALUES (@teacherId, @tenantA, 'Multi School', @userA, @email)",
             new { teacherId, tenantA, userA, email });

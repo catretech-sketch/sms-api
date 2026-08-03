@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 
 namespace Sms.Tests.Integration.Staffing;
 
@@ -72,7 +73,9 @@ public class StaffingTests(SqlServerFixture fx)
     public async Task Staff_create_and_list_filter_by_category()
     {
         await using var app = App();
-        var client = TenantClient(app, Guid.NewGuid());
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = TenantClient(app, tenantId);
 
         var created = await Data(await client.PostAsJsonAsync("/v1/staff", new
         {

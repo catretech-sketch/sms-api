@@ -3,6 +3,7 @@ using Sms.Application.Common;
 using Sms.Application.Interfaces.DAO;
 using Sms.Modules.Staffing.Contracts;
 using Sms.Modules.Staffing.Data;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Http;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
@@ -34,8 +35,11 @@ public sealed class StaffingService(
     StaffRepository staff,
     LeaveRepository leave,
     IAuthDao users,
-    ITenantContext tenant) : IStaffingService
+    ITenantContext tenant,
+    ITenantFeatureSet features) : IStaffingService
 {
+    private bool StaffSupportAllowed => FeatureGate.Allowed(tenant, features, FeatureCatalog.StaffSupport);
+
     public async Task<ApiResult<CursorPage<TeacherResponse>>> ListTeachersAsync(
         string? q, string? dept, string? status, CancellationToken ct = default)
     {
@@ -91,12 +95,16 @@ public sealed class StaffingService(
     public async Task<ApiResult<CursorPage<StaffResponse>>> ListStaffAsync(
         string? q, string? cat, CancellationToken ct = default)
     {
+        if (!StaffSupportAllowed)
+            return FeatureGate.Locked<CursorPage<StaffResponse>>(FeatureCatalog.StaffSupport);
         var rows = await staff.ListAsync(q, cat, ct);
         return ApiResult<CursorPage<StaffResponse>>.Ok(new CursorPage<StaffResponse>(rows, null));
     }
 
     public async Task<ApiResult<StaffResponse>> GetStaffAsync(Guid id, CancellationToken ct = default)
     {
+        if (!StaffSupportAllowed)
+            return FeatureGate.Locked<StaffResponse>(FeatureCatalog.StaffSupport);
         var member = await staff.GetAsync(id, ct);
         return member is null
             ? ApiResult<StaffResponse>.Fail(new Error("not_found", "resource not found"), 404)
@@ -105,6 +113,8 @@ public sealed class StaffingService(
 
     public async Task<ApiResult<StaffResponse>> CreateStaffAsync(CreateStaffRequest req, CancellationToken ct = default)
     {
+        if (!StaffSupportAllowed)
+            return FeatureGate.Locked<StaffResponse>(FeatureCatalog.StaffSupport);
         if (tenant.TenantId is not { } tid)
             return ApiResult<StaffResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
         var created = (await staff.CreateAsync(tid, req, ct))!;
@@ -114,6 +124,8 @@ public sealed class StaffingService(
     public async Task<ApiResult<StaffResponse>> UpdateStaffAsync(
         Guid id, UpdateStaffRequest req, CancellationToken ct = default)
     {
+        if (!StaffSupportAllowed)
+            return FeatureGate.Locked<StaffResponse>(FeatureCatalog.StaffSupport);
         var existing = await staff.GetAsync(id, ct);
         if (existing is null)
             return ApiResult<StaffResponse>.Fail(new Error("not_found", "resource not found"), 404);

@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 using Xunit;
 
 namespace Sms.Tests.Integration.Sports;
@@ -46,6 +47,7 @@ public class SportsTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var principal = Client(app, tenantId, Policies.Principal);
         var thisYear = DateTime.UtcNow.Year;
 
@@ -74,7 +76,9 @@ public class SportsTests(SqlServerFixture fx)
     public async Task Invalid_medal_kind_is_rejected()
     {
         await using var app = App();
-        var principal = Client(app, Guid.NewGuid(), Policies.Principal);
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var principal = Client(app, tenantId, Policies.Principal);
 
         (await principal.PostAsJsonAsync("/v1/sports/medals", new { kind = "platinum" }))
             .StatusCode.Should().Be(HttpStatusCode.BadRequest);

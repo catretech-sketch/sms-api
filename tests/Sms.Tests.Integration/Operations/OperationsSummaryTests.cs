@@ -8,6 +8,7 @@ using Microsoft.Data.SqlClient;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 using Xunit;
 
 namespace Sms.Tests.Integration.Operations;
@@ -56,6 +57,7 @@ public class OperationsSummaryTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var principal = Client(app, tenantId, Policies.Principal);
         var dueDate = DateTime.UtcNow.Date.AddDays(-4).ToString("yyyy-MM-dd");
 
@@ -82,29 +84,49 @@ public class OperationsSummaryTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var busId = Guid.NewGuid();
         var tripId = Guid.NewGuid();
+        var routeId = Guid.NewGuid();
+        var student1Id = Guid.NewGuid();
+        var student2Id = Guid.NewGuid();
 
         await Seed(fx.ConnectionString, tenantId, async conn =>
         {
+            await conn.ExecuteAsync(
+                "INSERT dbo.TransportRoutes (Id, TenantId, Name) VALUES (@Id, @TenantId, @Name)",
+                new { Id = routeId, TenantId = tenantId, Name = "Route A" });
             // two buses sharing one named route
             await conn.ExecuteAsync(
-                "INSERT dbo.Buses (Id, TenantId, BusNo, RouteName) VALUES (@Id, @TenantId, @BusNo, @Route)",
+                "INSERT dbo.Buses (Id, TenantId, BusNo, RouteName, RouteId) VALUES (@Id, @TenantId, @BusNo, @Route, @RouteId)",
                 new[]
                 {
-                    new { Id = busId, TenantId = tenantId, BusNo = "BUS-1", Route = "Route A" },
-                    new { Id = Guid.NewGuid(), TenantId = tenantId, BusNo = "BUS-2", Route = "Route A" }
+                    new { Id = busId, TenantId = tenantId, BusNo = "BUS-1", Route = "Route A", RouteId = routeId },
+                    new { Id = Guid.NewGuid(), TenantId = tenantId, BusNo = "BUS-2", Route = "Route A", RouteId = routeId }
                 });
-            // three stops on the first bus
+            // three stops on the shared route
             await conn.ExecuteAsync(
-                "INSERT dbo.BusStops (Id, TenantId, BusId, Name, Seq) VALUES (@Id, @TenantId, @BusId, @Name, @Seq)",
+                "INSERT dbo.RouteStops (Id, TenantId, RouteId, Name, Seq, Lat, Lng) VALUES (@Id, @TenantId, @RouteId, @Name, @Seq, 0, 0)",
                 new[]
                 {
-                    new { Id = Guid.NewGuid(), TenantId = tenantId, BusId = busId, Name = "Stop 1", Seq = 1 },
-                    new { Id = Guid.NewGuid(), TenantId = tenantId, BusId = busId, Name = "Stop 2", Seq = 2 },
-                    new { Id = Guid.NewGuid(), TenantId = tenantId, BusId = busId, Name = "Stop 3", Seq = 3 }
+                    new { Id = Guid.NewGuid(), TenantId = tenantId, RouteId = routeId, Name = "Stop 1", Seq = 1 },
+                    new { Id = Guid.NewGuid(), TenantId = tenantId, RouteId = routeId, Name = "Stop 2", Seq = 2 },
+                    new { Id = Guid.NewGuid(), TenantId = tenantId, RouteId = routeId, Name = "Stop 3", Seq = 3 }
                 });
-            // two distinct students boarded
+            await conn.ExecuteAsync(
+                "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name) VALUES (@Id, @TenantId, @A, @N)",
+                new[]
+                {
+                    new { Id = student1Id, TenantId = tenantId, A = "TR-1", N = "Student One" },
+                    new { Id = student2Id, TenantId = tenantId, A = "TR-2", N = "Student Two" }
+                });
+            await conn.ExecuteAsync(
+                "INSERT dbo.StudentBusAssignments (Id, TenantId, StudentId, BusId) VALUES (@Id, @TenantId, @StudentId, @BusId)",
+                new[]
+                {
+                    new { Id = Guid.NewGuid(), TenantId = tenantId, StudentId = student1Id, BusId = busId },
+                    new { Id = Guid.NewGuid(), TenantId = tenantId, StudentId = student2Id, BusId = busId }
+                });
             await conn.ExecuteAsync(
                 "INSERT dbo.Trips (Id, TenantId, BusNo, Status, StartedAt) VALUES (@Id, @TenantId, @BusNo, 'live', @At)",
                 new { Id = tripId, TenantId = tenantId, BusNo = "BUS-1", At = DateTime.UtcNow });
@@ -112,8 +134,8 @@ public class OperationsSummaryTests(SqlServerFixture fx)
                 "INSERT dbo.Boardings (Id, TenantId, TripId, StudentId, State, At) VALUES (@Id, @TenantId, @TripId, @StudentId, 'boarded', @At)",
                 new[]
                 {
-                    new { Id = Guid.NewGuid(), TenantId = tenantId, TripId = tripId, StudentId = Guid.NewGuid(), At = DateTime.UtcNow },
-                    new { Id = Guid.NewGuid(), TenantId = tenantId, TripId = tripId, StudentId = Guid.NewGuid(), At = DateTime.UtcNow }
+                    new { Id = Guid.NewGuid(), TenantId = tenantId, TripId = tripId, StudentId = student1Id, At = DateTime.UtcNow },
+                    new { Id = Guid.NewGuid(), TenantId = tenantId, TripId = tripId, StudentId = student2Id, At = DateTime.UtcNow }
                 });
         });
 
@@ -122,7 +144,7 @@ public class OperationsSummaryTests(SqlServerFixture fx)
         summary.GetProperty("vehicles").GetInt32().Should().Be(2);
         summary.GetProperty("routes").GetInt32().Should().Be(1, "both buses share one named route");
         summary.GetProperty("stops").GetInt32().Should().Be(3);
-        summary.GetProperty("students").GetInt32().Should().Be(2, "two distinct students boarded");
+        summary.GetProperty("students").GetInt32().Should().Be(2, "two pupils assigned to buses");
     }
 
     [Fact]

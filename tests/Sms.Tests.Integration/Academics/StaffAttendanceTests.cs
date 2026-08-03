@@ -5,6 +5,7 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 using Xunit;
 
 namespace Sms.Tests.Integration.Academics;
@@ -86,7 +87,9 @@ public class StaffAttendanceTests(SqlServerFixture fx)
     public async Task Teacher_and_staff_marks_for_the_same_person_id_do_not_collide()
     {
         await using var app = App();
-        var client = TenantClient(app, Guid.NewGuid());
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = TenantClient(app, tenantId);
         var personId = Guid.NewGuid(); // same Guid used as both a teacher id and a staff id
 
         (await client.PostAsJsonAsync("/v1/staff-attendance", new
@@ -116,7 +119,9 @@ public class StaffAttendanceTests(SqlServerFixture fx)
     public async Task History_returns_records_across_dates_in_range_only()
     {
         await using var app = App();
-        var client = TenantClient(app, Guid.NewGuid());
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = TenantClient(app, tenantId);
         var personId = Guid.NewGuid();
 
         (await client.PostAsJsonAsync("/v1/staff-attendance", new

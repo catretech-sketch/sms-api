@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 using Xunit;
 
 namespace Sms.Tests.Integration.Transport;
@@ -25,8 +26,10 @@ public class BusEtaTests(SqlServerFixture fx)
             b.UseSetting("Jwt:SigningKey", Key);
         });
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var busId = Guid.NewGuid();
         var tripId = Guid.NewGuid();
+        var teacherUserId = Guid.NewGuid();
 
         await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
         {
@@ -34,6 +37,9 @@ public class BusEtaTests(SqlServerFixture fx)
             await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
             await conn.ExecuteAsync(
                 "INSERT dbo.Buses (Id, TenantId, BusNo) VALUES (@busId, @tenantId, 'B1')", new { busId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.BusAssignments (TenantId, TeacherUserId, BusId) VALUES (@tenantId, @teacherUserId, @busId)",
+                new { tenantId, teacherUserId, busId });
             await conn.ExecuteAsync(
                 "INSERT dbo.BusStops (TenantId, BusId, Name, Seq, Lat, Lng) VALUES (@tenantId, @busId, 'Stop1', 0, 12.9716, 77.5946)",
                 new { tenantId, busId });
@@ -51,7 +57,7 @@ public class BusEtaTests(SqlServerFixture fx)
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, new[] { Policies.Teacher }, isPlatform: false);
+        var token = jwt.IssueAccess(teacherUserId, tenantId, new[] { Policies.Teacher }, isPlatform: false);
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
 
@@ -73,8 +79,10 @@ public class BusEtaTests(SqlServerFixture fx)
             b.UseSetting("Jwt:SigningKey", Key);
         });
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var busId = Guid.NewGuid();
         var tripId = Guid.NewGuid();
+        var teacherUserId = Guid.NewGuid();
 
         await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
         {
@@ -82,6 +90,9 @@ public class BusEtaTests(SqlServerFixture fx)
             await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
             await conn.ExecuteAsync(
                 "INSERT dbo.Buses (Id, TenantId, BusNo) VALUES (@busId, @tenantId, 'B2')", new { busId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.BusAssignments (TenantId, TeacherUserId, BusId) VALUES (@tenantId, @teacherUserId, @busId)",
+                new { tenantId, teacherUserId, busId });
             await conn.ExecuteAsync(
                 "INSERT dbo.BusStops (TenantId, BusId, Name, Seq, Lat, Lng) VALUES (@tenantId, @busId, 'Stop1', 0, 12.9716, 77.5946)",
                 new { tenantId, busId });
@@ -97,7 +108,7 @@ public class BusEtaTests(SqlServerFixture fx)
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, new[] { Policies.Teacher }, isPlatform: false);
+        var token = jwt.IssueAccess(teacherUserId, tenantId, new[] { Policies.Teacher }, isPlatform: false);
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
 

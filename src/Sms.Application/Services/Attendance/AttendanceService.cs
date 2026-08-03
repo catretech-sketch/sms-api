@@ -16,7 +16,7 @@ public interface IAttendanceService
     Task<ApiResult<TeacherAttendanceDayResponse>> PunchAsync(PunchRequest req, CancellationToken ct = default);
     Task<ApiResult<TeacherAttendanceDayResponse>> GetTodayAsync(string? date, int? offsetMinutes, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<TeacherAttendanceDayResponse>>> GetHistoryAsync(int? limit, int? offsetMinutes, CancellationToken ct = default);
-    Task<ApiResult<TeacherAttendanceSummaryResponse>> GetSummaryAsync(string? month, CancellationToken ct = default);
+    Task<ApiResult<TeacherAttendanceSummaryResponse>> GetSummaryAsync(string? month, int? offsetMinutes, CancellationToken ct = default);
 }
 
 public sealed class AttendanceService(
@@ -142,7 +142,8 @@ public sealed class AttendanceService(
             await repo.GetHistoryAsync(uid, take, offset, ct));
     }
 
-    public async Task<ApiResult<TeacherAttendanceSummaryResponse>> GetSummaryAsync(string? month, CancellationToken ct = default)
+    public async Task<ApiResult<TeacherAttendanceSummaryResponse>> GetSummaryAsync(
+        string? month, int? offsetMinutes, CancellationToken ct = default)
     {
         if (!StaffCheckInAllowed) return StaffCheckInLocked<TeacherAttendanceSummaryResponse>();
         if (tenant.UserId is not { } uid)
@@ -156,6 +157,7 @@ public sealed class AttendanceService(
             year = int.Parse(month[..4]);
             m = int.Parse(month[5..]);
         }
-        return ApiResult<TeacherAttendanceSummaryResponse>.Ok(await repo.GetSummaryAsync(uid, year, m, ct));
+        var offset = ParseUtcOffset(offsetMinutes);
+        return ApiResult<TeacherAttendanceSummaryResponse>.Ok(await repo.GetSummaryAsync(uid, year, m, offset, ct));
     }
 }

@@ -93,6 +93,20 @@ public class PrincipalAttendanceTests(SqlServerFixture fx)
             admission_no = "PA004", name = "Diya Nair", grade = "IX", section = "A", roll = 4
         }), HttpStatusCode.Created)).GetProperty("id").GetGuid();
 
+        // Class B students (roll-call intentionally not posted for this class)
+        await Data(await principal.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "PB001", name = "Eva Reddy", grade = "IX", section = "B", roll = 1
+        }), HttpStatusCode.Created);
+        await Data(await principal.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "PB002", name = "Farhan Ali", grade = "IX", section = "B", roll = 2
+        }), HttpStatusCode.Created);
+        await Data(await principal.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "PB003", name = "Gita Rao", grade = "IX", section = "B", roll = 3
+        }), HttpStatusCode.Created);
+
         // Set StudentCount for both classes via raw SQL (API doesn't expose StudentCount directly)
         await Seed(fx.ConnectionString, tenantId, async conn =>
         {

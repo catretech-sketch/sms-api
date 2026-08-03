@@ -27,7 +27,7 @@ SELECT
         Guid PersonId, string Name, string? Email, string? Phone,
         string? SubjectsCsv, string? Designation, string? Role, Guid? UserId);
 
-    private sealed record UserRow(Guid Id, string? Email, string? Phone);
+    private sealed record UserRow(Guid Id, string? Email, string? Phone, string? Name);
 
     private sealed record DayPunches(DateTime? CheckInAt, bool CheckInVerified, DateTime? CheckOutAt);
 
@@ -65,7 +65,19 @@ SELECT
             return ids;
         }
 
-        if (string.IsNullOrWhiteSpace(person.Email)) return ids;
+        if (string.IsNullOrWhiteSpace(person.Email))
+        {
+            if (!string.IsNullOrWhiteSpace(person.Name))
+            {
+                foreach (var u in users)
+                {
+                    if (!string.IsNullOrWhiteSpace(u.Name)
+                        && string.Equals(person.Name.Trim(), u.Name.Trim(), StringComparison.OrdinalIgnoreCase))
+                        ids.Add(u.Id);
+                }
+            }
+            return ids;
+        }
 
         foreach (var u in users)
         {
@@ -108,7 +120,7 @@ ORDER BY At",
             new { startUtc, endUtc }, ct);
         var punchIndex = BuildPunchIndex(punches);
         var users = await QueryInlineAsync<UserRow>(
-            "SELECT Id, Email, Phone FROM dbo.Users", null, ct);
+            "SELECT Id, Email, Phone, Name FROM dbo.Users", null, ct);
 
         var teacherRows = await QueryInlineAsync<RosterPersonRow>(@"
 SELECT t.Id AS PersonId, t.Name, t.Email,
