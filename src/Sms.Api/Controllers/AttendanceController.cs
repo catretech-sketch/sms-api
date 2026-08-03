@@ -22,12 +22,13 @@ public sealed class AttendanceController(IAttendanceService attendance) : ApiCon
         FromResult(await attendance.PunchAsync(req, ct));
 
     [HttpGet("today")]
-    public async Task<IActionResult> GetToday(CancellationToken ct) =>
-        FromResult(await attendance.GetTodayAsync(ct));
+    public async Task<IActionResult> GetToday([FromQuery] string? date, [FromQuery] int? offset_minutes, CancellationToken ct) =>
+        FromResult(await attendance.GetTodayAsync(date, offset_minutes, ct));
 
     [HttpGet("history")]
-    public async Task<IActionResult> GetHistory([FromQuery] int? limit, CancellationToken ct) =>
-        FromResult(await attendance.GetHistoryAsync(limit, ct));
+    public async Task<IActionResult> GetHistory(
+        [FromQuery] int? limit, [FromQuery] int? offset_minutes, CancellationToken ct) =>
+        FromResult(await attendance.GetHistoryAsync(limit, offset_minutes, ct));
 
     [HttpGet("summary")]
     public async Task<IActionResult> GetSummary([FromQuery] string? month, CancellationToken ct) =>

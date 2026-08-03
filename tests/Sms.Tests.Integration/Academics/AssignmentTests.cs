@@ -109,6 +109,14 @@ public class AssignmentTests(SqlServerFixture fx)
             "2 students are enrolled in Grade 7 / Section B");
         found.Value.GetProperty("submissions_count").GetInt32().Should().Be(0,
             "no homework submissions have been made");
+
+        var admin = Client(app, tenantId, Policies.SchoolAdmin);
+        var notifications = await Data(await admin.GetAsync("/v1/notifications"), HttpStatusCode.OK);
+        notifications.GetArrayLength().Should().BeGreaterThanOrEqualTo(1);
+        var hwNotice = notifications.EnumerateArray()
+            .FirstOrDefault(n => n.GetProperty("title").GetString()?.Contains("Homework", StringComparison.OrdinalIgnoreCase) == true);
+        hwNotice.ValueKind.Should().NotBe(JsonValueKind.Undefined);
+        hwNotice.GetProperty("title").GetString().Should().Contain("Past Assignment");
     }
 
     [Fact]

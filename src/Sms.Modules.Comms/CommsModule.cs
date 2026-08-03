@@ -20,8 +20,9 @@ public sealed record ChatThreadResponse(
         this.Online = Online;
 }
 public sealed record CreateThreadRequest(string Name, string? Role, bool Group, Guid? ChildId);
-public sealed record ChatMessageResponse(Guid Id, Guid ThreadId, Guid? SenderId, string Text, DateTime SentAt, bool IsMine);
-public sealed record SendMessageRequest(string Text);
+public sealed record ChatMessageResponse(
+    Guid Id, Guid ThreadId, Guid? SenderId, string Text, DateTime SentAt, bool IsMine, string? ImageUrl);
+public sealed record SendMessageRequest(string? Text, string? ImageUrl);
 public sealed record AnnouncementResponse(
     Guid Id, Guid TenantId, string Title, string? Body, DateTime Date, string? From, string? Role,
     string Type, bool Pinned, string? Audience)
@@ -55,7 +56,12 @@ public sealed record CreateNotificationRequest(string? Icon, string? Tone, strin
 
 public sealed class CommsRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
-    private sealed record MessageRow(Guid Id, Guid ThreadId, Guid? SenderId, string Text, DateTime SentAt);
+    private sealed record MessageRow(
+        Guid Id, Guid ThreadId, Guid? SenderId, string Text, string? ImageUrl, DateTime SentAt);
+    private sealed record ThreadInfoRow(Guid Id, string Name, string? Role, Guid OwnerUserId, bool IsGroup);
+    private sealed record UserIdRow(Guid Id);
+    private sealed record UserNameRow(string? Name);
+    private sealed record RoleLabelRow(string? RoleLabel);
 
     private const string ComplaintCols = "Id, TenantId, Subject, [From], Category, Priority, Status, Age, Assignee, Body";
     private const string NotificationCols = "Id, TenantId, Icon, Tone, Title, Body, [Time], Unread";
@@ -88,32 +94,150 @@ public sealed class CommsRepository(IDbConnectionFactory factory) : BaseReposito
     // best-effort by TenantId+Name, which may miss (or mismatch) threads whose contact name
     // doesn't exactly match a Users.Name. A proper ChatThreads.ContactUserId FK is a
     // follow-up, out of scope here.
-    public Task<IReadOnlyList<ChatThreadResponse>> ListThreadsAsync(CancellationToken ct = default) =>
+    public Task<IReadOnlyList<ChatThreadResponse>> ListThreadsAsync(Guid ownerUserId, CancellationToken ct = default) =>
         QueryInlineAsync<ChatThreadResponse>(@"
 SELECT th.Id, th.TenantId, th.Name, th.Role, th.LastMessage, th.LastAt, th.Unread, th.IsGroup AS [Group], th.ChildId,
        CAST(CASE WHEN u.LastSeenAt IS NOT NULL AND u.LastSeenAt > DATEADD(MINUTE, -5, SYSUTCDATETIME())
             THEN 1 ELSE 0 END AS bit) AS Online
 FROM dbo.ChatThreads th
 LEFT JOIN dbo.Users u ON u.TenantId = th.TenantId AND u.Name = th.Name
-ORDER BY th.LastAt DESC", null, ct);
+WHERE th.OwnerUserId = @ownerUserId
+ORDER BY th.LastAt DESC", new { ownerUserId }, ct);
 
-    public Task<ChatThreadResponse?> CreateThreadAsync(Guid tenantId, CreateThreadRequest r, CancellationToken ct = default) =>
+    public Task<ChatThreadResponse?> CreateThreadAsync(
+        Guid tenantId, Guid ownerUserId, CreateThreadRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<ChatThreadResponse>("dbo.Thread_Create",
-            new { TenantId = tenantId, r.Name, r.Role, IsGroup = r.Group, r.ChildId }, ct);
+            new { TenantId = tenantId, OwnerUserId = ownerUserId, r.Name, r.Role, IsGroup = r.Group, r.ChildId }, ct);
 
-    public async Task<IReadOnlyList<ChatMessageResponse>> ListMessagesAsync(Guid threadId, Guid? callerId, CancellationToken ct = default)
+    public async Task<bool> UserOwnsThreadAsync(Guid threadId, Guid ownerUserId, CancellationToken ct = default)
     {
-        var rows = await QueryInlineAsync<MessageRow>(
-            "SELECT Id, ThreadId, SenderId, [Text], SentAt FROM dbo.ChatMessages WHERE ThreadId = @threadId ORDER BY SentAt",
-            new { threadId }, ct);
-        return rows.Select(m => new ChatMessageResponse(m.Id, m.ThreadId, m.SenderId, m.Text, m.SentAt, m.SenderId == callerId)).ToList();
+        var rows = await QueryInlineAsync<int>(
+            "SELECT COUNT(1) FROM dbo.ChatThreads WHERE Id = @threadId AND OwnerUserId = @ownerUserId",
+            new { threadId, ownerUserId }, ct);
+        return rows.FirstOrDefault() > 0;
     }
 
-    public async Task<ChatMessageResponse?> AddMessageAsync(Guid tenantId, Guid threadId, Guid? senderId, string text, CancellationToken ct = default)
+    public async Task<IReadOnlyList<ChatMessageResponse>> ListMessagesAsync(
+        Guid threadId, Guid ownerUserId, Guid? callerId, CancellationToken ct = default)
     {
+        if (!await UserOwnsThreadAsync(threadId, ownerUserId, ct))
+            return Array.Empty<ChatMessageResponse>();
+        var rows = await QueryInlineAsync<MessageRow>(
+            "SELECT Id, ThreadId, SenderId, [Text], ImageUrl, SentAt FROM dbo.ChatMessages WHERE ThreadId = @threadId ORDER BY SentAt",
+            new { threadId }, ct);
+        return rows.Select(m => new ChatMessageResponse(
+            m.Id, m.ThreadId, m.SenderId, m.Text, m.SentAt, m.SenderId == callerId, m.ImageUrl)).ToList();
+    }
+
+    public async Task<ChatMessageResponse?> AddMessageAsync(
+        Guid tenantId, Guid threadId, Guid ownerUserId, Guid? senderId, string text, string? imageUrl,
+        CancellationToken ct = default)
+    {
+        if (!await UserOwnsThreadAsync(threadId, ownerUserId, ct))
+            return null;
+
         var m = await QuerySingleProcAsync<MessageRow>("dbo.Message_Add",
-            new { TenantId = tenantId, ThreadId = threadId, SenderId = senderId, Text = text }, ct);
-        return m is null ? null : new ChatMessageResponse(m.Id, m.ThreadId, m.SenderId, m.Text, m.SentAt, m.SenderId == senderId);
+            new { TenantId = tenantId, ThreadId = threadId, SenderId = senderId, Text = text, ImageUrl = imageUrl }, ct);
+        if (m is null)
+            return null;
+
+        await DeliverToPeerInboxAsync(tenantId, threadId, senderId, text, imageUrl, ct);
+
+        return new ChatMessageResponse(m.Id, m.ThreadId, m.SenderId, m.Text, m.SentAt, m.SenderId == senderId, m.ImageUrl);
+    }
+
+    /// <summary>
+    /// Mirror an outbound message into the contact's private inbox thread so chat is two-way.
+    /// Best-effort match on contact display name (Users / Teachers / Staff) until ContactUserId exists.
+    /// </summary>
+    private async Task DeliverToPeerInboxAsync(
+        Guid tenantId, Guid sourceThreadId, Guid? senderId, string text, string? imageUrl, CancellationToken ct)
+    {
+        if (senderId is not { } sid)
+            return;
+
+        var threadRows = await QueryInlineAsync<ThreadInfoRow>(
+            "SELECT Id, Name, Role, OwnerUserId, IsGroup FROM dbo.ChatThreads WHERE Id = @sourceThreadId",
+            new { sourceThreadId }, ct);
+        var thread = threadRows.FirstOrDefault();
+        if (thread is null || thread.IsGroup)
+            return;
+
+        var recipientId = await ResolveContactUserIdAsync(tenantId, thread.Name, sid, ct);
+        if (recipientId is null || recipientId == sid)
+            return;
+
+        var senderRows = await QueryInlineAsync<UserNameRow>(
+            "SELECT Name FROM dbo.Users WHERE Id = @sid", new { sid }, ct);
+        var senderName = senderRows.FirstOrDefault()?.Name?.Trim();
+        if (string.IsNullOrWhiteSpace(senderName))
+            return;
+
+        var senderRole = await ResolveSenderRoleLabelAsync(tenantId, sid, ct) ?? "Staff";
+
+        var peerThread = await QuerySingleProcAsync<ChatThreadResponse>("dbo.Thread_Create",
+            new
+            {
+                TenantId = tenantId,
+                OwnerUserId = recipientId,
+                Name = senderName,
+                Role = senderRole,
+                IsGroup = false,
+                ChildId = (Guid?)null,
+            }, ct);
+        if (peerThread is null)
+            return;
+
+        await QuerySingleProcAsync<MessageRow>("dbo.Message_Add",
+            new
+            {
+                TenantId = tenantId,
+                ThreadId = peerThread.Id,
+                SenderId = sid,
+                Text = text,
+                ImageUrl = imageUrl,
+            }, ct);
+
+        await ExecuteInlineAsync(
+            "UPDATE dbo.ChatThreads SET Unread = Unread + 1 WHERE Id = @threadId",
+            new { threadId = peerThread.Id }, ct);
+    }
+
+    private async Task<Guid?> ResolveContactUserIdAsync(
+        Guid tenantId, string contactName, Guid senderId, CancellationToken ct)
+    {
+        var rows = await QueryInlineAsync<UserIdRow>(@"
+SELECT TOP 1 x.Id
+FROM (
+    SELECT u.Id, 1 AS Pri
+    FROM dbo.Users u
+    WHERE u.TenantId = @tenantId AND u.Name = @contactName AND u.Id <> @senderId
+    UNION ALL
+    SELECT t.UserId, 2 AS Pri
+    FROM dbo.Teachers t
+    WHERE t.TenantId = @tenantId AND t.Name = @contactName AND t.UserId IS NOT NULL AND t.UserId <> @senderId
+    UNION ALL
+    SELECT s.UserId, 3 AS Pri
+    FROM dbo.Staff s
+    WHERE s.TenantId = @tenantId AND s.Name = @contactName AND s.UserId IS NOT NULL AND s.UserId <> @senderId
+) x
+WHERE x.Id IS NOT NULL
+ORDER BY x.Pri", new { tenantId, contactName, senderId }, ct);
+        return rows.FirstOrDefault()?.Id;
+    }
+
+    private async Task<string?> ResolveSenderRoleLabelAsync(Guid tenantId, Guid userId, CancellationToken ct)
+    {
+        var rows = await QueryInlineAsync<RoleLabelRow>(@"
+SELECT TOP 1 COALESCE(
+    NULLIF(LTRIM(RTRIM(t.Designation)), ''),
+    NULLIF(LTRIM(RTRIM(s.Role)), ''),
+    N'Teacher') AS RoleLabel
+FROM dbo.Users u
+LEFT JOIN dbo.Teachers t ON t.UserId = u.Id AND t.TenantId = @tenantId
+LEFT JOIN dbo.Staff s ON s.UserId = u.Id AND s.TenantId = @tenantId
+WHERE u.Id = @userId", new { tenantId, userId }, ct);
+        return rows.FirstOrDefault()?.RoleLabel;
     }
 
     public Task<IReadOnlyList<AnnouncementResponse>> ListAnnouncementsAsync(string? audience, CancellationToken ct = default) =>

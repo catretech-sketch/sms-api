@@ -1,11 +1,13 @@
+using Dapper;
 using Sms.Application.Interfaces.DAO;
 using Sms.Infrastructure.SQL;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Data;
+using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Infrastructure.DAO;
 
-public sealed class AuthDao(IDbConnectionFactory factory) : BaseRepository(factory), IAuthDao
+public sealed class AuthDao(IDbConnectionFactory factory, ITenantContext tenant) : BaseRepository(factory), IAuthDao
 {
     public async Task<UserRecord?> GetByEmailAsync(string email, CancellationToken ct = default) =>
         (await QueryProcAsync<UserRecord>(AuthQueries.GetByEmail, new { Email = email }, ct)).FirstOrDefault();
@@ -19,7 +21,8 @@ public sealed class AuthDao(IDbConnectionFactory factory) : BaseRepository(facto
     public Task<IReadOnlyList<UserRecord>> ListByEmailAsync(string email, CancellationToken ct = default) =>
         QueryInlineAsync<UserRecord>(
             "SELECT Id, TenantId, Email, StudentId, Phone, PasswordHash, IsPlatform, Status, Name, MustSetPassword, CreatedAt, PhotoUrl " +
-            "FROM dbo.Users WHERE Email = @Email " +
+            "FROM dbo.Users WHERE Email IS NOT NULL " +
+            "AND LOWER(LTRIM(RTRIM(Email))) = LOWER(LTRIM(RTRIM(@Email))) " +
             "ORDER BY CASE WHEN IsPlatform = 1 THEN 0 ELSE 1 END, CreatedAt",
             new { Email = email }, ct);
 
@@ -42,8 +45,58 @@ public sealed class AuthDao(IDbConnectionFactory factory) : BaseRepository(facto
     public Task SetPasswordAsync(Guid userId, string passwordHash, CancellationToken ct = default) =>
         ExecuteProcAsync(AuthQueries.SetPassword, new { UserId = userId, PasswordHash = passwordHash }, ct);
 
-    public Task SetPhotoAsync(Guid userId, string? photoUrl, CancellationToken ct = default) =>
-        ExecuteProcAsync(AuthQueries.SetPhoto, new { UserId = userId, PhotoUrl = photoUrl }, ct);
+    public async Task SetPhotoAsync(Guid userId, string? photoUrl, CancellationToken ct = default)
+    {
+        var user = await GetByIdAsync(userId, ct);
+        await ExecuteProcAsync(AuthQueries.SetPhoto, new { UserId = userId, PhotoUrl = photoUrl }, ct);
+        await SyncToEmailPeersAsync(user?.Email, userId, async (peerId, _) =>
+            await ExecuteProcAsync(AuthQueries.SetPhoto, new { UserId = peerId, PhotoUrl = photoUrl }, ct), ct);
+    }
+
+    public async Task SetPhoneAsync(Guid userId, string? phone, CancellationToken ct = default)
+    {
+        var user = await GetByIdAsync(userId, ct);
+        await UpdatePhoneAsync(userId, phone, ct);
+        await SyncToEmailPeersAsync(user?.Email, userId,
+            async (peerId, _) => await UpdatePhoneAsync(peerId, phone, ct), ct);
+    }
+
+    private Task UpdatePhoneAsync(Guid userId, string? phone, CancellationToken ct) =>
+        ExecuteInlineUpdateAsync(
+            "UPDATE dbo.Users SET Phone = @Phone WHERE Id = @UserId",
+            new { UserId = userId, Phone = phone }, ct);
+
+    /// Multi-school identities share an email — RLS requires platform context to see all peers.
+    private async Task SyncToEmailPeersAsync(
+        string? email, Guid sourceUserId, Func<Guid, string?, Task> syncPeer, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(email)) return;
+        var prevTenant = tenant.TenantId;
+        var prevUser = tenant.UserId;
+        var wasPlatform = tenant.IsPlatform;
+        tenant.Set(null, null, isPlatform: true);
+        try
+        {
+            foreach (var peer in await ListByEmailAsync(email, ct))
+            {
+                if (peer.Id == sourceUserId) continue;
+                await syncPeer(peer.Id, email);
+            }
+        }
+        finally
+        {
+            tenant.Set(prevTenant, prevUser, wasPlatform);
+        }
+    }
+
+    public Task SetEmailAsync(Guid userId, string? email, CancellationToken ct = default) =>
+        ExecuteProcAsync(AuthQueries.SetEmail, new { UserId = userId, Email = email }, ct);
+
+    private async Task ExecuteInlineUpdateAsync(string sql, object args, CancellationToken ct)
+    {
+        await using var conn = await Factory.OpenAsync(ct);
+        await conn.ExecuteAsync(new CommandDefinition(sql, args, cancellationToken: ct));
+    }
 
     public Task OtpInsertAsync(string identifier, string channel, string codeHash,
         DateTime expiresAt, CancellationToken ct = default) =>

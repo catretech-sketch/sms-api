@@ -8,6 +8,7 @@ using Microsoft.Data.SqlClient;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 using Xunit;
 
 namespace Sms.Tests.Integration.Reporting;
@@ -56,6 +57,7 @@ public class PrincipalAttendanceTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var principal = Client(app, tenantId, Policies.Principal);
 
         // Seed Class A (will have roll-call marked): 4 students
@@ -138,7 +140,13 @@ public class PrincipalAttendanceTests(SqlServerFixture fx)
                 "INSERT INTO dbo.CheckIns (TenantId, UserId, Kind, At, Lat, Lng, AccuracyMeters, DistanceMeters, Verified) " +
                 "VALUES (@TenantId, @UserId, @Kind, @At, 0, 0, 0, 0, @Verified)",
                 new { TenantId = tenantId, UserId = userId, Kind = "in",
-                      At = DateTime.UtcNow, Verified = true });
+                      At = DateTime.UtcNow.Date.AddHours(8), Verified = true });
+
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.CheckIns (TenantId, UserId, Kind, At, Lat, Lng, AccuracyMeters, DistanceMeters, Verified) " +
+                "VALUES (@TenantId, @UserId, @Kind, @At, 0, 0, 0, 0, @Verified)",
+                new { TenantId = tenantId, UserId = userId, Kind = "out",
+                      At = DateTime.UtcNow.Date.AddHours(16), Verified = true });
         });
 
         // Call the endpoint
@@ -183,10 +191,88 @@ public class PrincipalAttendanceTests(SqlServerFixture fx)
             {
                 foundTeacher = true;
                 s.GetProperty("checked_in").GetBoolean().Should().BeTrue();
+                s.GetProperty("check_out_at").ValueKind.Should().NotBe(JsonValueKind.Null);
                 break;
             }
         }
         foundTeacher.Should().BeTrue("seeded teacher should appear in staff[]");
+    }
+
+    [Fact]
+    public async Task PrincipalAttendance_masks_geo_checkins_for_silver()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "silver");
+        var principal = Client(app, tenantId, Policies.Principal);
+        var userId = Guid.NewGuid();
+
+        await Seed(fx.ConnectionString, tenantId, async conn =>
+        {
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Teachers (TenantId, Name, Email, SubjectsCsv, Phone, Designation, Status) " +
+                "VALUES (@TenantId, @Name, @Email, @SubjectsCsv, @Phone, @Designation, @Status)",
+                new { TenantId = tenantId, Name = "Silver Teacher", Email = $"silver-{tenantId:N}@x.com",
+                      SubjectsCsv = "Maths", Phone = "9000000099",
+                      Designation = "Teacher", Status = "active" });
+
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Users (Id, TenantId, Email, Status) VALUES (@Id, @TenantId, @Email, @Status)",
+                new { Id = userId, TenantId = tenantId, Email = $"silver-{tenantId:N}@x.com", Status = "active" });
+
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.CheckIns (TenantId, UserId, Kind, At, Lat, Lng, AccuracyMeters, DistanceMeters, Verified) " +
+                "VALUES (@TenantId, @UserId, @Kind, @At, 0, 0, 0, 0, @Verified)",
+                new { TenantId = tenantId, UserId = userId, Kind = "in",
+                      At = DateTime.UtcNow, Verified = true });
+        });
+
+        var attendance = await Data(await principal.GetAsync("/v1/principal/attendance"), HttpStatusCode.OK);
+        var staff = attendance.GetProperty("staff");
+        var hit = staff.EnumerateArray().FirstOrDefault(s =>
+            s.GetProperty("name").GetString() == "Silver Teacher");
+        hit.ValueKind.Should().NotBe(JsonValueKind.Undefined, "Silver Teacher should appear in staff[]");
+        hit.GetProperty("checked_in").GetBoolean().Should().BeTrue();
+        hit.GetProperty("check_in_at").ValueKind.Should().NotBe(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task PrincipalAttendance_links_punch_by_display_name_when_email_missing()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var principal = Client(app, tenantId, Policies.Principal);
+        var userId = Guid.NewGuid();
+
+        await Seed(fx.ConnectionString, tenantId, async conn =>
+        {
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Users (Id, TenantId, Email, Name, Status) VALUES (@Id, @TenantId, @Email, @Name, @Status)",
+                new { Id = userId, TenantId = tenantId, Email = $"name-link-{tenantId:N}@x.com",
+                      Name = "Name Link Teacher", Status = "active" });
+
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Teachers (TenantId, Name, SubjectsCsv, Phone, Designation, Status) " +
+                "VALUES (@TenantId, @Name, @SubjectsCsv, @Phone, @Designation, @Status)",
+                new { TenantId = tenantId, Name = "Name Link Teacher",
+                      SubjectsCsv = "Maths", Phone = "9000000088",
+                      Designation = "Teacher", Status = "active" });
+
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.CheckIns (TenantId, UserId, Kind, At, Lat, Lng, AccuracyMeters, DistanceMeters, Verified) " +
+                "VALUES (@TenantId, @UserId, @Kind, @At, 0, 0, 0, 0, @Verified)",
+                new { TenantId = tenantId, UserId = userId, Kind = "in",
+                      At = DateTime.UtcNow, Verified = true });
+        });
+
+        var attendance = await Data(await principal.GetAsync("/v1/principal/attendance"), HttpStatusCode.OK);
+        var staff = attendance.GetProperty("staff");
+        var hit = staff.EnumerateArray().FirstOrDefault(s =>
+            s.GetProperty("name").GetString() == "Name Link Teacher");
+        hit.ValueKind.Should().NotBe(JsonValueKind.Undefined);
+        hit.GetProperty("checked_in").GetBoolean().Should().BeTrue();
+        hit.GetProperty("check_in_at").ValueKind.Should().NotBe(JsonValueKind.Null);
     }
 
     [Fact]

@@ -7,9 +7,23 @@ public sealed record SchoolLocationResponse(double Lat, double Lng, int RadiusMe
 public sealed record UpsertSchoolLocationRequest(double Lat, double Lng, int RadiusMeters, string? Name);
 public sealed record CheckEventResponse(
     string Kind, DateTime At, double Lat, double Lng, double AccuracyMeters, double DistanceMeters, bool Verified);
-public sealed record PunchRequest(string Kind, DateTime At, double Lat, double Lng, double AccuracyMeters);
-public sealed record TeacherAttendanceDayResponse(DateTime Date, CheckEventResponse? CheckIn, CheckEventResponse? CheckOut);
+public sealed record PunchRequest(string Kind, DateTime At, double Lat, double Lng, double AccuracyMeters, int? OffsetMinutes = null);
+public sealed record TeacherAttendanceDayResponse(DateOnly Date, CheckEventResponse? CheckIn, CheckEventResponse? CheckOut);
 public sealed record TeacherAttendanceSummaryResponse(int DaysPresent, int DaysFlagged, double TotalHours);
+
+/// Raised when a geo punch cannot be recorded (school location missing or outside geofence).
+public sealed class GeofencePunchRejectedException : Exception
+{
+    public string ErrorCode { get; }
+    public int StatusCode { get; }
+
+    public GeofencePunchRejectedException(string errorCode, string message, int statusCode = 422)
+        : base(message)
+    {
+        ErrorCode = errorCode;
+        StatusCode = statusCode;
+    }
+}
 
 /// Per-school absence-alert configuration: streak thresholds + optional daily auto-send schedule.
 public sealed record AttendanceAlertConfigResponse(
@@ -44,31 +58,45 @@ public sealed class AttendanceAlertConfigRepository(IDbConnectionFactory factory
 
 public sealed class CheckInRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
-    private const double AccuracyCapMeters = 30;
+    private const double AccuracyCapMeters = 50;
     private sealed record CheckInRow(string Kind, DateTime At, double Lat, double Lng, double AccuracyMeters, double DistanceMeters, bool Verified);
 
-    public async Task<SchoolLocationResponse?> GetSchoolLocationAsync(Guid tenantId, CancellationToken ct = default) =>
-        (await QueryInlineAsync<SchoolLocationResponse>(
-            "SELECT Lat, Lng, RadiusMeters, Name FROM dbo.SchoolLocations WHERE TenantId = @tenantId",
-            new { tenantId }, ct)).FirstOrDefault();
+    public async Task<SchoolLocationResponse?> GetSchoolLocationAsync(Guid tenantId, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<SchoolLocationResponse>(
+            @"SELECT COALESCE(sl.Lat, t.Lat, 0) AS Lat,
+                     COALESCE(sl.Lng, t.Lng, 0) AS Lng,
+                     COALESCE(sl.RadiusMeters, t.GeofenceRadiusMeters, 50) AS RadiusMeters,
+                     COALESCE(sl.Name, t.Name) AS Name
+              FROM dbo.Tenants t
+              LEFT JOIN dbo.SchoolLocations sl ON sl.TenantId = t.Id
+              WHERE t.Id = @tenantId",
+            new { tenantId }, ct);
+        var loc = rows.FirstOrDefault();
+        if (loc is null || (loc.Lat == 0 && loc.Lng == 0))
+            return null;
+        return loc;
+    }
 
     public async Task<SchoolLocationResponse?> UpsertSchoolLocationAsync(
         Guid tenantId, UpsertSchoolLocationRequest r, CancellationToken ct = default) =>
         (await QueryProcAsync<SchoolLocationResponse>("dbo.SchoolLocation_Upsert",
             new { TenantId = tenantId, r.Lat, r.Lng, r.RadiusMeters, r.Name }, ct)).FirstOrDefault();
 
+    public Task DeleteSchoolLocationAsync(Guid tenantId, CancellationToken ct = default) =>
+        ExecuteProcAsync("dbo.SchoolLocation_Delete", new { TenantId = tenantId }, ct);
+
     /// Server-authoritative geofence verify: distance is computed here (haversine) from the stored
     /// school location, NOT trusted from the client. verified = distance <= radius + min(accuracy, cap).
     public async Task<CheckEventResponse> PunchAsync(Guid tenantId, Guid userId, PunchRequest r, CancellationToken ct = default)
     {
         var loc = await GetSchoolLocationAsync(tenantId, ct);
-        double distance = 0;
-        bool verified = false;
-        if (loc is not null)
-        {
-            distance = Haversine(loc.Lat, loc.Lng, r.Lat, r.Lng);
-            verified = distance <= loc.RadiusMeters + Math.Min(r.AccuracyMeters, AccuracyCapMeters);
-        }
+        if (loc is null)
+            throw new GeofencePunchRejectedException(
+                "school_location_not_configured", "School location is not configured");
+
+        var distance = Haversine(loc.Lat, loc.Lng, r.Lat, r.Lng);
+        var verified = distance <= loc.RadiusMeters + Math.Min(r.AccuracyMeters, AccuracyCapMeters);
 
         await ExecuteProcAsync("dbo.CheckIn_Insert", new
         {
@@ -76,28 +104,44 @@ public sealed class CheckInRepository(IDbConnectionFactory factory) : BaseReposi
             DistanceMeters = distance, Verified = verified
         }, ct);
 
-        return new CheckEventResponse(r.Kind, r.At, r.Lat, r.Lng, r.AccuracyMeters, Math.Round(distance, 1), verified);
+        return new CheckEventResponse(
+            r.Kind, r.At, r.Lat, r.Lng, r.AccuracyMeters, Math.Round(distance, 1), verified);
     }
 
-    public async Task<TeacherAttendanceDayResponse> GetTodayAsync(Guid userId, DateTime day, CancellationToken ct = default)
+    /// Silver/Gold manual punch — records time only, no GPS verification.
+    public async Task<CheckEventResponse> ManualPunchAsync(
+        Guid tenantId, Guid userId, string kind, DateTime atUtc, CancellationToken ct = default)
     {
+        await ExecuteProcAsync("dbo.CheckIn_Insert", new
+        {
+            TenantId = tenantId, UserId = userId, Kind = kind, At = atUtc,
+            Lat = 0.0, Lng = 0.0, AccuracyMeters = 0.0, DistanceMeters = 0.0, Verified = true
+        }, ct);
+        var at = DateTime.SpecifyKind(atUtc, DateTimeKind.Utc);
+        return new CheckEventResponse(kind, at, 0, 0, 0, 0, true);
+    }
+
+  public async Task<TeacherAttendanceDayResponse> GetTodayAsync(
+        Guid userId, DateOnly day, TimeSpan utcOffset, CancellationToken ct = default)
+    {
+        var (startUtc, endUtc) = LocalDayBoundsUtc(day, utcOffset);
         var rows = await QueryInlineAsync<CheckInRow>(
             "SELECT Kind, At, Lat, Lng, AccuracyMeters, DistanceMeters, Verified FROM dbo.CheckIns " +
-            "WHERE UserId = @userId AND CAST(At AS date) = @day ORDER BY At",
-            new { userId, day = day.Date }, ct);
+            "WHERE UserId = @userId AND At >= @startUtc AND At < @endUtc ORDER BY At",
+            new { userId, startUtc, endUtc }, ct);
         var ci = rows.Where(x => x.Kind == "in").Select(ToEvent).LastOrDefault();
         var co = rows.Where(x => x.Kind == "out").Select(ToEvent).LastOrDefault();
-        return new TeacherAttendanceDayResponse(day.Date, ci, co);
+        return new TeacherAttendanceDayResponse(day, ci, co);
     }
 
     public async Task<IReadOnlyList<TeacherAttendanceDayResponse>> GetHistoryAsync(
-        Guid userId, int limit, CancellationToken ct = default)
+        Guid userId, int limit, TimeSpan utcOffset, CancellationToken ct = default)
     {
         var rows = await QueryInlineAsync<CheckInRow>(
             "SELECT Kind, At, Lat, Lng, AccuracyMeters, DistanceMeters, Verified FROM dbo.CheckIns " +
             "WHERE UserId = @userId ORDER BY At DESC", new { userId }, ct);
 
-        return rows.GroupBy(r => r.At.Date)
+        return rows.GroupBy(r => DateOnly.FromDateTime(r.At.Add(utcOffset)))
             .OrderByDescending(g => g.Key)
             .Take(limit)
             .Select(g => new TeacherAttendanceDayResponse(
@@ -127,7 +171,15 @@ public sealed class CheckInRepository(IDbConnectionFactory factory) : BaseReposi
     }
 
     private static CheckEventResponse ToEvent(CheckInRow x) =>
-        new(x.Kind, x.At, x.Lat, x.Lng, x.AccuracyMeters, x.DistanceMeters, x.Verified);
+        new(x.Kind, DateTime.SpecifyKind(x.At, DateTimeKind.Utc), x.Lat, x.Lng, x.AccuracyMeters, x.DistanceMeters, x.Verified);
+
+    /// <summary>UTC instants for local calendar midnight through next midnight.</summary>
+    internal static (DateTime StartUtc, DateTime EndUtc) LocalDayBoundsUtc(DateOnly day, TimeSpan utcOffset)
+    {
+        var localMidnight = day.ToDateTime(TimeOnly.MinValue);
+        var startUtc = localMidnight - utcOffset;
+        return (startUtc, startUtc.AddDays(1));
+    }
 
     private static double Haversine(double lat1, double lng1, double lat2, double lng2)
     {

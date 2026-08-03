@@ -24,12 +24,12 @@ public class BusBoardingTests(SqlServerFixture fx)
             b.UseSetting("Jwt:SigningKey", Key);
         });
 
-    private static HttpClient TeacherClient(WebApplicationFactory<Program> app, Guid tenantId)
+    private static HttpClient TeacherClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId)
     {
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, [Policies.Teacher], isPlatform: false);
+        var token = jwt.IssueAccess(userId, tenantId, [Policies.Teacher], isPlatform: false);
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
         return client;
@@ -66,6 +66,7 @@ public class BusBoardingTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
         var busId = Guid.NewGuid();
         var busNo = $"BRD-{Guid.NewGuid():N}"[..12];
         var student1Id = Guid.NewGuid();
@@ -78,6 +79,10 @@ public class BusBoardingTests(SqlServerFixture fx)
                 new { Id = busId, TenantId = tenantId, BusNo = busNo });
 
             await conn.ExecuteAsync(
+                "INSERT dbo.BusAssignments (TenantId, TeacherUserId, BusId) VALUES (@TenantId, @TeacherUserId, @BusId)",
+                new { TenantId = tenantId, TeacherUserId = userId, BusId = busId });
+
+            await conn.ExecuteAsync(
                 "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name) VALUES (@Id, @TenantId, @AdmissionNo, @Name)",
                 new[]
                 {
@@ -86,11 +91,19 @@ public class BusBoardingTests(SqlServerFixture fx)
                 });
 
             await conn.ExecuteAsync(
+                "INSERT dbo.StudentBusAssignments (TenantId, StudentId, BusId) VALUES (@TenantId, @StudentId, @BusId)",
+                new[]
+                {
+                    new { TenantId = tenantId, StudentId = student1Id, BusId = busId },
+                    new { TenantId = tenantId, StudentId = student2Id, BusId = busId }
+                });
+
+            await conn.ExecuteAsync(
                 "INSERT dbo.Trips (Id, TenantId, BusId, BusNo, Status, StartedAt) VALUES (@Id, @TenantId, @BusId, @BusNo, 'live', @StartedAt)",
                 new { Id = Guid.NewGuid(), TenantId = tenantId, BusId = busId, BusNo = busNo, StartedAt = DateTime.UtcNow });
         });
 
-        var client = TeacherClient(app, tenantId);
+        var client = TeacherClient(app, tenantId, userId);
 
         var payload = new
         {
@@ -123,6 +136,7 @@ public class BusBoardingTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
         var busId = Guid.NewGuid();
         var busNo = $"NLT-{Guid.NewGuid():N}"[..12];
         var studentId = Guid.NewGuid();
@@ -134,12 +148,16 @@ public class BusBoardingTests(SqlServerFixture fx)
                 new { Id = busId, TenantId = tenantId, BusNo = busNo });
 
             await conn.ExecuteAsync(
+                "INSERT dbo.BusAssignments (TenantId, TeacherUserId, BusId) VALUES (@TenantId, @TeacherUserId, @BusId)",
+                new { TenantId = tenantId, TeacherUserId = userId, BusId = busId });
+
+            await conn.ExecuteAsync(
                 "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name) VALUES (@Id, @TenantId, @AdmissionNo, @Name)",
                 new { Id = studentId, TenantId = tenantId, AdmissionNo = "B003", Name = "Eve Clark" });
             // No live trip seeded
         });
 
-        var client = TeacherClient(app, tenantId);
+        var client = TeacherClient(app, tenantId, userId);
 
         var payload = new
         {
@@ -158,6 +176,7 @@ public class BusBoardingTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
         var busId = Guid.NewGuid();
 
         var client = StudentParentClient(app, tenantId);

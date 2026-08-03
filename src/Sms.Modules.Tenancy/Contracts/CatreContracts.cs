@@ -28,7 +28,11 @@ public sealed record UpdateSchoolProfileRequest(
     string? LogoUrl = null,
     string? ImageUrl = null,
     bool SetLogo = false,
-    bool SetImage = false);
+    bool SetImage = false,
+    double? Lat = null,
+    double? Lng = null,
+    int? GeofenceRadiusMeters = null,
+    bool SetGeofence = false);
 
 public sealed record SetStatusRequest(string? Status, string? Reason);
 

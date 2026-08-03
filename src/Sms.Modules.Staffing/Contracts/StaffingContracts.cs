@@ -5,13 +5,13 @@ public sealed record TeacherResponse(
     Guid Id, Guid TenantId, string Name, string? Gender, string? Department, string? Designation,
     IReadOnlyList<string> Subjects, string? ClassTeacher, string? Phone, string? Email, int Exp, decimal Rating,
     decimal AttendancePct, decimal Result, int Load, string Status, int AvatarHue, bool Top,
-    string? EmployeeCode = null);
+    string? EmployeeCode = null, string? PhotoUrl = null);
 
 public sealed record TeacherRow(
     Guid Id, Guid TenantId, string Name, string? Gender, string? Department, string? Designation,
     string? SubjectsCsv, string? ClassTeacher, string? Phone, string? Email, int Exp, decimal Rating,
     decimal AttendancePct, decimal Result, int Load, string Status, int AvatarHue, bool Top,
-    string? EmployeeCode = null);
+    string? EmployeeCode = null, string? PhotoUrl = null);
 
 public sealed record CreateTeacherRequest(
     string Name, string? Gender, string? Department, string? Designation, IReadOnlyList<string>? Subjects,
@@ -33,16 +33,17 @@ public sealed record UpdateTeacherRequest(
 public sealed record StaffResponse(
     Guid Id, Guid TenantId, string Name, string? Gender, string? Role, string? Category, string? Department,
     string? Phone, string? Shift, string? Route, decimal AttendancePct, string Status, int AvatarHue,
-    string? EmployeeCode = null);
+    string? EmployeeCode = null, string? Email = null, string? PhotoUrl = null);
 
 public sealed record CreateStaffRequest(
     string Name, string? Gender, string? Role, string? Category, string? Department, string? Phone,
-    string? Shift, string? Route, int AvatarHue, string? EmployeeCode = null);
+    string? Shift, string? Route, int AvatarHue, string? EmployeeCode = null, string? Email = null);
 
-/// <summary>SetPhoto/PhotoUrl: same pattern as UpdateTeacherRequest, above.</summary>
+/// <summary>SetPhoto/PhotoUrl: same pattern as UpdateTeacherRequest, above. Email is
+/// written through to the linked Users row by StaffingService — see UpdateTeacherRequest.</summary>
 public sealed record UpdateStaffRequest(
     string? Name, string? Role, string? Category, string? Department, string? Phone, string? Shift,
-    string? Route, string? Status, string? PhotoUrl = null, bool SetPhoto = false);
+    string? Route, string? Status, string? PhotoUrl = null, bool SetPhoto = false, string? Email = null);
 
 public static class StaffingMappers
 {
@@ -50,5 +51,5 @@ public static class StaffingMappers
         r.Id, r.TenantId, r.Name, r.Gender, r.Department, r.Designation,
         string.IsNullOrEmpty(r.SubjectsCsv) ? [] : r.SubjectsCsv.Split(','),
         r.ClassTeacher, r.Phone, r.Email, r.Exp, r.Rating, r.AttendancePct, r.Result, r.Load,
-        r.Status, r.AvatarHue, r.Top, r.EmployeeCode);
+        r.Status, r.AvatarHue, r.Top, r.EmployeeCode, r.PhotoUrl);
 }

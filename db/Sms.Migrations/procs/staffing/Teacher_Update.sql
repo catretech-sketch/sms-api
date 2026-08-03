@@ -27,6 +27,6 @@ BEGIN
         WHERE Id = @TenantId;
 
     SELECT Id, TenantId, Name, Gender, Department, Designation, SubjectsCsv, ClassTeacher, Phone, Email,
-           Exp, Rating, AttendancePct, Result, Load, Status, AvatarHue, [Top]
+           Exp, Rating, AttendancePct, Result, Load, Status, AvatarHue, [Top], EmployeeCode
     FROM dbo.Teachers WHERE Id = @Id;
 END

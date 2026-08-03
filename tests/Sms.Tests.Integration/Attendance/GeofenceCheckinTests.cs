@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 
 namespace Sms.Tests.Integration.Attendance;
 
@@ -42,6 +43,13 @@ public class GeofenceCheckinTests(SqlServerFixture fx)
         return doc.RootElement.GetProperty("data").Clone();
     }
 
+    private static async Task<JsonElement> Error(HttpResponseMessage res, HttpStatusCode expected)
+    {
+        res.StatusCode.Should().Be(expected);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        return doc.RootElement.GetProperty("error").Clone();
+    }
+
     private static async Task SetSchoolLocation(HttpClient client) =>
         (await client.PutAsJsonAsync("/v1/me/attendance/school-location", new
         {
@@ -52,7 +60,9 @@ public class GeofenceCheckinTests(SqlServerFixture fx)
     public async Task Punch_inside_geofence_is_verified_and_appears_in_today()
     {
         await using var app = App();
-        var client = TeacherClient(app, Guid.NewGuid(), Guid.NewGuid());
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = TeacherClient(app, tenantId, Guid.NewGuid());
         await SetSchoolLocation(client);
 
         var day = await Data(await client.PostAsJsonAsync("/v1/me/attendance/punch", new
@@ -70,10 +80,12 @@ public class GeofenceCheckinTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task Punch_far_from_school_is_not_verified()
+    public async Task Punch_far_from_school_is_saved_as_unverified()
     {
         await using var app = App();
-        var client = TeacherClient(app, Guid.NewGuid(), Guid.NewGuid());
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = TeacherClient(app, tenantId, Guid.NewGuid());
         await SetSchoolLocation(client);
 
         // ~1.1 km away (0.01 degrees latitude)
@@ -84,6 +96,54 @@ public class GeofenceCheckinTests(SqlServerFixture fx)
 
         var checkIn = day.GetProperty("check_in");
         checkIn.GetProperty("verified").GetBoolean().Should().BeFalse();
-        checkIn.GetProperty("distance_meters").GetDouble().Should().BeGreaterThan(500);
+        checkIn.GetProperty("distance_meters").GetDouble().Should().BeGreaterThan(50);
+
+        var today = await Data(await client.GetAsync("/v1/me/attendance/today"), HttpStatusCode.OK);
+        today.GetProperty("check_in").GetProperty("verified").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Punch_without_school_location_falls_back_to_manual_on_platinum()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = TeacherClient(app, tenantId, Guid.NewGuid());
+
+        var day = await Data(await client.PostAsJsonAsync("/v1/me/attendance/punch", new
+        {
+            kind = "in", at = DateTime.UtcNow, lat = SchoolLat, lng = SchoolLng, accuracy_meters = 5
+        }), HttpStatusCode.Created);
+
+        day.GetProperty("check_in").ValueKind.Should().NotBe(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task Manual_punch_on_gold_plan_succeeds_without_geofence()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
+        var client = TeacherClient(app, tenantId, Guid.NewGuid());
+
+        var day = await Data(await client.PostAsJsonAsync("/v1/me/attendance/punch", new
+        {
+            kind = "in", at = DateTime.UtcNow, lat = 0.0, lng = 0.0, accuracy_meters = 0
+        }), HttpStatusCode.Created);
+
+        day.GetProperty("check_in").ValueKind.Should().NotBe(JsonValueKind.Null);
+        var today = await Data(await client.GetAsync("/v1/me/attendance/today"), HttpStatusCode.OK);
+        today.GetProperty("check_in").ValueKind.Should().NotBe(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task School_location_returns_403_when_plan_lacks_geofence()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
+        var client = TeacherClient(app, tenantId, Guid.NewGuid());
+
+        (await client.GetAsync("/v1/me/attendance/school-location")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 }

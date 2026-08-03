@@ -7,6 +7,7 @@ using Microsoft.Data.SqlClient;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 
 namespace Sms.Tests.Integration.Transport;
 
@@ -23,12 +24,12 @@ public class BusPositionTests(SqlServerFixture fx)
             b.UseSetting("Jwt:SigningKey", Key);
         });
 
-    private static HttpClient TeacherClient(WebApplicationFactory<Program> app, Guid tenantId)
+    private static HttpClient TeacherClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId)
     {
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, [Policies.Teacher], isPlatform: false);
+        var token = jwt.IssueAccess(userId, tenantId, [Policies.Teacher], isPlatform: false);
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
         return client;
@@ -65,9 +66,12 @@ public class BusPositionTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
         var busId = Guid.NewGuid();
         var busNo = $"POS-{Guid.NewGuid():N}"[..12];
         var tripId = Guid.NewGuid();
+
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
 
         // 3 stops at well-separated lat/lng
         // Stop 1 (Seq=1): lat=12.9700, lng=77.5900
@@ -89,6 +93,10 @@ public class BusPositionTests(SqlServerFixture fx)
                 new { Id = busId, TenantId = tenantId, BusNo = busNo });
 
             await conn.ExecuteAsync(
+                "INSERT dbo.BusAssignments (TenantId, TeacherUserId, BusId) VALUES (@TenantId, @TeacherUserId, @BusId)",
+                new { TenantId = tenantId, TeacherUserId = userId, BusId = busId });
+
+            await conn.ExecuteAsync(
                 "INSERT dbo.BusStops (Id, TenantId, BusId, Name, Seq, Lat, Lng) VALUES (@Id, @TenantId, @BusId, @Name, @Seq, @Lat, @Lng)",
                 new object[]
                 {
@@ -106,7 +114,7 @@ public class BusPositionTests(SqlServerFixture fx)
                 new { Id = Guid.NewGuid(), TenantId = tenantId, TripId = tripId, Lat = pingLat, Lng = pingLng, SpeedKmh = 20.0, Heading = 0.0, At = DateTime.UtcNow });
         });
 
-        var client = TeacherClient(app, tenantId);
+        var client = TeacherClient(app, tenantId, userId);
         var data = await Data(await client.GetAsync($"/v1/bus/{busId}/position"), HttpStatusCode.OK);
 
         data.GetProperty("current_stop_index").GetInt32().Should().Be(1);
@@ -126,17 +134,24 @@ public class BusPositionTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
         var busId = Guid.NewGuid();
         var busNo = $"NPT-{Guid.NewGuid():N}"[..12];
+
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
 
         await Seed(fx.ConnectionString, tenantId, async conn =>
         {
             await conn.ExecuteAsync(
                 "INSERT dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, @BusNo)",
                 new { Id = busId, TenantId = tenantId, BusNo = busNo });
+
+            await conn.ExecuteAsync(
+                "INSERT dbo.BusAssignments (TenantId, TeacherUserId, BusId) VALUES (@TenantId, @TeacherUserId, @BusId)",
+                new { TenantId = tenantId, TeacherUserId = userId, BusId = busId });
         });
 
-        var client = TeacherClient(app, tenantId);
+        var client = TeacherClient(app, tenantId, userId);
         var data = await Data(await client.GetAsync($"/v1/bus/{busId}/position"), HttpStatusCode.OK);
 
         data.GetProperty("current_stop_index").GetInt32().Should().Be(0);
@@ -152,9 +167,37 @@ public class BusPositionTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
         var busId = Guid.NewGuid();
 
         var client = StudentParentClient(app, tenantId);
+        var res = await client.GetAsync($"/v1/bus/{busId}/position");
+        res.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task GetPosition_returns_403_when_plan_lacks_gps()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var busNo = $"GPS-{Guid.NewGuid():N}"[..12];
+
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
+
+        await Seed(fx.ConnectionString, tenantId, async conn =>
+        {
+            await conn.ExecuteAsync(
+                "INSERT dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, @BusNo)",
+                new { Id = busId, TenantId = tenantId, BusNo = busNo });
+
+            await conn.ExecuteAsync(
+                "INSERT dbo.BusAssignments (TenantId, TeacherUserId, BusId) VALUES (@TenantId, @TeacherUserId, @BusId)",
+                new { TenantId = tenantId, TeacherUserId = userId, BusId = busId });
+        });
+
+        var client = TeacherClient(app, tenantId, userId);
         var res = await client.GetAsync($"/v1/bus/{busId}/position");
         res.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }

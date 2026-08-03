@@ -21,57 +21,182 @@ SELECT
         return row[0];
     }
 
-    private sealed record StaffRow(
-        Guid TeacherId, string Name, string? SubjectsCsv, string? Phone, string? Designation,
-        DateTime? CheckInAt);
+    private sealed record PunchRow(Guid UserId, string Kind, DateTime At, bool Verified);
 
-    private async Task<IReadOnlyList<PrincipalStaffEntry>> LoadStaffAsync(DateTime d, CancellationToken ct)
+    private sealed record RosterPersonRow(
+        Guid PersonId, string Name, string? Email, string? Phone,
+        string? SubjectsCsv, string? Designation, string? Role, Guid? UserId);
+
+    private sealed record UserRow(Guid Id, string? Email, string? Phone);
+
+    private sealed record DayPunches(DateTime? CheckInAt, bool CheckInVerified, DateTime? CheckOutAt);
+
+    private static bool IsKind(string kind, string expected) =>
+        string.Equals(kind.Trim(), expected, StringComparison.OrdinalIgnoreCase);
+
+    private static (DateTime StartUtc, DateTime EndUtc) LocalDayBoundsUtc(DateOnly day, TimeSpan utcOffset)
     {
-        var staffRows = await QueryInlineAsync<StaffRow>(@"
-SELECT t.Id AS TeacherId, t.Name, t.SubjectsCsv, t.Phone, t.Designation,
-       (SELECT MAX(ci.At) FROM dbo.CheckIns ci
-          JOIN dbo.Users u ON u.Id = ci.UserId
-          WHERE u.Email = t.Email AND ci.Kind = 'in' AND ci.Verified = 1
-            AND CAST(ci.At AS date) = @d) AS CheckInAt
-FROM dbo.Teachers t
-WHERE t.Status = 'active'
-ORDER BY t.Name", new { d }, ct);
-
-        return staffRows.Select(r => new PrincipalStaffEntry(
-            r.TeacherId, r.Name, Initials(r.Name),
-            string.IsNullOrEmpty(r.SubjectsCsv) ? null : r.SubjectsCsv.Split(',')[0],
-            r.Phone, r.CheckInAt is not null, r.CheckInAt,
-            string.IsNullOrEmpty(r.Designation) ? "teacher" : r.Designation)).ToList();
+        var localMidnight = day.ToDateTime(TimeOnly.MinValue);
+        var startUtc = localMidnight - utcOffset;
+        return (startUtc, startUtc.AddDays(1));
     }
 
-    public async Task<PrincipalOverviewResponse> GetPrincipalOverviewAsync(DateTime today, CancellationToken ct = default)
+    private static Dictionary<Guid, DayPunches> BuildPunchIndex(IReadOnlyList<PunchRow> rows)
     {
-        var d = today.Date;
+        var dict = new Dictionary<Guid, DayPunches>();
+        foreach (var g in rows.GroupBy(r => r.UserId))
+        {
+            var lastIn = g.Where(x => IsKind(x.Kind, "in")).OrderBy(x => x.At).LastOrDefault();
+            var lastOut = g.Where(x => IsKind(x.Kind, "out")).OrderBy(x => x.At).LastOrDefault();
+            dict[g.Key] = new DayPunches(lastIn?.At, lastIn?.Verified ?? false, lastOut?.At);
+        }
+        return dict;
+    }
 
-        var kpiRows = await QueryInlineAsync<PrincipalKpis>(@"
+    /// Resolve login user(s) for a roster row. When UserId is set, use only that account.
+    /// Email is used as a fallback when the row is not linked. Phone is intentionally excluded —
+    /// roster phones are often shared or stale and would attribute one person's punch to others.
+    private static IEnumerable<Guid> CandidateUserIds(RosterPersonRow person, IReadOnlyList<UserRow> users)
+    {
+        var ids = new HashSet<Guid>();
+        if (person.UserId is { } direct)
+        {
+            ids.Add(direct);
+            return ids;
+        }
+
+        if (string.IsNullOrWhiteSpace(person.Email)) return ids;
+
+        foreach (var u in users)
+        {
+            if (!string.IsNullOrWhiteSpace(u.Email)
+                && string.Equals(person.Email.Trim(), u.Email.Trim(), StringComparison.OrdinalIgnoreCase))
+                ids.Add(u.Id);
+        }
+        return ids;
+    }
+
+    /// Merge latest in/out across every login user linked to this teacher/staff row.
+    private static DayPunches? MergePunches(IEnumerable<Guid> userIds, Dictionary<Guid, DayPunches> index)
+    {
+        DateTime? inAt = null, outAt = null;
+        var verified = false;
+        foreach (var id in userIds)
+        {
+            if (!index.TryGetValue(id, out var p)) continue;
+            if (p.CheckInAt is { } ci && (inAt is null || ci > inAt))
+            {
+                inAt = ci;
+                verified = p.CheckInVerified;
+            }
+            if (p.CheckOutAt is { } co && (outAt is null || co > outAt))
+                outAt = co;
+        }
+        if (inAt is null && outAt is null) return null;
+        return new DayPunches(inAt, verified, outAt);
+    }
+
+    private async Task<IReadOnlyList<PrincipalStaffEntry>> LoadStaffAsync(
+        DateTime startUtc, DateTime endUtc, CancellationToken ct)
+    {
+        var punches = await QueryInlineAsync<PunchRow>(@"
+SELECT UserId, Kind, At, Verified
+FROM dbo.CheckIns
+WHERE At >= @startUtc AND At < @endUtc
+  AND LOWER(LTRIM(RTRIM(Kind))) IN ('in', 'out')
+ORDER BY At",
+            new { startUtc, endUtc }, ct);
+        var punchIndex = BuildPunchIndex(punches);
+        var users = await QueryInlineAsync<UserRow>(
+            "SELECT Id, Email, Phone FROM dbo.Users", null, ct);
+
+        var teacherRows = await QueryInlineAsync<RosterPersonRow>(@"
+SELECT t.Id AS PersonId, t.Name, t.Email,
+       COALESCE(NULLIF(LTRIM(RTRIM(t.Phone)), ''), NULLIF(LTRIM(RTRIM(u.Phone)), '')) AS Phone,
+       t.SubjectsCsv, t.Designation,
+       CAST(NULL AS nvarchar(64)) AS Role, t.UserId
+FROM dbo.Teachers t
+LEFT JOIN dbo.Users u ON u.Id = t.UserId
+WHERE t.Status = 'active'
+ORDER BY t.Name", null, ct);
+
+        var supportRows = await QueryInlineAsync<RosterPersonRow>(@"
+SELECT s.Id AS PersonId, s.Name, s.Email,
+       COALESCE(NULLIF(LTRIM(RTRIM(s.Phone)), ''), NULLIF(LTRIM(RTRIM(u.Phone)), '')) AS Phone,
+       CAST(NULL AS nvarchar(200)) AS SubjectsCsv, CAST(NULL AS nvarchar(64)) AS Designation,
+       s.Role, s.UserId
+FROM dbo.Staff s
+LEFT JOIN dbo.Users u ON u.Id = s.UserId
+WHERE s.Status = 'active'
+ORDER BY s.Name", null, ct);
+
+        static PrincipalStaffEntry ToEntry(
+            RosterPersonRow r, IReadOnlyList<UserRow> users, Dictionary<Guid, DayPunches> index, bool isTeacher)
+        {
+            var punches = MergePunches(CandidateUserIds(r, users), index);
+            var checkInAt = punches?.CheckInAt;
+            var checkOutAt = punches?.CheckOutAt;
+            return new PrincipalStaffEntry(
+                r.PersonId, r.Name, Initials(r.Name),
+                isTeacher && !string.IsNullOrEmpty(r.SubjectsCsv) ? r.SubjectsCsv.Split(',')[0] : null,
+                r.Phone,
+                checkInAt is not null,
+                checkInAt,
+                checkOutAt,
+                checkInAt is not null && (punches?.CheckInVerified ?? false),
+                isTeacher ? null : (string.IsNullOrEmpty(r.Role) ? null : r.Role),
+                isTeacher ? (string.IsNullOrEmpty(r.Designation) ? "Teacher" : r.Designation) : null);
+        }
+
+        var teachers = teacherRows.Select(r => ToEntry(r, users, punchIndex, isTeacher: true)).ToList();
+        var support = supportRows.Select(r => ToEntry(r, users, punchIndex, isTeacher: false)).ToList();
+        return teachers.Concat(support).OrderBy(s => s.Name).ToList();
+    }
+
+    /// School-wide student attendance for dashboard KPIs — distinct students, not per-class sums
+    /// (duplicate class rows and grade/section overlap would inflate the denominator).
+    private async Task<(int PresentTotal, int StudentTotal)> ResolveStudentTotalsAsync(
+        DateTime d, CancellationToken ct)
+    {
+        var rows = await QueryInlineAsync<StudentTotalsRow>(@"
 SELECT
-  CAST(CASE WHEN (SELECT SUM(StudentCount) FROM dbo.Classes) > 0
-       THEN 100.0 * (SELECT COUNT(*) FROM dbo.AttendanceRecords
-                     WHERE [Date] = @d AND Status IN ('present','late'))
-              / (SELECT SUM(StudentCount) FROM dbo.Classes)
-       ELSE 0 END AS decimal(5,1))                                              AS StudentsPresentPct,
-  (SELECT COUNT(DISTINCT t.Id) FROM dbo.Teachers t
-     JOIN dbo.Users u ON u.Email = t.Email
-     JOIN dbo.CheckIns ci ON ci.UserId = u.Id
-     WHERE ci.Kind = 'in' AND ci.Verified = 1 AND CAST(ci.At AS date) = @d)     AS StaffPresent,
-  (SELECT COUNT(*) FROM dbo.Teachers WHERE Status = 'active')                   AS StaffTotal,
-  (SELECT COUNT(*) FROM dbo.LeaveRequests WHERE Status = 'pending')             AS PendingApprovals",
+  (SELECT COUNT(*) FROM dbo.Students WHERE Status = N'active') AS StudentTotal,
+  (SELECT COUNT(DISTINCT ar.StudentId) FROM dbo.AttendanceRecords ar
+     WHERE ar.[Date] = @d AND ar.Status IN ('present','late')) AS PresentTotal",
             new { d }, ct);
 
-        var staff = await LoadStaffAsync(d, ct);
-        return new PrincipalOverviewResponse(kpiRows[0], staff);
+        var row = rows.Count > 0 ? rows[0] : new StudentTotalsRow(0, 0);
+        return (row.PresentTotal, row.StudentTotal);
     }
 
-    public async Task<PrincipalAttendanceResponse> GetPrincipalAttendanceAsync(DateTime today, CancellationToken ct = default)
+    private sealed record StudentTotalsRow(int StudentTotal, int PresentTotal);
+
+    public async Task<PrincipalOverviewResponse> GetPrincipalOverviewAsync(
+        DateOnly day, TimeSpan utcOffset, CancellationToken ct = default)
     {
-        var d = today.Date;
-        /* Prefer live Students matched by Grade+Section (or ClassLabel=Name).
-           Classes.StudentCount is often 0 when enrolments don't bump the counter. */
+        var d = day.ToDateTime(TimeOnly.MinValue);
+        var (startUtc, endUtc) = LocalDayBoundsUtc(day, utcOffset);
+        var staff = await LoadStaffAsync(startUtc, endUtc, ct);
+        var staffPresent = staff.Count(s => s.CheckedIn);
+
+        var (presentTotal, studentTotal) = await ResolveStudentTotalsAsync(d, ct);
+        var studentsPct = studentTotal > 0
+            ? Math.Round(100m * presentTotal / studentTotal, 1)
+            : 0m;
+
+        var pendingRows = await QueryInlineAsync<int>(
+            "SELECT COUNT(*) FROM dbo.LeaveRequests WHERE Status = 'pending'", null, ct);
+        var pendingApprovals = pendingRows.Count > 0 ? pendingRows[0] : 0;
+
+        var kpis = new PrincipalKpis(studentsPct, staffPresent, staff.Count, pendingApprovals);
+        return new PrincipalOverviewResponse(kpis, staff);
+    }
+
+    public async Task<PrincipalAttendanceResponse> GetPrincipalAttendanceAsync(
+        DateOnly day, TimeSpan utcOffset, CancellationToken ct = default)
+    {
+        var d = day.ToDateTime(TimeOnly.MinValue);
+        var (startUtc, endUtc) = LocalDayBoundsUtc(day, utcOffset);
         var classes = await QueryInlineAsync<PrincipalClassAttendance>(@"
 SELECT c.Id AS ClassId, c.Name AS ClassName,
        ISNULL(a.Present, 0) AS Present,
@@ -100,27 +225,9 @@ OUTER APPLY (
 ) sc
 ORDER BY c.Name", new { d }, ct);
 
-        int presentTotal = classes.Sum(c => c.Present);
-        int studentTotal = classes.Sum(c => c.Total);
-
-        /* School-wide roll when class counters are still empty but students exist. */
-        if (studentTotal <= 0)
-        {
-            var active = await QueryInlineAsync<int>(
-                "SELECT COUNT(*) FROM dbo.Students WHERE Status = N'active'", null, ct);
-            studentTotal = active.Count > 0 ? active[0] : 0;
-            if (presentTotal <= 0)
-            {
-                var present = await QueryInlineAsync<int>(
-                    @"SELECT COUNT(*) FROM dbo.AttendanceRecords
-                      WHERE [Date] = @d AND Status IN ('present','late')",
-                    new { d }, ct);
-                presentTotal = present.Count > 0 ? present[0] : 0;
-            }
-        }
-
+        var (presentTotal, studentTotal) = await ResolveStudentTotalsAsync(d, ct);
         decimal overall = studentTotal > 0 ? Math.Round(100m * presentTotal / studentTotal, 1) : 0m;
-        var staff = await LoadStaffAsync(d, ct);
+        var staff = await LoadStaffAsync(startUtc, endUtc, ct);
         return new PrincipalAttendanceResponse(d, presentTotal, studentTotal, overall, classes, staff);
     }
 

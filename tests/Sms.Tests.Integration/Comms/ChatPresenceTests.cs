@@ -62,21 +62,23 @@ public class ChatPresenceTests(SqlServerFixture fx)
             b.UseSetting("Jwt:SigningKey", Key);
         });
         var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
         await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
         {
             await conn.OpenAsync();
             await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
             await conn.ExecuteAsync(
-                "INSERT dbo.Users (Id, TenantId, Name, LastSeenAt) VALUES (NEWID(), @tenantId, 'Chat Contact', SYSUTCDATETIME())",
-                new { tenantId });
+                "INSERT dbo.Users (Id, TenantId, Name, LastSeenAt) VALUES (@userId, @tenantId, 'Chat Contact', SYSUTCDATETIME())",
+                new { userId, tenantId });
             await conn.ExecuteAsync(
-                "INSERT dbo.ChatThreads (TenantId, Name) VALUES (@tenantId, 'Chat Contact')", new { tenantId });
+                "INSERT dbo.ChatThreads (TenantId, OwnerUserId, Name) VALUES (@tenantId, @userId, 'Chat Contact')",
+                new { tenantId, userId });
         }
 
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, new[] { Policies.Teacher }, isPlatform: false);
+        var token = jwt.IssueAccess(userId, tenantId, new[] { Policies.Teacher }, isPlatform: false);
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
 

@@ -16,11 +16,13 @@ public sealed class ReportingController(IReportingService reporting) : ApiContro
 
     [HttpGet("principal/overview")]
     [Authorize(Policy = Policies.Principal)]
-    public async Task<IActionResult> GetPrincipalOverview(CancellationToken ct) =>
-        FromResult(await reporting.GetPrincipalOverviewAsync(ct));
+    public async Task<IActionResult> GetPrincipalOverview(
+        [FromQuery] int? offset_minutes, CancellationToken ct) =>
+        FromResult(await reporting.GetPrincipalOverviewAsync(offset_minutes, ct));
 
     [HttpGet("principal/attendance")]
     [Authorize(Policy = Policies.Principal)]
-    public async Task<IActionResult> GetPrincipalAttendance([FromQuery] DateTime? date, CancellationToken ct) =>
-        FromResult(await reporting.GetPrincipalAttendanceAsync(date, ct));
+    public async Task<IActionResult> GetPrincipalAttendance(
+        [FromQuery] DateTime? date, [FromQuery] int? offset_minutes, CancellationToken ct) =>
+        FromResult(await reporting.GetPrincipalAttendanceAsync(date, offset_minutes, ct));
 }

@@ -148,7 +148,8 @@ public sealed class TenancyService(
             && string.IsNullOrWhiteSpace(req.ContactEmail)
             && string.IsNullOrWhiteSpace(req.ContactPhone)
             && !req.SetLogo
-            && !req.SetImage)
+            && !req.SetImage
+            && !req.SetGeofence)
         {
             return ApiResult<ClientResponse>.Fail(new Error("invalid_request", "No profile fields to update."), 422);
         }

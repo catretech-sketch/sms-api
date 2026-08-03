@@ -15,23 +15,49 @@ public interface IThreadService
 
 public sealed class ThreadService(CommsRepository repo, ITenantContext tenant) : IThreadService
 {
-    public async Task<ApiResult<IReadOnlyList<ChatThreadResponse>>> ListAsync(CancellationToken ct = default) =>
-        ApiResult<IReadOnlyList<ChatThreadResponse>>.Ok(await repo.ListThreadsAsync(ct));
+    public async Task<ApiResult<IReadOnlyList<ChatThreadResponse>>> ListAsync(CancellationToken ct = default)
+    {
+        if (tenant.UserId is not { } uid)
+            return ApiResult<IReadOnlyList<ChatThreadResponse>>.Fail(new Error("unauthorized", "unauthorized"), 401);
+        return ApiResult<IReadOnlyList<ChatThreadResponse>>.Ok(await repo.ListThreadsAsync(uid, ct));
+    }
 
     public async Task<ApiResult<ChatThreadResponse>> CreateAsync(CreateThreadRequest req, CancellationToken ct = default)
     {
         if (tenant.TenantId is not { } tid)
             return ApiResult<ChatThreadResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
-        return ApiResult<ChatThreadResponse>.Ok((await repo.CreateThreadAsync(tid, req, ct))!, 201);
+        if (tenant.UserId is not { } uid)
+            return ApiResult<ChatThreadResponse>.Fail(new Error("unauthorized", "unauthorized"), 401);
+        return ApiResult<ChatThreadResponse>.Ok((await repo.CreateThreadAsync(tid, uid, req, ct))!, 201);
     }
 
-    public async Task<ApiResult<IReadOnlyList<ChatMessageResponse>>> ListMessagesAsync(Guid threadId, CancellationToken ct = default) =>
-        ApiResult<IReadOnlyList<ChatMessageResponse>>.Ok(await repo.ListMessagesAsync(threadId, tenant.UserId, ct));
+    public async Task<ApiResult<IReadOnlyList<ChatMessageResponse>>> ListMessagesAsync(Guid threadId, CancellationToken ct = default)
+    {
+        if (tenant.UserId is not { } uid)
+            return ApiResult<IReadOnlyList<ChatMessageResponse>>.Fail(new Error("unauthorized", "unauthorized"), 401);
+        return ApiResult<IReadOnlyList<ChatMessageResponse>>.Ok(
+            await repo.ListMessagesAsync(threadId, uid, tenant.UserId, ct));
+    }
 
     public async Task<ApiResult<ChatMessageResponse>> SendMessageAsync(Guid threadId, SendMessageRequest req, CancellationToken ct = default)
     {
         if (tenant.TenantId is not { } tid)
             return ApiResult<ChatMessageResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
-        return ApiResult<ChatMessageResponse>.Ok((await repo.AddMessageAsync(tid, threadId, tenant.UserId, req.Text, ct))!, 201);
+        if (tenant.UserId is not { } uid)
+            return ApiResult<ChatMessageResponse>.Fail(new Error("unauthorized", "unauthorized"), 401);
+
+        var text = string.IsNullOrWhiteSpace(req.Text) ? string.Empty : req.Text.Trim();
+        var imageUrl = ImageUrlValidation.Normalize(req.ImageUrl);
+
+        if (text.Length == 0 && imageUrl is null)
+            return ApiResult<ChatMessageResponse>.Fail(new Error("invalid_request", "message text or image is required"), 422);
+
+        if (imageUrl is not null && ImageUrlValidation.Validate(imageUrl) is { } imageError)
+            return ApiResult<ChatMessageResponse>.Fail(imageError, 422);
+
+        var msg = await repo.AddMessageAsync(tid, threadId, uid, uid, text, imageUrl, ct);
+        return msg is null
+            ? ApiResult<ChatMessageResponse>.Fail(new Error("not_found", "resource not found"), 404)
+            : ApiResult<ChatMessageResponse>.Ok(msg, 201);
     }
 }

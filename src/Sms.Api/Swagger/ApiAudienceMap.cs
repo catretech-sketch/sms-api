@@ -83,12 +83,12 @@ public static class ApiAudienceMap
         ("v1/announcements", [SchoolAdmin, Teacher, Student]),
         ("v1/threads",       [SchoolAdmin, Teacher, Student]),
         ("v1/complaints",    [SchoolAdmin]),
-        ("v1/notifications", [SchoolAdmin, Student]),
+        ("v1/notifications", [SchoolAdmin, Teacher, Student]),
         ("v1/timetable",     [Teacher]),
         ("v1/calendar",      [Teacher, Student]),
         ("v1/library/summary", [SchoolAdmin]),             // admin Operations · Library KPIs
         ("v1/library",       [Teacher]),
-        ("v1/assignments",   [Teacher, Student]),
+        ("v1/assignments",   [SchoolAdmin, Teacher, Student]),
         ("v1/me/attendance", [Teacher, Staff]),            // geofenced self check-in
     ];
 

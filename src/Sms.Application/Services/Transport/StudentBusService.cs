@@ -1,6 +1,7 @@
 using Sms.Application.Common;
 using Sms.Application.Interfaces.DAO;
 using Sms.Modules.Transport;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
 using Sms.Shared.Kernel.Time;
@@ -19,11 +20,14 @@ public interface IStudentBusService
 }
 
 public sealed class StudentBusService(
-    StudentBusRepository repo, BusRepository busRepo, IAuthDao users, ITenantContext tenant, IClock clock)
+    StudentBusRepository repo, BusRepository busRepo, IAuthDao users, ITenantContext tenant, ITenantFeatureSet features, IClock clock)
     : IStudentBusService
 {
+    private bool GpsAllowed => FeatureGate.Allowed(tenant, features, FeatureCatalog.TransportGps);
     public async Task<ApiResult> AssignAsync(Guid busId, Guid studentId, Guid? stopId, CancellationToken ct = default)
     {
+        if (!FeatureGate.Allowed(tenant, features, FeatureCatalog.Operations))
+            return FeatureGate.Locked(FeatureCatalog.Operations);
         if (tenant.TenantId is not { } tid)
             return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
         if (!await repo.BusExistsAsync(busId, ct))
@@ -36,14 +40,20 @@ public sealed class StudentBusService(
 
     public async Task<ApiResult> UnassignAsync(Guid studentId, CancellationToken ct = default)
     {
+        if (!FeatureGate.Allowed(tenant, features, FeatureCatalog.Operations))
+            return FeatureGate.Locked(FeatureCatalog.Operations);
         if (tenant.TenantId is not { } tid)
             return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
         await repo.UnassignAsync(tid, studentId, ct);
         return ApiResult.NoContent();
     }
 
-    public async Task<ApiResult<IReadOnlyList<StudentBusAssignmentResponse>>> ListByBusAsync(Guid busId, CancellationToken ct = default) =>
-        ApiResult<IReadOnlyList<StudentBusAssignmentResponse>>.Ok(await repo.ListByBusAsync(busId, ct));
+    public async Task<ApiResult<IReadOnlyList<StudentBusAssignmentResponse>>> ListByBusAsync(Guid busId, CancellationToken ct = default)
+    {
+        if (!FeatureGate.Allowed(tenant, features, FeatureCatalog.Operations))
+            return FeatureGate.Locked<IReadOnlyList<StudentBusAssignmentResponse>>(FeatureCatalog.Operations);
+        return ApiResult<IReadOnlyList<StudentBusAssignmentResponse>>.Ok(await repo.ListByBusAsync(busId, ct));
+    }
 
     public async Task<ApiResult<IReadOnlyList<ChildBusPositionResponse>>> GetMyChildrenBusAsync(CancellationToken ct = default)
     {
@@ -62,9 +72,22 @@ public sealed class StudentBusService(
         {
             string status;
             string? nextStop = null;
+            double? lat = r.Lat;
+            double? lng = r.Lng;
+            double? speed = r.SpeedKmh;
+            DateTime? lastPing = r.LastPingAt;
+
             if (r.TripId is null || r.LastPingAt is null)
             {
                 status = "idle";
+            }
+            else if (!GpsAllowed)
+            {
+                status = "idle";
+                lat = null;
+                lng = null;
+                speed = null;
+                lastPing = null;
             }
             else
             {
@@ -76,7 +99,7 @@ public sealed class StudentBusService(
             }
             list.Add(new ChildBusPositionResponse(
                 r.StudentId, r.StudentName, r.AdmissionNo, r.BusId, r.BusNo, r.RouteName, status,
-                r.Lat, r.Lng, r.SpeedKmh, nextStop, r.LastPingAt));
+                lat, lng, speed, nextStop, lastPing));
         }
         return ApiResult<IReadOnlyList<ChildBusPositionResponse>>.Ok(list);
     }

@@ -32,11 +32,15 @@ public static class DependencyInjection
         services.AddScoped<ISisService, SisService>();
         services.AddScoped<IStaffingService, StaffingService>();
         services.AddScoped<IAcademicsService, AcademicsService>();
+        services.AddScoped<AcademicsCommsNotifier>();
+        services.AddScoped<IExamMarksNotifyService, ExamMarksNotifyService>();
         services.AddScoped<IFeeService, FeeService>();
         services.AddScoped<IPayslipService, PayslipService>();
         services.AddScoped<IAttendanceService, AttendanceService>();
         services.AddScoped<IAttendanceAlertConfigService, AttendanceAlertConfigService>();
         services.AddScoped<ITripService, TripService>();
+        services.AddScoped<FleetSnapshotBuilder>();
+        services.AddScoped<ITransportFleetBroadcaster, NoOpTransportFleetBroadcaster>();
         services.AddScoped<IBusService, BusService>();
         services.AddScoped<IStudentBusService, StudentBusService>();
         services.AddScoped<IHostelService, HostelService>();

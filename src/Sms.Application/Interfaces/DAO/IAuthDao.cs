@@ -13,6 +13,8 @@ public interface IAuthDao
     Task<IReadOnlyList<string>> GetRolesAsync(Guid userId, CancellationToken ct = default);
     Task SetPasswordAsync(Guid userId, string passwordHash, CancellationToken ct = default);
     Task SetPhotoAsync(Guid userId, string? photoUrl, CancellationToken ct = default);
+    Task SetPhoneAsync(Guid userId, string? phone, CancellationToken ct = default);
+    Task SetEmailAsync(Guid userId, string? email, CancellationToken ct = default);
     Task OtpInsertAsync(string identifier, string channel, string codeHash, DateTime expiresAt, CancellationToken ct = default);
     Task<string?> OtpActiveHashAsync(string identifier, CancellationToken ct = default);
     Task OtpConsumeAsync(string identifier, string codeHash, CancellationToken ct = default);

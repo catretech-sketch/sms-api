@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Sms.Application.Common;
 using Sms.Application.Interfaces.DAO;
 using Sms.Modules.Staffing.Contracts;
@@ -61,7 +62,8 @@ public sealed class StaffingService(
     public async Task<ApiResult<TeacherResponse>> UpdateTeacherAsync(
         Guid id, UpdateTeacherRequest req, CancellationToken ct = default)
     {
-        if (await teachers.GetAsync(id, ct) is null)
+        var existing = await teachers.GetAsync(id, ct);
+        if (existing is null)
             return ApiResult<TeacherResponse>.Fail(new Error("not_found", "resource not found"), 404);
 
         if (req.SetPhoto)
@@ -75,8 +77,15 @@ public sealed class StaffingService(
             await users.SetPhotoAsync(userId.Value, ImageUrlValidation.Normalize(req.PhotoUrl), ct);
         }
 
+        if (req.Email is not null && !string.Equals(req.Email, existing.Email, StringComparison.OrdinalIgnoreCase))
+        {
+            var userId = await teachers.GetUserIdAsync(id, ct);
+            if (await SyncLinkedEmailAsync(userId, req.Email, ct) is { } error)
+                return ApiResult<TeacherResponse>.Fail(error, 409);
+        }
+
         var updated = (await teachers.UpdateAsync(id, req, ct))!;
-        return ApiResult<TeacherResponse>.Ok(updated);
+        return ApiResult<TeacherResponse>.Ok((await teachers.GetAsync(id, ct))!);
     }
 
     public async Task<ApiResult<CursorPage<StaffResponse>>> ListStaffAsync(
@@ -105,7 +114,8 @@ public sealed class StaffingService(
     public async Task<ApiResult<StaffResponse>> UpdateStaffAsync(
         Guid id, UpdateStaffRequest req, CancellationToken ct = default)
     {
-        if (await staff.GetAsync(id, ct) is null)
+        var existing = await staff.GetAsync(id, ct);
+        if (existing is null)
             return ApiResult<StaffResponse>.Fail(new Error("not_found", "resource not found"), 404);
 
         if (req.SetPhoto)
@@ -119,8 +129,34 @@ public sealed class StaffingService(
             await users.SetPhotoAsync(userId.Value, ImageUrlValidation.Normalize(req.PhotoUrl), ct);
         }
 
+        if (req.Email is not null && !string.Equals(req.Email, existing.Email, StringComparison.OrdinalIgnoreCase))
+        {
+            var userId = await staff.GetUserIdAsync(id, ct);
+            if (await SyncLinkedEmailAsync(userId, req.Email, ct) is { } error)
+                return ApiResult<StaffResponse>.Fail(error, 409);
+        }
+
         var updated = (await staff.UpdateAsync(id, req, ct))!;
-        return ApiResult<StaffResponse>.Ok(updated);
+        return ApiResult<StaffResponse>.Ok((await staff.GetAsync(id, ct))!);
+    }
+
+    /// <summary>Writes an Email edit through to the linked Users row (the single source
+    /// of truth for login/GET /auth/me) when one exists; unlinked Teacher/Staff rows
+    /// (not yet invited/accepted) have no Users row to sync. Returns a conflict Error
+    /// if another account in the tenant already owns that email (Users has a unique
+    /// (TenantId, Email) index), leaving both rows untouched.</summary>
+    private async Task<Error?> SyncLinkedEmailAsync(Guid? userId, string? newEmail, CancellationToken ct)
+    {
+        if (userId is null)
+            return null;
+        if (tenant.TenantId is { } tid)
+        {
+            var conflictUser = await users.GetByEmailAndTenantAsync(newEmail!, tid, ct);
+            if (conflictUser is not null && conflictUser.Id != userId.Value)
+                return new Error("conflict", "A user with this email already exists in this school.");
+        }
+        await users.SetEmailAsync(userId.Value, newEmail, ct);
+        return null;
     }
 
     public async Task<ApiResult<IReadOnlyList<LeaveResponse>>> ListMyLeaveAsync(CancellationToken ct = default)
@@ -133,7 +169,28 @@ public sealed class StaffingService(
     {
         if (tenant.TenantId is not { } tid)
             return ApiResult<LeaveResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
-        var created = (await leave.CreateAsync(tid, tenant.UserId, req, ct))!;
+
+        string? attachmentUrlsJson = null;
+        if (req.AttachmentUrls is { Count: > 0 })
+        {
+            if (req.AttachmentUrls.Count > 5)
+                return ApiResult<LeaveResponse>.Fail(new Error("invalid_request", "max 5 attachment URLs allowed"), 400);
+
+            var normalized = new List<string>();
+            foreach (var url in req.AttachmentUrls)
+            {
+                if (ImageUrlValidation.Validate(url) is { } error)
+                    return ApiResult<LeaveResponse>.Fail(error, 400);
+                var n = ImageUrlValidation.Normalize(url);
+                if (n is not null)
+                    normalized.Add(n);
+            }
+
+            if (normalized.Count > 0)
+                attachmentUrlsJson = JsonSerializer.Serialize(normalized);
+        }
+
+        var created = (await leave.CreateAsync(tid, tenant.UserId, req, attachmentUrlsJson, ct))!;
         return ApiResult<LeaveResponse>.Ok(created, 201);
     }
 

@@ -1,12 +1,31 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Sms.Application.Services.Transport;
+using Sms.Modules.Transport;
 using Sms.Shared.Kernel.Authz;
 
 namespace Sms.Api.Controllers;
 
 /// Optional stop the child boards at, supplied when assigning a student to a bus.
 public sealed record AssignStudentBusRequest(Guid? StopId);
+
+public sealed record AssignBusTeacherRequest(Guid TeacherUserId);
+
+public sealed record CreateBusRequest(
+    string BusNo, string? RouteName, Guid? RouteId, string? Driver, string? DriverPhone, Guid? DriverStaffId);
+
+public sealed record UpdateBusRequest(
+    string? BusNo, Guid? RouteId, Guid? DriverStaffId, bool ClearDriver = false);
+
+public sealed record CreateRouteRequest(string Name, int? Stops);
+
+public sealed record CreateRouteStopRequest(string Name, double Lat, double Lng);
+
+public sealed record UpdateRouteStopRequest(string Name, double Lat, double Lng);
+
+public sealed record ReorderRouteStopsRequest(IReadOnlyList<Guid> StopIds);
+
+public sealed record StartBusTripRequest(string? Direction);
 
 /// School-admin transport surface (Operations screen). Distinct from the teacher-app /v1/bus routes.
 [Route("v1/transport")]
@@ -21,6 +40,28 @@ public sealed class TransportController(IBusService bus, IStudentBusService stud
     public async Task<IActionResult> Fleet(CancellationToken ct) =>
         FromResult(await bus.GetFleetAsync(ct));
 
+    [HttpGet("buses")]
+    public async Task<IActionResult> ListBuses(CancellationToken ct) =>
+        FromResult(await bus.ListBusesAsync(ct));
+
+    [HttpPost("buses")]
+    public async Task<IActionResult> CreateBus([FromBody] CreateBusRequest req, CancellationToken ct) =>
+        FromResult(await bus.CreateBusAsync(req.BusNo, req.RouteName, req.RouteId, req.Driver, req.DriverPhone, req.DriverStaffId));
+
+    [HttpPut("buses/{busId:guid}")]
+    public async Task<IActionResult> UpdateBus(
+        Guid busId, [FromBody] UpdateBusRequest req, CancellationToken ct) =>
+        FromResult(await bus.UpdateBusAsync(busId, req.BusNo, req.RouteId, req.DriverStaffId, req.ClearDriver, ct));
+
+    [HttpPut("buses/{busId:guid}/teacher")]
+    public async Task<IActionResult> AssignTeacher(
+        Guid busId, [FromBody] AssignBusTeacherRequest req, CancellationToken ct) =>
+        FromResult(await bus.AssignTeacherAsync(busId, req.TeacherUserId, ct));
+
+    [HttpDelete("buses/{busId:guid}/teacher")]
+    public async Task<IActionResult> UnassignTeacher(Guid busId, CancellationToken ct) =>
+        FromResult(await bus.UnassignTeacherAsync(busId, ct));
+
     [HttpGet("buses/{busId:guid}/students")]
     public async Task<IActionResult> BusStudents(Guid busId, CancellationToken ct) =>
         FromResult(await studentBus.ListByBusAsync(busId, ct));
@@ -33,4 +74,49 @@ public sealed class TransportController(IBusService bus, IStudentBusService stud
     [HttpDelete("buses/{busId:guid}/students/{studentId:guid}")]
     public async Task<IActionResult> UnassignStudent(Guid busId, Guid studentId, CancellationToken ct) =>
         FromResult(await studentBus.UnassignAsync(studentId, ct));
+
+    [HttpGet("routes")]
+    public async Task<IActionResult> ListRoutes(CancellationToken ct) =>
+        FromResult(await bus.ListRoutesAsync(ct));
+
+    [HttpPost("routes")]
+    public async Task<IActionResult> CreateRoute([FromBody] CreateRouteRequest req, CancellationToken ct) =>
+        FromResult(await bus.CreateRouteAsync(req.Name, req.Stops ?? 1));
+
+    [HttpGet("routes/{routeId:guid}/stops")]
+    public async Task<IActionResult> ListRouteStops(Guid routeId, CancellationToken ct) =>
+        FromResult(await bus.ListRouteStopsAsync(routeId));
+
+    [HttpPost("routes/{routeId:guid}/stops")]
+    public async Task<IActionResult> CreateRouteStop(
+        Guid routeId, [FromBody] CreateRouteStopRequest req, CancellationToken ct) =>
+        FromResult(await bus.CreateRouteStopAsync(routeId, req.Name, req.Lat, req.Lng));
+
+    [HttpPut("routes/{routeId:guid}/stops/{stopId:guid}")]
+    public async Task<IActionResult> UpdateRouteStop(
+        Guid routeId, Guid stopId, [FromBody] UpdateRouteStopRequest req, CancellationToken ct) =>
+        FromResult(await bus.UpdateRouteStopAsync(routeId, stopId, req.Name, req.Lat, req.Lng));
+
+    [HttpDelete("routes/{routeId:guid}/stops/{stopId:guid}")]
+    public async Task<IActionResult> DeleteRouteStop(Guid routeId, Guid stopId, CancellationToken ct) =>
+        FromResult(await bus.DeleteRouteStopAsync(routeId, stopId));
+
+    [HttpPut("routes/{routeId:guid}/stops/reorder")]
+    public async Task<IActionResult> ReorderRouteStops(
+        Guid routeId, [FromBody] ReorderRouteStopsRequest req, CancellationToken ct) =>
+        FromResult(await bus.ReorderRouteStopsAsync(routeId, req.StopIds));
+
+    [HttpPost("buses/{busId:guid}/trip/start")]
+    public async Task<IActionResult> StartBusTrip(
+        Guid busId, [FromBody] StartBusTripRequest? req, CancellationToken ct) =>
+        FromResult(await bus.StartBusTripAsync(busId, req?.Direction ?? "pickup"));
+
+    [HttpPost("buses/{busId:guid}/trip/pings")]
+    public async Task<IActionResult> IngestBusTripPings(
+        Guid busId, [FromBody] BulkPingRequest req, CancellationToken ct) =>
+        FromResult(await bus.IngestBusTripPingsAsync(busId, req));
+
+    [HttpPost("buses/{busId:guid}/trip/end")]
+    public async Task<IActionResult> EndBusTrip(Guid busId, CancellationToken ct) =>
+        FromResult(await bus.EndBusTripAsync(busId));
 }

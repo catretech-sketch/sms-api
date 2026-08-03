@@ -78,6 +78,10 @@ public sealed class ClientRepository(IDbConnectionFactory factory) : BaseReposit
             r.ImageUrl,
             r.SetLogo,
             r.SetImage,
+            r.Lat,
+            r.Lng,
+            r.GeofenceRadiusMeters,
+            r.SetGeofence,
         }, ct);
 
     public Task<ClientRow?> SetStatusAsync(Guid id, string status, CancellationToken ct = default) =>

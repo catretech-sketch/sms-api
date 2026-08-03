@@ -47,6 +47,7 @@ public sealed record CreateMySchoolRequest(
 public sealed class MeSchoolsService(
     ITenantContext tenant,
     IAuthDao auth,
+    IProfileDao profiles,
     IUserProvisioningDao provisioning,
     ClientRepository clients,
     PlanRepository plans,
@@ -187,7 +188,8 @@ public sealed class MeSchoolsService(
                 && string.IsNullOrWhiteSpace(req.ContactEmail)
                 && string.IsNullOrWhiteSpace(req.ContactPhone)
                 && !req.SetLogo
-                && !req.SetImage)
+                && !req.SetImage
+                && !req.SetGeofence)
             {
                 return ApiResult<ClientResponse>.Fail(new Error("invalid_request", "No profile fields to update."), 422);
             }
@@ -323,6 +325,9 @@ public sealed class MeSchoolsService(
             var target = await auth.GetByEmailAndTenantAsync(me.Email, tenantId, ct);
             if (target is null)
                 return ApiResult<TokenResponse>.Fail(new Error("forbidden", "You do not own that school."), 403);
+
+            await UserPhotoSync.EnsureTargetHasPhotoAsync(auth, me, target, ct);
+            await UserContactSync.EnsureTargetHasContactAsync(auth, profiles, me, target, ct);
 
             var roles = await auth.GetRolesAsync(target.Id, ct);
             var access = jwt.IssueAccess(target.Id, target.TenantId, roles, target.IsPlatform);

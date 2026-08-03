@@ -8,6 +8,7 @@ using Microsoft.Data.SqlClient;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 using Xunit;
 
 namespace Sms.Tests.Integration.Reporting;
@@ -57,6 +58,7 @@ public class PrincipalOverviewTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var principal = Client(app, tenantId, Policies.Principal);
 
         // Seed a class with known StudentCount via POST
@@ -188,7 +190,8 @@ public class PrincipalOverviewTests(SqlServerFixture fx)
         checkedInEntry.Value.GetProperty("initials").GetString().Should().Be("AT");
         checkedInEntry.Value.GetProperty("subject").GetString().Should().Be("Maths");
         checkedInEntry.Value.GetProperty("phone").GetString().Should().Be("9876543210");
-        checkedInEntry.Value.GetProperty("role").GetString().Should().Be("Senior Teacher");
+        checkedInEntry.Value.GetProperty("role").ValueKind.Should().Be(JsonValueKind.Null);
+        checkedInEntry.Value.GetProperty("designation").GetString().Should().Be("Senior Teacher");
         checkedInEntry.Value.GetProperty("check_in_at").ValueKind.Should().NotBe(JsonValueKind.Null);
 
         notCheckedInEntry.Should().NotBeNull();

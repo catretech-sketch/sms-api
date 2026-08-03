@@ -8,7 +8,7 @@ public sealed record PrincipalKpis(
 
 public sealed record PrincipalStaffEntry(
     Guid TeacherId, string Name, string Initials, string? Subject, string? Phone,
-    bool CheckedIn, DateTime? CheckInAt, string? Role);
+    bool CheckedIn, DateTime? CheckInAt, DateTime? CheckOutAt, bool CheckInVerified, string? Role, string? Designation);
 
 public sealed record PrincipalOverviewResponse(PrincipalKpis Kpis, IReadOnlyList<PrincipalStaffEntry> Staff);
 

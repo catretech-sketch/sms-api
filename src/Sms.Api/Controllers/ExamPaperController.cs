@@ -8,7 +8,9 @@ namespace Sms.Api.Controllers;
 
 [Route("v1")]
 [Authorize]
-public sealed class ExamPaperController(IAcademicsService academics) : ApiControllerBase
+public sealed class ExamPaperController(
+    IAcademicsService academics,
+    IExamMarksNotifyService marksNotify) : ApiControllerBase
 {
     [HttpGet("exam-papers")]
     public async Task<IActionResult> List(
@@ -43,4 +45,9 @@ public sealed class ExamPaperController(IAcademicsService academics) : ApiContro
     public async Task<IActionResult> BulkUpsertAttendance(
         Guid id, [FromBody] BulkExamAttendanceRequest req, CancellationToken ct) =>
         FromResult(await academics.BulkUpsertExamAttendanceAsync(id, req, ct));
+
+    [HttpPost("exam-papers/{id:guid}/notify-marks")]
+    [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
+    public async Task<IActionResult> NotifyMarks(Guid id, CancellationToken ct) =>
+        FromResult(await marksNotify.NotifyPublishedAsync(id, ct));
 }

@@ -25,6 +25,6 @@ BEGIN
         )
         WHERE Id = @TenantId;
 
-    SELECT Id, TenantId, Name, Gender, Role, Category, Department, Phone, Shift, Route, AttendancePct, Status, AvatarHue
+    SELECT Id, TenantId, Name, Gender, Role, Category, Department, Phone, Shift, Route, AttendancePct, Status, AvatarHue, EmployeeCode
     FROM dbo.Staff WHERE Id = @Id;
 END

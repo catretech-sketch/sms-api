@@ -48,11 +48,13 @@ public sealed class StudentBusRepository(IDbConnectionFactory factory) : BaseRep
     {
         var rows = await QueryInlineAsync<AssignmentRow>(
             @"SELECT sba.StudentId, s.Name AS StudentName, s.AdmissionNo,
-                     sba.BusId, b.BusNo, b.RouteName, sba.StopId, st.Name AS StopName
+                     sba.BusId, b.BusNo, b.RouteName, sba.StopId,
+                     COALESCE(rs.Name, bs.Name) AS StopName
               FROM dbo.StudentBusAssignments sba
               JOIN dbo.Students s ON s.Id = sba.StudentId
               JOIN dbo.Buses b ON b.Id = sba.BusId
-              LEFT JOIN dbo.BusStops st ON st.Id = sba.StopId
+              LEFT JOIN dbo.RouteStops rs ON rs.Id = sba.StopId
+              LEFT JOIN dbo.BusStops bs ON bs.Id = sba.StopId
               WHERE sba.BusId = @busId ORDER BY s.Name", new { busId }, ct);
         return rows.Select(r => new StudentBusAssignmentResponse(
             r.StudentId, r.StudentName, BusRepository.Initials(r.StudentName), r.AdmissionNo,

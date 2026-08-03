@@ -11,10 +11,28 @@ public interface IPayslipService
     Task<ApiResult<PayslipResponse>> CreateAsync(CreatePayslipRequest req, CancellationToken ct = default);
 }
 
-public sealed class PayslipService(PayslipRepository repo, ITenantContext tenant) : IPayslipService
+public sealed class PayslipService(
+    PayslipRepository repo,
+    IPayrollService payroll,
+    ITenantContext tenant) : IPayslipService
 {
-    public async Task<ApiResult<IReadOnlyList<PayslipResponse>>> ListAsync(Guid? userId, CancellationToken ct = default) =>
-        ApiResult<IReadOnlyList<PayslipResponse>>.Ok(await repo.ListAsync(userId ?? tenant.UserId, ct));
+    public async Task<ApiResult<IReadOnlyList<PayslipResponse>>> ListAsync(Guid? userId, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<IReadOnlyList<PayslipResponse>>.Fail(new Error("forbidden", "no tenant context"), 403);
+        if (tenant.UserId is not { } uid)
+            return ApiResult<IReadOnlyList<PayslipResponse>>.Fail(new Error("forbidden", "no user context"), 403);
+
+        var list = await repo.ListAsync(tid, userId ?? uid, ct);
+        if (list.Count == 0)
+        {
+            // Self-heal: approved payroll rows exist but Payslips were never published (e.g. missing UserId link).
+            await payroll.RepublishApprovedPayslipsForUserAsync(ct);
+            list = await repo.ListAsync(tid, userId ?? uid, ct);
+        }
+
+        return ApiResult<IReadOnlyList<PayslipResponse>>.Ok(list);
+    }
 
     public async Task<ApiResult<PayslipResponse>> CreateAsync(CreatePayslipRequest req, CancellationToken ct = default)
     {

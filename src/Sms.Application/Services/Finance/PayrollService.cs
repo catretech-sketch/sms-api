@@ -27,22 +27,29 @@ public interface IPayrollService
     Task<ApiResult<PayrollRunDetail>> GetRunAsync(string period, bool preview = false, CancellationToken ct = default);
     Task<ApiResult<PayrollRunDetail>> RunAsync(string period, CancellationToken ct = default);
     Task<ApiResult<PayrollRunDetail>> ApproveAsync(string period, CancellationToken ct = default);
+    /// Backfill Payslips rows from approved payroll runs for the signed-in user (mobile payslip feed).
+    Task RepublishApprovedPayslipsForUserAsync(CancellationToken ct = default);
 }
 
 public sealed partial class PayrollService(
     PayrollRepository payroll,
+    PayslipRepository payslips,
     TeacherRepository teachers,
     StaffRepository staff,
     IUserProvisioningDao users,
-    ITenantContext tenant) : IPayrollService
+    ITenantContext tenant,
+    ITenantFeatureSet features) : IPayrollService
 {
     private static readonly JsonSerializerOptions CamelJson = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+    private bool PayrollAllowed => FeatureGate.Allowed(tenant, features, FeatureCatalog.HrPayroll);
 
     [GeneratedRegex(@"^\d{4}-\d{2}$")]
     private static partial Regex PeriodRe();
 
     public async Task<ApiResult<IReadOnlyList<SalaryProfileResponse>>> ListSalaryProfilesAsync(CancellationToken ct = default)
     {
+        if (!PayrollAllowed) return FeatureGate.Locked<IReadOnlyList<SalaryProfileResponse>>(FeatureCatalog.HrPayroll);
         if (tenant.TenantId is not { } tid)
             return ApiResult<IReadOnlyList<SalaryProfileResponse>>.Fail(new Error("forbidden", "no tenant context"), 403);
         return ApiResult<IReadOnlyList<SalaryProfileResponse>>.Ok(await payroll.ListSalaryProfilesAsync(tid, ct));
@@ -51,6 +58,7 @@ public sealed partial class PayrollService(
     public async Task<ApiResult<SalaryProfileResponse>> UpsertSalaryProfileAsync(
         string personType, Guid personId, UpsertSalaryProfileRequest req, CancellationToken ct = default)
     {
+        if (!PayrollAllowed) return FeatureGate.Locked<SalaryProfileResponse>(FeatureCatalog.HrPayroll);
         if (tenant.TenantId is not { } tid)
             return ApiResult<SalaryProfileResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
         var type = NormType(personType);
@@ -70,6 +78,7 @@ public sealed partial class PayrollService(
 
     public async Task<ApiResult<IReadOnlyList<SalaryStructureResponse>>> ListSalaryStructuresAsync(CancellationToken ct = default)
     {
+        if (!PayrollAllowed) return FeatureGate.Locked<IReadOnlyList<SalaryStructureResponse>>(FeatureCatalog.HrPayroll);
         if (tenant.TenantId is not { } tid)
             return ApiResult<IReadOnlyList<SalaryStructureResponse>>.Fail(new Error("forbidden", "no tenant context"), 403);
         return ApiResult<IReadOnlyList<SalaryStructureResponse>>.Ok(await payroll.ListSalaryStructuresAsync(tid, ct));
@@ -78,6 +87,7 @@ public sealed partial class PayrollService(
     public async Task<ApiResult<SalaryStructureResponse>> UpsertSalaryStructureAsync(
         UpsertSalaryStructureRequest req, CancellationToken ct = default)
     {
+        if (!PayrollAllowed) return FeatureGate.Locked<SalaryStructureResponse>(FeatureCatalog.HrPayroll);
         if (tenant.TenantId is not { } tid)
             return ApiResult<SalaryStructureResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
         var type = NormType(req.PersonType);
@@ -102,6 +112,7 @@ public sealed partial class PayrollService(
 
     public async Task<ApiResult<PayrollRunDetail>> GetRunAsync(string period, bool preview = false, CancellationToken ct = default)
     {
+        if (!PayrollAllowed) return FeatureGate.Locked<PayrollRunDetail>(FeatureCatalog.HrPayroll);
         if (tenant.TenantId is not { } tid)
             return ApiResult<PayrollRunDetail>.Fail(new Error("forbidden", "no tenant context"), 403);
         if (!PeriodRe().IsMatch(period))
@@ -128,6 +139,7 @@ public sealed partial class PayrollService(
 
     public async Task<ApiResult<PayrollRunDetail>> RunAsync(string period, CancellationToken ct = default)
     {
+        if (!PayrollAllowed) return FeatureGate.Locked<PayrollRunDetail>(FeatureCatalog.HrPayroll);
         if (tenant.TenantId is not { } tid)
             return ApiResult<PayrollRunDetail>.Fail(new Error("forbidden", "no tenant context"), 403);
         if (!PeriodRe().IsMatch(period))
@@ -144,6 +156,8 @@ public sealed partial class PayrollService(
         if (run is null)
             return ApiResult<PayrollRunDetail>.Fail(new Error("internal_error", "failed to save payroll run"), 500);
 
+        await PublishPayslipsAsync(tid, lines, year, month, "pending", ct);
+
         return ApiResult<PayrollRunDetail>.Ok(new PayrollRunDetail(
             run.Period, run.Year, run.Month, run.Status, run.StaffCount, run.Gross, run.Deductions, run.Net,
             run.RunAt, run.ApprovedAt, lines), 201);
@@ -151,6 +165,7 @@ public sealed partial class PayrollService(
 
     public async Task<ApiResult<PayrollRunDetail>> ApproveAsync(string period, CancellationToken ct = default)
     {
+        if (!PayrollAllowed) return FeatureGate.Locked<PayrollRunDetail>(FeatureCatalog.HrPayroll);
         if (tenant.TenantId is not { } tid)
             return ApiResult<PayrollRunDetail>.Fail(new Error("forbidden", "no tenant context"), 403);
         if (!PeriodRe().IsMatch(period))
@@ -172,10 +187,56 @@ public sealed partial class PayrollService(
         if (run is null)
             return ApiResult<PayrollRunDetail>.Fail(new Error("not_found", "run payroll before approving"), 400);
 
-        var lines = await payroll.ListRunLinesAsync(tid, period, ct);
+        await PublishPayslipsAsync(tid, fresh, year, month, "paid", ct);
         return ApiResult<PayrollRunDetail>.Ok(new PayrollRunDetail(
             run.Period, run.Year, run.Month, run.Status, run.StaffCount, run.Gross, run.Deductions, run.Net,
-            run.RunAt, run.ApprovedAt, lines));
+            run.RunAt, run.ApprovedAt, fresh));
+    }
+
+    public async Task RepublishApprovedPayslipsForUserAsync(CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid) return;
+
+        foreach (var run in await payroll.ListApprovedRunsAsync(tid, ct))
+        {
+            var (year, month) = ParsePeriod(run.Period);
+            var monthLabel = run.Month ?? month;
+            var slipStatus = run.Status.Equals("approved", StringComparison.OrdinalIgnoreCase) ? "paid" : "pending";
+            foreach (var line in await payroll.ListRunLinesAsync(tid, run.Period, ct))
+            {
+                if (line.Gross <= 0 && line.Net <= 0) continue;
+                var payUserId = await ResolvePayUserIdAsync(tid, line, ct);
+                if (payUserId != uid) continue;
+                await payslips.PublishForUserAsync(
+                    tid, uid, monthLabel, year,
+                    line.Basic, line.Hra, line.Allowances, line.Epf, line.ProfTax, line.OtherDeductions,
+                    line.Gross, line.Deductions, line.Net, slipStatus, ct);
+            }
+        }
+    }
+
+    private async Task PublishPayslipsAsync(
+        Guid tid, IReadOnlyList<PayrollRunLineResponse> lines, int year, string month, string status, CancellationToken ct)
+    {
+        foreach (var line in lines)
+        {
+            if (line.Gross <= 0 && line.Net <= 0) continue;
+            var userId = await ResolvePayUserIdAsync(tid, line, ct);
+            if (userId is null) continue;
+            await payslips.PublishForUserAsync(
+                tid, userId.Value, month, year,
+                line.Basic, line.Hra, line.Allowances, line.Epf, line.ProfTax, line.OtherDeductions,
+                line.Gross, line.Deductions, line.Net, status, ct);
+        }
+    }
+
+    private async Task<Guid?> ResolvePayUserIdAsync(Guid tenantId, PayrollRunLineResponse line, CancellationToken ct)
+    {
+        var type = (line.PersonType ?? "").Trim().ToLowerInvariant();
+        if (type == "teacher") return await teachers.ResolvePayUserIdAsync(tenantId, line.PersonId, ct);
+        if (type == "staff") return await staff.ResolvePayUserIdAsync(tenantId, line.PersonId, ct);
+        if (type == "leadership") return line.PersonId;
+        return null;
     }
 
     private async Task<List<PayrollRunLineResponse>> ComputeLinesAsync(Guid tid, CancellationToken ct)

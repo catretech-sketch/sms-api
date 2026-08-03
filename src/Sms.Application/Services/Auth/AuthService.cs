@@ -239,13 +239,17 @@ public sealed class AuthService(
             return ApiResult<object>.Fail(new Error("unauthorized", "unauthorized"), 401);
 
         var roles = user.FindAll("role").Select(c => c.Value).ToArray();
-        var (title, classroom) = await ResolveProfileAsync(record.Id, roles, ct);
+        var fields = await ResolveMeFieldsAsync(record, roles, ct);
 
         string? tenantName = null;
+        string? tier = null;
+        string? planName = null;
         if (record.TenantId is Guid tid)
         {
             var school = await clients.GetAsync(tid, ct);
             tenantName = school?.Name;
+            tier = school?.Tier;
+            planName = school?.PlanName;
         }
 
         return ApiResult<object>.Ok(new
@@ -255,31 +259,135 @@ public sealed class AuthService(
             roles,
             is_platform = user.FindFirst("is_platform")?.Value == "1",
             name = record.Name,
-            email = record.Email,
-            phone = record.Phone,
+            email = fields.Email,
+            phone = fields.Phone,
+            employee = fields.Employee,
+            classroom = fields.Classroom,
+            joined = fields.Joined,
             tenant_name = tenantName,
+            tier = tier ?? "silver",
+            plan_name = planName,
             must_set_password = record.MustSetPassword,
-            title,
-            classroom,
-            photo_url = record.PhotoUrl,
+            title = fields.Title,
+            photo_url = fields.PhotoUrl,
         });
     }
 
-    /// Role-agnostic profile resolution: base identity always comes from Users (already
-    /// on `record`); role-specific fields are looked up via a small dispatch so adding a
-    /// Parent/Student branch later (for sms-staff/sms-student) is additive, not a rewrite.
-    private async Task<(string? Title, string? Classroom)> ResolveProfileAsync(
-        Guid userId, IReadOnlyList<string> roles, CancellationToken ct)
+    private sealed record MeFields(
+        string? Email, string? Phone, string? Employee, string? Classroom,
+        string? Joined, string? Title, string? PhotoUrl);
+
+    private async Task<MeFields> ResolveMeFieldsAsync(
+        UserRecord record, IReadOnlyList<string> roles, CancellationToken ct)
     {
-        var lastSegment = roles.Select(r => r.Split('.').LastOrDefault() ?? r).FirstOrDefault();
-        return lastSegment switch
+        var teacher = await profiles.GetLinkedTeacherAsync(
+            record.Id, record.TenantId, record.Email, record.Name, ct);
+        var staff = await profiles.GetLinkedStaffAsync(
+            record.Id, record.TenantId, record.Email, record.Name, ct);
+
+        var roleLeaves = roles
+            .Select(r => r.Split('.').LastOrDefault() ?? r)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var isPrincipal = roleLeaves.Contains("principal");
+
+        var resolvedPhone = await ResolveSharedPhoneAsync(record, teacher?.Phone, staff?.Phone, ct);
+        var photoUrl = await ResolvePhotoUrlAsync(record, ct);
+
+        // Classroom only applies when this person is linked to a class in this school.
+        var classroom = isPrincipal && teacher is null
+            ? null
+            : FirstNonEmpty(teacher?.ClassTeacher, teacher?.HomeroomClassName);
+
+        var joinedAt = teacher?.JoinedAt ?? staff?.JoinedAt ?? record.CreatedAt;
+        var joined = joinedAt.Year > 1 ? joinedAt.Year.ToString() : null;
+
+        string? title;
+        if (isPrincipal)
+            title = "Principal";
+        else if (roleLeaves.Contains("teacher"))
+            title = teacher?.Designation;
+        else
+            title = staff?.Designation;
+
+        return new MeFields(
+            Email: FirstNonEmpty(record.Email, teacher?.Email, staff?.Email),
+            Phone: resolvedPhone,
+            Employee: FirstNonEmpty(teacher?.EmployeeCode, staff?.EmployeeCode),
+            Classroom: classroom,
+            Joined: joined,
+            Title: title,
+            PhotoUrl: photoUrl);
+    }
+
+    /// Phone is shared across all schools for the same email — resolve from Users,
+    /// current-school Teachers/Staff, then any school's Teachers/Staff row.
+    private async Task<string?> ResolveSharedPhoneAsync(
+        UserRecord record, string? teacherPhone, string? staffPhone, CancellationToken ct)
+    {
+        var local = FirstNonEmpty(record.Phone, teacherPhone, staffPhone);
+        if (!string.IsNullOrWhiteSpace(local))
         {
-            "teacher" => (
-                await profiles.GetTeacherTitleByUserIdAsync(userId, ct),
-                await profiles.GetClassroomNameByTeacherUserIdAsync(userId, ct)),
-            "principal" => (null, null),
-            _ => (await profiles.GetStaffTitleByUserIdAsync(userId, ct), null),
-        };
+            // Persist roster/local phone onto Users (and peer rows) so school switches
+            // and future /auth/me calls do not depend on a cross-tenant roster lookup.
+            if (string.IsNullOrWhiteSpace(record.Phone))
+                await users.SetPhoneAsync(record.Id, local, ct);
+            return local;
+        }
+
+        var prevTenant = tenant.TenantId;
+        var prevUser = tenant.UserId;
+        var wasPlatform = tenant.IsPlatform;
+        tenant.Set(null, null, isPlatform: true);
+        try
+        {
+            var shared = await SharedPhoneResolver.ResolveAsync(
+                users, profiles, record.Email, record.Name, ct);
+            if (!string.IsNullOrWhiteSpace(shared))
+                await users.SetPhoneAsync(record.Id, shared, ct);
+            return shared;
+        }
+        finally
+        {
+            tenant.Set(prevTenant, prevUser, wasPlatform);
+        }
+    }
+
+    private async Task<string?> ResolvePeerPhoneAsync(UserRecord record, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(record.Email)) return null;
+        var peers = await ListPeersByEmailAsync(record.Email, ct);
+        return peers.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.Phone))?.Phone;
+    }
+
+    private async Task<string?> ResolvePhotoUrlAsync(UserRecord record, CancellationToken ct)
+    {
+        if (!string.IsNullOrWhiteSpace(record.PhotoUrl)) return record.PhotoUrl;
+        if (string.IsNullOrWhiteSpace(record.Email)) return null;
+        var peers = await ListPeersByEmailAsync(record.Email, ct);
+        return peers.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.PhotoUrl))?.PhotoUrl;
+    }
+
+    private async Task<IReadOnlyList<UserRecord>> ListPeersByEmailAsync(string email, CancellationToken ct)
+    {
+        var prevTenant = tenant.TenantId;
+        var prevUser = tenant.UserId;
+        var wasPlatform = tenant.IsPlatform;
+        tenant.Set(null, null, isPlatform: true);
+        try
+        {
+            return await users.ListByEmailAsync(email, ct);
+        }
+        finally
+        {
+            tenant.Set(prevTenant, prevUser, wasPlatform);
+        }
+    }
+
+    private static string? FirstNonEmpty(params string?[] values)
+    {
+        foreach (var v in values)
+            if (!string.IsNullOrWhiteSpace(v)) return v.Trim();
+        return null;
     }
 
     public async Task<ApiResult> LogoutAsync(RefreshRequest req, CancellationToken ct = default)

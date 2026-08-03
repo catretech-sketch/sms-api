@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Sms.Application.Common;
 using Sms.Modules.Academics.Contracts;
 using Sms.Modules.Academics.Data;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
 using Sms.Shared.Kernel.Time;
@@ -19,7 +20,9 @@ public sealed class AcademicsService(
     CalendarRepository calendar,
     LibraryRepository library,
     AssignmentRepository assignments,
+    AcademicsCommsNotifier academicsNotifier,
     ITenantContext tenant,
+    ITenantFeatureSet features,
     IClock clock) : IAcademicsService
 {
     private static string? NormPersonType(string? t)
@@ -137,6 +140,8 @@ public sealed class AcademicsService(
         if (type is null)
             return ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>.Fail(
                 new Error("invalid_request", "personType must be 'teacher' or 'staff'"), 400);
+        if (type == "staff" && !FeatureGate.Allowed(tenant, features, FeatureCatalog.StaffSupport))
+            return FeatureGate.Locked<IReadOnlyList<StaffAttendanceRecordResponse>>(FeatureCatalog.StaffSupport);
         return ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>.Ok(
             await staffAttendance.ListAsync(type, date, ct));
     }
@@ -149,6 +154,8 @@ public sealed class AcademicsService(
         var type = NormPersonType(req.PersonType);
         if (type is null)
             return ApiResult.Fail(new Error("invalid_request", "personType must be 'teacher' or 'staff'"), 400);
+        if (type == "staff" && !FeatureGate.Allowed(tenant, features, FeatureCatalog.StaffSupport))
+            return FeatureGate.Locked(FeatureCatalog.StaffSupport);
         await staffAttendance.BulkUpsertAsync(tid, type, req.Date, tenant.UserId, req.Records, ct);
         return ApiResult.NoContent();
     }
@@ -160,6 +167,8 @@ public sealed class AcademicsService(
         if (type is null)
             return ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>.Fail(
                 new Error("invalid_request", "personType must be 'teacher' or 'staff'"), 400);
+        if (type == "staff" && !FeatureGate.Allowed(tenant, features, FeatureCatalog.StaffSupport))
+            return FeatureGate.Locked<IReadOnlyList<StaffAttendanceRecordResponse>>(FeatureCatalog.StaffSupport);
         return ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>.Ok(
             await staffAttendance.ListForPersonAsync(type, personId, from, to, ct));
     }
@@ -206,7 +215,19 @@ public sealed class AcademicsService(
     {
         if (tenant.TenantId is not { } tid)
             return ApiResult<ExamPaperResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
-        return ApiResult<ExamPaperResponse>.Ok((await exams.CreateExamPaperAsync(tid, req, ct))!, 201);
+        var created = await exams.CreateExamPaperAsync(tid, req, ct);
+        if (created is null)
+            return ApiResult<ExamPaperResponse>.Fail(new Error("internal_error", "could not create exam paper"), 500);
+        try
+        {
+            await academicsNotifier.NotifyClassTestScheduledAsync(
+                tid, created.Name ?? req.Name, created.Subject ?? req.Subject, created.Date ?? req.Date, ct);
+        }
+        catch
+        {
+            /* notification is best-effort; paper create already succeeded */
+        }
+        return ApiResult<ExamPaperResponse>.Ok(created, 201);
     }
 
     public async Task<ApiResult<ExamPaperResponse>> UpdateExamPaperAsync(
@@ -329,18 +350,28 @@ public sealed class AcademicsService(
         return ApiResult<CalendarEventResponse>.Ok((await calendar.CreateAsync(tid, req, ct))!, 201);
     }
 
-    public async Task<ApiResult<IReadOnlyList<LibraryBookResponse>>> ListLibraryBooksAsync(CancellationToken ct = default) =>
-        ApiResult<IReadOnlyList<LibraryBookResponse>>.Ok(await library.ListAsync(clock.UtcNow, ct));
+    public async Task<ApiResult<IReadOnlyList<LibraryBookResponse>>> ListLibraryBooksAsync(CancellationToken ct = default)
+    {
+        if (!FeatureGate.Allowed(tenant, features, FeatureCatalog.Operations))
+            return FeatureGate.Locked<IReadOnlyList<LibraryBookResponse>>(FeatureCatalog.Operations);
+        return ApiResult<IReadOnlyList<LibraryBookResponse>>.Ok(await library.ListAsync(clock.UtcNow, ct));
+    }
 
     /// Flat late-fee rate (₹/day) applied to overdue books when computing library fines due.
     private const decimal LibraryFinePerDay = 5m;
 
-    public async Task<ApiResult<LibrarySummaryResponse>> GetLibrarySummaryAsync(CancellationToken ct = default) =>
-        ApiResult<LibrarySummaryResponse>.Ok(await library.SummaryAsync(clock.UtcNow, LibraryFinePerDay, ct));
+    public async Task<ApiResult<LibrarySummaryResponse>> GetLibrarySummaryAsync(CancellationToken ct = default)
+    {
+        if (!FeatureGate.Allowed(tenant, features, FeatureCatalog.Operations))
+            return FeatureGate.Locked<LibrarySummaryResponse>(FeatureCatalog.Operations);
+        return ApiResult<LibrarySummaryResponse>.Ok(await library.SummaryAsync(clock.UtcNow, LibraryFinePerDay, ct));
+    }
 
     public async Task<ApiResult<LibraryBookResponse>> CreateLibraryBookAsync(
         CreateLibraryBookRequest req, CancellationToken ct = default)
     {
+        if (!FeatureGate.Allowed(tenant, features, FeatureCatalog.Operations))
+            return FeatureGate.Locked<LibraryBookResponse>(FeatureCatalog.Operations);
         if (tenant.TenantId is not { } tid)
             return ApiResult<LibraryBookResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
         return ApiResult<LibraryBookResponse>.Ok((await library.CreateAsync(tid, req, ct))!, 201);
@@ -354,6 +385,18 @@ public sealed class AcademicsService(
     {
         if (tenant.TenantId is not { } tid)
             return ApiResult<AssignmentResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
-        return ApiResult<AssignmentResponse>.Ok((await assignments.CreateAsync(tid, req, ct))!, 201);
+        var created = await assignments.CreateAsync(tid, req, ct);
+        if (created is null)
+            return ApiResult<AssignmentResponse>.Fail(new Error("internal_error", "could not create assignment"), 500);
+        try
+        {
+            await academicsNotifier.NotifyHomeworkAssignedAsync(
+                tid, req.Title, created.ClassName ?? req.ClassName, created.DueDate ?? req.DueDate, ct);
+        }
+        catch
+        {
+            /* best-effort */
+        }
+        return ApiResult<AssignmentResponse>.Ok(created, 201);
     }
 }

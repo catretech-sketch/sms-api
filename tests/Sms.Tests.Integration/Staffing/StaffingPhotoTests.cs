@@ -131,4 +131,57 @@ public class StaffingPhotoTests(SqlServerFixture fx)
         res.StatusCode.Should().Be(HttpStatusCode.OK);
         (await GetUserPhotoAsync(fx, tenantId, teacherId)).Should().Be("https://cdn.example.com/a.png");
     }
+
+    [Fact]
+    public async Task Get_teacher_returns_photo_url_from_linked_user()
+    {
+        var tenantId = Guid.NewGuid();
+        var teacherId = await SeedLinkedTeacherAsync(fx, tenantId);
+        const string photoUrl = "https://cdn.example.com/teachers/list.png";
+
+        var ctx = new TenantContext(); ctx.Set(tenantId, Guid.NewGuid(), false);
+        var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
+        await using var c = await factory.OpenAsync();
+        await c.ExecuteAsync(
+            "UPDATE u SET PhotoUrl = @photo FROM dbo.Users u JOIN dbo.Teachers t ON t.UserId = u.Id WHERE t.Id = @teacherId",
+            new { photoUrl, teacherId });
+
+        await using var app = App();
+        var client = TenantClient(app, tenantId);
+
+        var listed = await Data(await client.GetAsync("/v1/teachers"), HttpStatusCode.OK);
+        listed.EnumerateArray().First().GetProperty("photo_url").GetString().Should().Be(photoUrl);
+
+        var one = await Data(await client.GetAsync($"/v1/teachers/{teacherId}"), HttpStatusCode.OK);
+        one.GetProperty("photo_url").GetString().Should().Be(photoUrl);
+    }
+
+    [Fact]
+    public async Task Setting_a_linked_teachers_photo_propagates_to_peer_users_with_same_email()
+    {
+        var tenantA = Guid.NewGuid();
+        var tenantB = Guid.NewGuid();
+        var email = $"multi{Guid.NewGuid():N}@x.com";
+        var ctx = new TenantContext(); ctx.Set(tenantA, Guid.NewGuid(), false);
+        var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
+        var userA = Guid.NewGuid();
+        var userB = Guid.NewGuid();
+        var teacherId = Guid.NewGuid();
+        await using var c = await factory.OpenAsync();
+        await c.ExecuteAsync(
+            "INSERT dbo.Users (Id, TenantId, Email, IsPlatform) VALUES (@userA, @tenantA, @email, 0), (@userB, @tenantB, @email, 0)",
+            new { userA, userB, tenantA, tenantB, email });
+        await c.ExecuteAsync(
+            "INSERT dbo.Teachers (Id, TenantId, Name, UserId, Email) VALUES (@teacherId, @tenantA, 'Multi School', @userA, @email)",
+            new { teacherId, tenantA, userA, email });
+
+        await using var app = App();
+        var client = TenantClient(app, tenantA);
+        await Data(await client.PatchAsJsonAsync($"/v1/teachers/{teacherId}",
+            new { photo_url = "https://cdn.example.com/shared.png", set_photo = true }), HttpStatusCode.OK);
+
+        var photoB = await c.QuerySingleAsync<string?>(
+            "SELECT PhotoUrl FROM dbo.Users WHERE Id = @userB", new { userB });
+        photoB.Should().Be("https://cdn.example.com/shared.png");
+    }
 }

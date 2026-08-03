@@ -72,21 +72,47 @@ public sealed record FeeTenantSummaryRow(
 
 // ---- Payslips (HR/payroll) ----
 public sealed record PayslipResponse(
-    Guid Id, Guid TenantId, Guid UserId, string? Month, int Year, decimal Gross, decimal Deductions, decimal Net, string Status);
+    Guid Id, Guid TenantId, Guid UserId, string? Month, int Year, decimal Gross, decimal Deductions, decimal Net, string Status,
+    decimal Basic, decimal Hra, decimal Allowances, decimal Epf, decimal ProfTax, decimal OtherDeductions);
 public sealed record CreatePayslipRequest(Guid UserId, string? Month, int Year, decimal Gross, decimal Deductions, decimal Net);
 
 public sealed class PayslipRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
-    private const string Cols = "Id, TenantId, UserId, Month, Year, Gross, Deductions, Net, Status";
+    private const string Cols =
+        "Id, TenantId, UserId, Month, Year, Gross, Deductions, Net, Status, Basic, Hra, Allowances, Epf, ProfTax, OtherDeductions";
 
     public Task<PayslipResponse?> CreateAsync(Guid tenantId, CreatePayslipRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<PayslipResponse>("dbo.Payslip_Create",
             new { TenantId = tenantId, r.UserId, r.Month, r.Year, r.Gross, r.Deductions, r.Net }, ct);
 
-    public Task<IReadOnlyList<PayslipResponse>> ListAsync(Guid? userId, CancellationToken ct = default) =>
+    public Task<IReadOnlyList<PayslipResponse>> ListAsync(Guid tenantId, Guid userId, CancellationToken ct = default) =>
         QueryInlineAsync<PayslipResponse>(
-            $"SELECT {Cols} FROM dbo.Payslips WHERE (@userId IS NULL OR UserId = @userId) ORDER BY Year DESC, Month DESC",
-            new { userId }, ct);
+            $"SELECT {Cols} FROM dbo.Payslips WHERE TenantId = @tenantId AND UserId = @userId ORDER BY Year DESC, Month DESC",
+            new { tenantId, userId }, ct);
+
+    /// Replace any payslip for this user/period and publish payroll figures (mobile payslip feed).
+    public async Task PublishForUserAsync(
+        Guid tenantId, Guid userId, string? month, int year,
+        decimal basic, decimal hra, decimal allowances, decimal epf, decimal profTax, decimal otherDeductions,
+        decimal gross, decimal deductions, decimal net, string status = "paid", CancellationToken ct = default)
+    {
+        var slipStatus = string.IsNullOrWhiteSpace(status) ? "pending" : status.Trim().ToLowerInvariant();
+        await ExecuteInlineAsync(
+            "DELETE FROM dbo.Payslips WHERE TenantId=@tenantId AND UserId=@userId AND Month=@month AND Year=@year",
+            new { tenantId, userId, month, year }, ct);
+        await ExecuteInlineAsync(
+            """
+            INSERT dbo.Payslips (TenantId, UserId, Month, Year, Gross, Deductions, Net, Status,
+                Basic, Hra, Allowances, Epf, ProfTax, OtherDeductions)
+            VALUES (@tenantId, @userId, @month, @year, @gross, @deductions, @net, @status,
+                @basic, @hra, @allowances, @epf, @profTax, @otherDeductions)
+            """,
+            new
+            {
+                tenantId, userId, month, year, gross, deductions, net, status = slipStatus,
+                basic, hra, allowances, epf, profTax, otherDeductions,
+            }, ct);
+    }
 }
 
 // ---- Payroll (salary master + monthly run/approve) ----
@@ -145,6 +171,17 @@ public sealed class PayrollRepository(IDbConnectionFactory factory) : BaseReposi
 
     public Task<PayrollRunResponse?> GetRunAsync(Guid tenantId, string period, CancellationToken ct = default) =>
         QuerySingleProcAsync<PayrollRunResponse>("dbo.PayrollRun_Get", new { TenantId = tenantId, Period = period }, ct);
+
+    public Task<IReadOnlyList<PayrollRunResponse>> ListApprovedRunsAsync(Guid tenantId, CancellationToken ct = default) =>
+        QueryInlineAsync<PayrollRunResponse>(
+            """
+            SELECT Id, TenantId, Period, Year, Month, Status, StaffCount, Gross, Deductions, Net,
+                   RunBy, RunAt, ApprovedBy, ApprovedAt
+            FROM dbo.PayrollRuns
+            WHERE TenantId = @tenantId AND Status IN ('run', 'approved')
+            ORDER BY Period DESC
+            """,
+            new { tenantId }, ct);
 
     public Task<IReadOnlyList<PayrollRunLineResponse>> ListRunLinesAsync(Guid tenantId, string period, CancellationToken ct = default) =>
         QueryProcAsync<PayrollRunLineResponse>("dbo.PayrollRunLine_ListByPeriod", new { TenantId = tenantId, Period = period }, ct);

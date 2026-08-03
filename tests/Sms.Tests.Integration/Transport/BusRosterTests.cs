@@ -23,12 +23,12 @@ public class BusRosterTests(SqlServerFixture fx)
             b.UseSetting("Jwt:SigningKey", Key);
         });
 
-    private static HttpClient TeacherClient(WebApplicationFactory<Program> app, Guid tenantId)
+    private static HttpClient TeacherClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId)
     {
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, [Policies.Teacher], isPlatform: false);
+        var token = jwt.IssueAccess(userId, tenantId, [Policies.Teacher], isPlatform: false);
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
         return client;
@@ -65,6 +65,7 @@ public class BusRosterTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
         var busId = Guid.NewGuid();
         var busNo = $"KA-{Guid.NewGuid():N}"[..12];
         var tripId = Guid.NewGuid();
@@ -78,6 +79,10 @@ public class BusRosterTests(SqlServerFixture fx)
             await conn.ExecuteAsync(
                 "INSERT dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, @BusNo)",
                 new { Id = busId, TenantId = tenantId, BusNo = busNo });
+
+            await conn.ExecuteAsync(
+                "INSERT dbo.BusAssignments (TenantId, TeacherUserId, BusId) VALUES (@TenantId, @TeacherUserId, @BusId)",
+                new { TenantId = tenantId, TeacherUserId = userId, BusId = busId });
 
             // Students
             await conn.ExecuteAsync(
@@ -104,7 +109,7 @@ public class BusRosterTests(SqlServerFixture fx)
                 new { Id = Guid.NewGuid(), TenantId = tenantId, TripId = tripId, StudentId = student2Id, StopId = (Guid?)null, State = "absent", At = DateTime.UtcNow });
         });
 
-        var client = TeacherClient(app, tenantId);
+        var client = TeacherClient(app, tenantId, userId);
         var data = await Data(await client.GetAsync($"/v1/bus/{busId}/roster"), HttpStatusCode.OK);
 
         data.GetArrayLength().Should().Be(2);
@@ -126,6 +131,7 @@ public class BusRosterTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
         var busId = Guid.NewGuid();
 
         await Seed(fx.ConnectionString, tenantId, async conn =>
@@ -133,9 +139,13 @@ public class BusRosterTests(SqlServerFixture fx)
             await conn.ExecuteAsync(
                 "INSERT dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, @BusNo)",
                 new { Id = busId, TenantId = tenantId, BusNo = "NO-TRIP-BUS" });
+
+            await conn.ExecuteAsync(
+                "INSERT dbo.BusAssignments (TenantId, TeacherUserId, BusId) VALUES (@TenantId, @TeacherUserId, @BusId)",
+                new { TenantId = tenantId, TeacherUserId = userId, BusId = busId });
         });
 
-        var client = TeacherClient(app, tenantId);
+        var client = TeacherClient(app, tenantId, userId);
         var data = await Data(await client.GetAsync($"/v1/bus/{busId}/roster"), HttpStatusCode.OK);
 
         data.GetArrayLength().Should().Be(0);
@@ -146,6 +156,7 @@ public class BusRosterTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
         var busId = Guid.NewGuid();
 
         var client = StudentParentClient(app, tenantId);

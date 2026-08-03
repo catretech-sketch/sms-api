@@ -142,6 +142,31 @@ public class CheckinHistoryTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Summary_uses_local_month_with_offset_minutes()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var client = TeacherClient(app, tenantId, userId);
+
+        // Aug 1 00:30 IST = Jul 31 19:00 UTC — must count in August when offset=330
+        var punchUtc = new DateTime(2026, 7, 31, 19, 0, 0, DateTimeKind.Utc);
+
+        await Seed(fx.ConnectionString, tenantId, async conn =>
+        {
+            await conn.ExecuteAsync(
+                "INSERT dbo.CheckIns (TenantId, UserId, Kind, At, Lat, Lng, AccuracyMeters, DistanceMeters, Verified) " +
+                "VALUES (@TenantId, @UserId, 'in', @At, 0, 0, 0, 15800, 0)",
+                new { TenantId = tenantId, UserId = userId, At = punchUtc });
+        });
+
+        var res = await client.GetAsync("/v1/me/attendance/summary?month=2026-08&offset_minutes=330");
+        var data = await Data(res, HttpStatusCode.OK);
+        data.GetProperty("days_present").GetInt32().Should().Be(1);
+        data.GetProperty("days_flagged").GetInt32().Should().Be(1);
+    }
+
+    [Fact]
     public async Task Summary_returns_422_for_invalid_month_format()
     {
         await using var app = App();
