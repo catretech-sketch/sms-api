@@ -1,4 +1,5 @@
 using Sms.Application.Common;
+using Sms.Application.Interfaces.DAO;
 using Sms.Modules.Sis.Contracts;
 using Sms.Modules.Sis.Data;
 using Sms.Shared.Kernel.Http;
@@ -12,13 +13,18 @@ public interface ISisService
     Task<ApiResult<CursorPage<StudentResponse>>> ListStudentsAsync(
         string? q, string? grade, string? status, string? fee, CancellationToken ct = default);
     Task<ApiResult<StudentResponse>> GetStudentAsync(Guid id, CancellationToken ct = default);
+    /// <summary>Roster row for the authenticated user (Users.StudentId = admission number, not Users.Id).</summary>
+    Task<ApiResult<StudentResponse>> GetMyStudentAsync(CancellationToken ct = default);
     Task<ApiResult<StudentResponse>> CreateStudentAsync(CreateStudentRequest req, CancellationToken ct = default);
     Task<ApiResult<StudentResponse>> UpdateStudentAsync(Guid id, UpdateStudentRequest req, CancellationToken ct = default);
     Task<ApiResult<CursorPage<StudentResponse>>> ListClassStudentsAsync(
         Guid classId, int? limit, string? cursor, CancellationToken ct = default);
 }
 
-public sealed class SisService(StudentRepository repo, ITenantContext tenant) : ISisService
+public sealed class SisService(
+    StudentRepository repo,
+    IAuthDao auth,
+    ITenantContext tenant) : ISisService
 {
     public async Task<ApiResult<CursorPage<StudentResponse>>> ListStudentsAsync(
         string? q, string? grade, string? status, string? fee, CancellationToken ct = default)
@@ -32,6 +38,25 @@ public sealed class SisService(StudentRepository repo, ITenantContext tenant) : 
         var student = await repo.GetAsync(id, ct);
         return student is null
             ? ApiResult<StudentResponse>.Fail(new Error("not_found", "resource not found"), 404)
+            : ApiResult<StudentResponse>.Ok(student);
+    }
+
+    public async Task<ApiResult<StudentResponse>> GetMyStudentAsync(CancellationToken ct = default)
+    {
+        if (tenant.UserId is not { } uid)
+            return ApiResult<StudentResponse>.Fail(new Error("unauthorized", "unauthorized"), 401);
+
+        var user = await auth.GetByIdAsync(uid, ct);
+        if (user is null)
+            return ApiResult<StudentResponse>.Fail(new Error("unauthorized", "unauthorized"), 401);
+
+        if (string.IsNullOrWhiteSpace(user.StudentId))
+            return ApiResult<StudentResponse>.Fail(
+                new Error("not_found", "no linked student record"), 404);
+
+        var student = await repo.GetByAdmissionNoAsync(user.StudentId, ct);
+        return student is null
+            ? ApiResult<StudentResponse>.Fail(new Error("not_found", "student roster not found"), 404)
             : ApiResult<StudentResponse>.Ok(student);
     }
 

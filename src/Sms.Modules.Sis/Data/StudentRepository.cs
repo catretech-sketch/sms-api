@@ -40,6 +40,14 @@ OUTER APPLY (
         (await QueryInlineAsync<StudentResponse>($"SELECT {ColsWithLivePct} WHERE s.Id = @id", new { id }, ct))
         .FirstOrDefault();
 
+    public async Task<StudentResponse?> GetByAdmissionNoAsync(string admissionNo, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(admissionNo)) return null;
+        return (await QueryInlineAsync<StudentResponse>(
+            $"SELECT {ColsWithLivePct} WHERE LOWER(LTRIM(RTRIM(s.AdmissionNo))) = LOWER(LTRIM(RTRIM(@admissionNo)))",
+            new { admissionNo = admissionNo.Trim() }, ct)).FirstOrDefault();
+    }
+
     public Task<IReadOnlyList<StudentResponse>> ListAsync(
         string? q, string? grade, string? status, string? fee, CancellationToken ct = default) =>
         QueryInlineAsync<StudentResponse>(
