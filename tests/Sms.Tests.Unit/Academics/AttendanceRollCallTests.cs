@@ -49,6 +49,25 @@ public class AttendanceRollCallTests
         AttendanceRollCall.CanMark(true, Guid.NewGuid(), classT, p1).Should().BeTrue();
     }
 
+    [Fact]
+    public void Resolve_picks_first_teaching_slot_for_requested_weekday()
+    {
+        var slots = new[]
+        {
+            Slot("Mon", 1, "Assembly"),
+            Slot("Mon", 2, "Mathematics"),
+            Slot("Wed", 1, "Assembly"),
+            Slot("Wed", 3, "Science"),
+        };
+        var got = AttendanceRollCall.Resolve(slots, new DateTime(2026, 8, 12));
+        got!.Day.Should().Be("Wed");
+        got.Period.Should().Be(3);
+        got.Subject.Should().Be("Science");
+    }
+
     static AttendanceRollCall.SlotInput Slot(int period, string subject) =>
         new("Wed", period, subject, Guid.Empty, null);
+
+    static AttendanceRollCall.SlotInput Slot(string day, int period, string subject) =>
+        new(day, period, subject, Guid.Empty, null);
 }

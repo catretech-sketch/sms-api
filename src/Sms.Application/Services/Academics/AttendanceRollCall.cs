@@ -25,6 +25,12 @@ public static class AttendanceRollCall
             .FirstOrDefault();
     }
 
+    public static SlotInput? Resolve(IEnumerable<SlotInput> slots, DateTime date)
+    {
+        var day = DayKey(date);
+        return FirstTeachingSlot(slots.Where(s => s.Day == day));
+    }
+
     public static bool CanMark(
         bool isLeadership, Guid? callerTeacherId, Guid? classTeacherId, Guid? rollCallTeacherId)
     {
