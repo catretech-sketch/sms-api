@@ -65,6 +65,16 @@ OUTER APPLY (
         (await QueryInlineAsync<ClassResponse>($"{ClassSelectWithLiveCountAndNextPeriod} WHERE c.Id = @id", new { id }, ct))
         .FirstOrDefault();
 
+    public async Task<Guid?> TeacherIdForUserAsync(Guid userId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<Guid?>(
+            "SELECT TOP 1 Id FROM dbo.Teachers WHERE UserId = @userId", new { userId }, ct))
+        .FirstOrDefault();
+
+    public async Task<string?> TeacherNameAsync(Guid id, CancellationToken ct = default) =>
+        (await QueryInlineAsync<string?>(
+            "SELECT Name FROM dbo.Teachers WHERE Id = @id", new { id }, ct))
+        .FirstOrDefault();
+
     public Task<IReadOnlyList<ClassResponse>> ListAsync(CancellationToken ct = default) =>
         QueryInlineAsync<ClassResponse>($"{ClassSelectWithLiveCountAndNextPeriod} ORDER BY c.Name", null, ct);
 

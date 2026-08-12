@@ -25,6 +25,11 @@ public sealed class ClassController(IAcademicsService academics) : ApiController
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateClassRequest req, CancellationToken ct) =>
         FromResult(await academics.UpdateClassAsync(id, req, ct));
 
+    [HttpGet("classes/{classId:guid}/attendance/roll-call")]
+    public async Task<IActionResult> GetAttendanceRollCall(
+        Guid classId, [FromQuery] DateTime date, CancellationToken ct) =>
+        FromResult(await academics.GetAttendanceRollCallAsync(classId, date, User, ct));
+
     [HttpGet("classes/{classId:guid}/attendance")]
     public async Task<IActionResult> ListAttendance(Guid classId, [FromQuery] DateTime date, CancellationToken ct) =>
         FromResult(await academics.ListAttendanceAsync(classId, date, ct));
@@ -32,5 +37,5 @@ public sealed class ClassController(IAcademicsService academics) : ApiController
     [HttpPost("classes/{classId:guid}/attendance")]
     public async Task<IActionResult> BulkUpsertAttendance(
         Guid classId, [FromBody] BulkAttendanceRequest req, CancellationToken ct) =>
-        FromResult(await academics.BulkUpsertAttendanceAsync(classId, req, ct));
+        FromResult(await academics.BulkUpsertAttendanceAsync(classId, req, User, ct));
 }

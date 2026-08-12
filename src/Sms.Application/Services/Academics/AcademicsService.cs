@@ -30,6 +30,11 @@ public sealed class AcademicsService(
         var v = (t ?? "").Trim().ToLowerInvariant();
         return v is "teacher" or "staff" ? v : null;
     }
+
+    private static bool IsLeadership(ClaimsPrincipal caller) =>
+        caller.FindAll("role")
+            .Select(c => c.Value.Split('.').LastOrDefault())
+            .Any(r => r is "principal" or "admin" or "owner");
     // Only narrows for a caller whose SOLE role is "teacher" — principal/admin/owner tokens
     // (however else combined) keep seeing every class, matching sms-admin's and the
     // principal screens' existing expectation of an unscoped list.
@@ -120,12 +125,83 @@ public sealed class AcademicsService(
         ApiResult<IReadOnlyList<AttendanceRecordResponse>>.Ok(await attendance.ListAsync(classId, date, ct));
 
     public async Task<ApiResult> BulkUpsertAttendanceAsync(
-        Guid classId, BulkAttendanceRequest req, CancellationToken ct = default)
+        Guid classId, BulkAttendanceRequest req, ClaimsPrincipal caller, CancellationToken ct = default)
     {
         if (tenant.TenantId is not { } tid)
             return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+
+        var classRow = await classes.GetAsync(classId, ct);
+        if (classRow is null)
+            return ApiResult.Fail(new Error("not_found", "resource not found"), 404);
+
+        var day = AttendanceRollCall.DayKey(req.Date);
+        var slotRows = await timetable.ListForClassDayAsync(classId, day, ct);
+        var firstSlot = AttendanceRollCall.FirstTeachingSlot(slotRows.Select(s =>
+            new AttendanceRollCall.SlotInput(
+                day, s.Period, s.Subject, classId, s.TeacherId,
+                s.StartTime, s.EndTime, s.TeacherName)));
+        var callerTeacherId = tenant.UserId is { } userId
+            ? await classes.TeacherIdForUserAsync(userId, ct)
+            : null;
+        if (!AttendanceRollCall.CanMark(
+                IsLeadership(caller), callerTeacherId, classRow.ClassTeacherId, firstSlot?.TeacherId))
+        {
+            return ApiResult.Fail(
+                new Error(
+                    "not_roll_call_teacher",
+                    "only the class teacher, first-period teacher, or leadership can mark this day"),
+                403);
+        }
+
         await attendance.BulkUpsertAsync(tid, classId, req.Date, tenant.UserId, req.Records, ct);
         return ApiResult.NoContent();
+    }
+
+    public async Task<ApiResult<AttendanceRollCallResponse>> GetAttendanceRollCallAsync(
+        Guid classId, DateTime date, ClaimsPrincipal caller, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is null)
+            return ApiResult<AttendanceRollCallResponse>.Fail(
+                new Error("forbidden", "no tenant context"), 403);
+
+        var classRow = await classes.GetAsync(classId, ct);
+        if (classRow is null)
+            return ApiResult<AttendanceRollCallResponse>.Fail(
+                new Error("not_found", "resource not found"), 404);
+
+        var day = AttendanceRollCall.DayKey(date);
+        var slotRows = await timetable.ListForClassDayAsync(classId, day, ct);
+        var firstSlot = AttendanceRollCall.FirstTeachingSlot(slotRows.Select(s =>
+            new AttendanceRollCall.SlotInput(
+                day, s.Period, s.Subject, classId, s.TeacherId,
+                s.StartTime, s.EndTime, s.TeacherName)));
+        var callerTeacherId = tenant.UserId is { } userId
+            ? await classes.TeacherIdForUserAsync(userId, ct)
+            : null;
+        var leadership = IsLeadership(caller);
+        var canMark = AttendanceRollCall.CanMark(
+            leadership, callerTeacherId, classRow.ClassTeacherId, firstSlot?.TeacherId);
+        var reason = AttendanceRollCall.Reason(
+            leadership, callerTeacherId, classRow.ClassTeacherId, firstSlot?.TeacherId);
+        var classTeacherName = classRow.ClassTeacherId is { } classTeacherId
+            ? await classes.TeacherNameAsync(classTeacherId, ct)
+            : null;
+        var marked = (await attendance.ListAsync(classId, date, ct)).Count > 0;
+
+        return ApiResult<AttendanceRollCallResponse>.Ok(new AttendanceRollCallResponse(
+            date.Date,
+            day,
+            firstSlot?.Period,
+            firstSlot?.Subject,
+            firstSlot?.StartTime,
+            firstSlot?.EndTime,
+            firstSlot?.TeacherId,
+            firstSlot?.TeacherName,
+            classRow.ClassTeacherId,
+            classTeacherName,
+            canMark,
+            reason,
+            marked));
     }
 
     public async Task<ApiResult<IReadOnlyList<AttendanceRecordResponse>>> ListAttendanceForStudentAsync(

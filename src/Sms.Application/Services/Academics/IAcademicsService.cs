@@ -20,7 +20,9 @@ public interface IAcademicsService
     Task<ApiResult<IReadOnlyList<AttendanceRecordResponse>>> ListAttendanceAsync(
         Guid classId, DateTime date, CancellationToken ct = default);
     Task<ApiResult> BulkUpsertAttendanceAsync(
-        Guid classId, BulkAttendanceRequest req, CancellationToken ct = default);
+        Guid classId, BulkAttendanceRequest req, ClaimsPrincipal caller, CancellationToken ct = default);
+    Task<ApiResult<AttendanceRollCallResponse>> GetAttendanceRollCallAsync(
+        Guid classId, DateTime date, ClaimsPrincipal caller, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<AttendanceRecordResponse>>> ListAttendanceForStudentAsync(
         Guid studentId, DateTime from, DateTime to, CancellationToken ct = default);
 
