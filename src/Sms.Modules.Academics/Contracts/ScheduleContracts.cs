@@ -20,6 +20,11 @@ public sealed record CreateTimetableSlotRequest(
     string Day, int Period, string? Subject, Guid? ClassId, string? ClassName, string? Room,
     string? StartTime, string? EndTime, Guid? TeacherId = null);
 
+/// One published slot for a class on one weekday, with teacher resolved for roll-call.
+public sealed record ClassDaySlotRow(
+    int Period, string? Subject, Guid? TeacherId, string? TeacherName,
+    string? StartTime, string? EndTime);
+
 public sealed record CalendarEventResponse(
     Guid Id, Guid TenantId, string Title, DateTime Date, string? Time, string Type, string? Description);
 public sealed record CreateCalendarEventRequest(

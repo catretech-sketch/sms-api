@@ -41,6 +41,20 @@ LEFT JOIN dbo.Teachers t2 ON t2.Id = sub.TeacherId
 WHERE c.ClassTeacherId = t.Id OR ts.TeacherId = t.Id OR sub.TeacherId = t.Id
 ORDER BY ts.[Day], ts.Period", new { teacherUserId }, ct);
 
+    public Task<IReadOnlyList<ClassDaySlotRow>> ListForClassDayAsync(
+        Guid classId, string day, CancellationToken ct = default) =>
+        QueryInlineAsync<ClassDaySlotRow>(@"
+SELECT ts.Period, ts.Subject,
+       COALESCE(ts.TeacherId, t2.Id) AS TeacherId,
+       COALESCE(t1.Name, t2.Name) AS TeacherName,
+       ts.StartTime, ts.EndTime
+FROM dbo.TimetableSlots ts
+LEFT JOIN dbo.Teachers t1 ON t1.Id = ts.TeacherId
+LEFT JOIN dbo.Subjects sub ON sub.Name = ts.Subject
+LEFT JOIN dbo.Teachers t2 ON t2.Id = sub.TeacherId
+WHERE ts.ClassId = @classId AND ts.[Day] = @day
+ORDER BY ts.Period", new { classId, day }, ct);
+
     public Task<TimetableSlotResponse?> CreateAsync(Guid tenantId, CreateTimetableSlotRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<TimetableSlotResponse>("dbo.TimetableSlot_Create", new
         {
