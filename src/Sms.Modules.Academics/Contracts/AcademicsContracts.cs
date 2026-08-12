@@ -59,3 +59,18 @@ public sealed record ExamAttendanceRecordResponse(
     Guid Id, Guid TenantId, Guid ExamPaperId, Guid StudentId, string Status, Guid? MarkedBy);
 public sealed record ExamAttendanceUpsertRow(Guid StudentId, string Status);
 public sealed record BulkExamAttendanceRequest(IReadOnlyList<ExamAttendanceUpsertRow> Records);
+
+public sealed record AttendanceRollCallResponse(
+    DateTime Date,
+    string Day,
+    int? Period,
+    string? Subject,
+    string? StartTime,
+    string? EndTime,
+    Guid? TeacherId,
+    string? TeacherName,
+    Guid? ClassTeacherId,
+    string? ClassTeacherName,
+    bool CanMark,
+    string Reason,
+    bool Marked);
