@@ -15,6 +15,7 @@ namespace Sms.Tests.Integration.Academics;
 public class StudentAttendanceScopeTests(SqlServerFixture fx)
 {
     private const string Key = "integration-test-signing-key-32-bytes-min!!";
+    private const string AttendanceDateQuery = "?from=2026-08-12&to=2026-08-12";
 
     private WebApplicationFactory<Program> App() =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
@@ -34,7 +35,8 @@ public class StudentAttendanceScopeTests(SqlServerFixture fx)
         var seed = await SeedAsync();
         var client = Client(app, seed.UserId, seed.TenantId, role);
 
-        var otherResponse = await client.GetAsync($"/v1/students/{seed.OtherStudentId}/attendance");
+        var otherResponse = await client.GetAsync(
+            $"/v1/students/{seed.OtherStudentId}/attendance{AttendanceDateQuery}");
 
         otherResponse.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         using (var forbidden = JsonDocument.Parse(await otherResponse.Content.ReadAsStringAsync()))
@@ -43,7 +45,8 @@ public class StudentAttendanceScopeTests(SqlServerFixture fx)
                 .Should().Be("not_own_student");
         }
 
-        var ownResponse = await client.GetAsync($"/v1/students/{seed.LinkedStudentId}/attendance");
+        var ownResponse = await client.GetAsync(
+            $"/v1/students/{seed.LinkedStudentId}/attendance{AttendanceDateQuery}");
 
         ownResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         using var own = JsonDocument.Parse(await ownResponse.Content.ReadAsStringAsync());
@@ -59,7 +62,8 @@ public class StudentAttendanceScopeTests(SqlServerFixture fx)
         var seed = await SeedAsync();
         var client = Client(app, Guid.NewGuid(), seed.TenantId, Policies.Principal);
 
-        var response = await client.GetAsync($"/v1/students/{seed.OtherStudentId}/attendance");
+        var response = await client.GetAsync(
+            $"/v1/students/{seed.OtherStudentId}/attendance{AttendanceDateQuery}");
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
     }
