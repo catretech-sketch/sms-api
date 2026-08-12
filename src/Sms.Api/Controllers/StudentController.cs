@@ -39,5 +39,5 @@ public sealed class StudentController(ISisService sis, IAcademicsService academi
     public async Task<IActionResult> ListAttendance(
         Guid studentId, [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken ct) =>
         FromResult(await academics.ListAttendanceForStudentAsync(
-            studentId, from ?? DateTime.UtcNow.AddDays(-90), to ?? DateTime.UtcNow, ct));
+            studentId, from ?? DateTime.UtcNow.AddDays(-90), to ?? DateTime.UtcNow, User, ct));
 }

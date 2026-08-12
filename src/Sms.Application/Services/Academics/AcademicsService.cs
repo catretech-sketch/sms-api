@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Sms.Application.Common;
+using Sms.Application.Services.Sis;
 using Sms.Modules.Academics.Contracts;
 using Sms.Modules.Academics.Data;
 using Sms.Shared.Kernel.Authz;
@@ -21,6 +22,7 @@ public sealed class AcademicsService(
     LibraryRepository library,
     AssignmentRepository assignments,
     AcademicsCommsNotifier academicsNotifier,
+    ISisService sis,
     ITenantContext tenant,
     ITenantFeatureSet features,
     IClock clock) : IAcademicsService
@@ -35,6 +37,13 @@ public sealed class AcademicsService(
         caller.FindAll("role")
             .Select(c => c.Value.Split('.').LastOrDefault())
             .Any(r => r is "principal" or "admin" or "owner");
+
+    private static bool IsStudentOrParent(ClaimsPrincipal caller) =>
+        caller.FindAll("role")
+            .Select(c => c.Value.Trim().ToLowerInvariant())
+            .Any(r => r == Policies.StudentOrParent ||
+                r.Split('.').LastOrDefault() is "student" or "parent");
+
     // Only narrows for a caller whose SOLE role is "teacher" — principal/admin/owner tokens
     // (however else combined) keep seeing every class, matching sms-admin's and the
     // principal screens' existing expectation of an unscoped list.
@@ -205,9 +214,20 @@ public sealed class AcademicsService(
     }
 
     public async Task<ApiResult<IReadOnlyList<AttendanceRecordResponse>>> ListAttendanceForStudentAsync(
-        Guid studentId, DateTime from, DateTime to, CancellationToken ct = default) =>
-        ApiResult<IReadOnlyList<AttendanceRecordResponse>>.Ok(
+        Guid studentId, DateTime from, DateTime to, ClaimsPrincipal caller, CancellationToken ct = default)
+    {
+        if (IsStudentOrParent(caller))
+        {
+            var me = await sis.GetMyStudentAsync(ct);
+            if (me.Data?.Id != studentId)
+                return ApiResult<IReadOnlyList<AttendanceRecordResponse>>.Fail(
+                    new Error("not_own_student", "students and parents can only read their linked student's attendance"),
+                    403);
+        }
+
+        return ApiResult<IReadOnlyList<AttendanceRecordResponse>>.Ok(
             await attendance.ListForStudentAsync(studentId, from, to, ct));
+    }
 
     public async Task<ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>> ListStaffAttendanceAsync(
         string personType, DateTime date, CancellationToken ct = default)
