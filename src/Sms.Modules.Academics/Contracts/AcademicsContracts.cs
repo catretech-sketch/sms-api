@@ -74,3 +74,50 @@ public sealed record AttendanceRollCallResponse(
     bool CanMark,
     string Reason,
     bool Marked);
+
+public sealed record PeriodAttendanceAdvancedRow(
+    Guid Id,
+    Guid ClassId,
+    string Grade,
+    string Section,
+    string ClassLabel,
+    Guid StudentId,
+    string StudentName,
+    string AdmissionNo,
+    DateTime Date,
+    int Period,
+    Guid? PeriodId,
+    string Subject,
+    Guid? SubjectId,
+    string? StartTime,
+    string? EndTime,
+    string Status,
+    Guid? AssignedTeacherId,
+    string? AssignedTeacherName,
+    Guid? MarkedBy,
+    string? MarkedByName,
+    string? MarkedByRole,
+    DateTime? MarkedAt,
+    string GeoFenceStatus);
+
+public sealed record PeriodAttendanceAdvancedPage(
+    IReadOnlyList<PeriodAttendanceAdvancedRow> Items,
+    int TotalCount,
+    int Page,
+    int PageSize);
+
+public sealed record PeriodAttendanceAdvancedQuery(
+    DateOnly From,
+    DateOnly To,
+    Guid? ClassId,
+    string? Grade,
+    string? Section,
+    string? Subject,
+    int? Period,
+    Guid? AssignedTeacherId,
+    Guid? MarkedBy,
+    string? MarkedByRole,
+    string? Status,
+    string? Q,
+    int Page,
+    int PageSize);
