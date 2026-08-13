@@ -51,6 +51,18 @@ public class PeriodAttendanceAggregateTests
     }
 
     [Fact]
+    public void Class_day_status_buckets_only_include_expected_timetable_sessions()
+    {
+        var command = PeriodAttendanceAggregateSql.BuildClassDay(
+            Guid.NewGuid(), new DateOnly(2026, 8, 13));
+
+        command.Sql.Should().Contain("INNER JOIN ExpectedSessions es");
+        command.Sql.Should().Contain("es.Period = par.Period");
+        command.Sql.Should().Contain(
+            "es.Subject = LOWER(LTRIM(RTRIM(par.Subject)))");
+    }
+
+    [Fact]
     public void Subject_and_range_rollups_use_status_buckets_for_percentage()
     {
         var subject = new PeriodAttendanceSubjectRow(
@@ -70,6 +82,18 @@ public class PeriodAttendanceAggregateTests
             Guid.NewGuid(), "Grace", 2, 2, 3, 7, 5, 3, 1, 1, 0).ToContract();
 
         row.PendingPeriods.Should().Be(2);
+    }
+
+    [Fact]
+    public void Teacher_summary_counts_distinct_grades_as_classes_and_class_rows_as_sections()
+    {
+        var command = PeriodAttendanceAggregateSql.BuildTeachers(
+            new DateOnly(2026, 8, 1), new DateOnly(2026, 8, 13));
+
+        command.Sql.Should().Contain("c.Grade");
+        command.Sql.Should().Contain(
+            "COUNT(DISTINCT NULLIF(LTRIM(RTRIM(es.Grade)), N'')) AS Classes");
+        command.Sql.Should().Contain("COUNT(DISTINCT es.ClassId) AS Sections");
     }
 
     [Fact]

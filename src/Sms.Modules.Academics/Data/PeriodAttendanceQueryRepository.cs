@@ -190,13 +190,23 @@ public static class PeriodAttendanceAggregateSql
     public static PeriodAttendanceAggregateCommand BuildClassDay(Guid classId, DateOnly date)
     {
         const string sql = """
-            WITH StatusCounts AS (
+            WITH ExpectedSessions AS (
+                SELECT ts.Period, LOWER(LTRIM(RTRIM(ts.Subject))) AS Subject
+                FROM dbo.TimetableSlots ts
+                WHERE ts.ClassId = @ClassId
+                  AND UPPER(LEFT(LTRIM(RTRIM(ts.[Day])), 3))
+                      = UPPER(LEFT(DATENAME(WEEKDAY, @Date), 3))
+            ),
+            StatusCounts AS (
                 SELECT
                     ISNULL(SUM(CASE WHEN par.Status = N'present' THEN 1 ELSE 0 END), 0) AS Present,
                     ISNULL(SUM(CASE WHEN par.Status = N'absent' THEN 1 ELSE 0 END), 0) AS Absent,
                     ISNULL(SUM(CASE WHEN par.Status = N'late' THEN 1 ELSE 0 END), 0) AS Late,
                     ISNULL(SUM(CASE WHEN par.Status = N'leave' THEN 1 ELSE 0 END), 0) AS Leave
                 FROM dbo.PeriodAttendanceRecords par
+                INNER JOIN ExpectedSessions es
+                  ON es.Period = par.Period
+                 AND es.Subject = LOWER(LTRIM(RTRIM(par.Subject)))
                 WHERE par.ClassId = @ClassId AND par.[Date] = @Date
             ),
             MarkedSessions AS (
@@ -204,13 +214,6 @@ public static class PeriodAttendanceAggregateSql
                 FROM dbo.PeriodAttendanceRecords par
                 WHERE par.ClassId = @ClassId AND par.[Date] = @Date
                 GROUP BY par.Period, LOWER(LTRIM(RTRIM(par.Subject)))
-            ),
-            ExpectedSessions AS (
-                SELECT ts.Period, LOWER(LTRIM(RTRIM(ts.Subject))) AS Subject
-                FROM dbo.TimetableSlots ts
-                WHERE ts.ClassId = @ClassId
-                  AND UPPER(LEFT(LTRIM(RTRIM(ts.[Day])), 3))
-                      = UPPER(LEFT(DATENAME(WEEKDAY, @Date), 3))
             )
             SELECT
                 (SELECT COUNT(*)
@@ -309,6 +312,7 @@ public static class PeriodAttendanceAggregateSql
                 SELECT
                     d.[Date],
                     ts.ClassId,
+                    c.Grade,
                     c.Section,
                     ts.Period,
                     LTRIM(RTRIM(ts.Subject)) AS Subject,
@@ -339,8 +343,8 @@ public static class PeriodAttendanceAggregateSql
             SELECT
                 es.TeacherId,
                 es.TeacherName,
-                COUNT(DISTINCT es.ClassId) AS Classes,
-                COUNT(DISTINCT NULLIF(LTRIM(RTRIM(es.Section)), N'')) AS Sections,
+                COUNT(DISTINCT NULLIF(LTRIM(RTRIM(es.Grade)), N'')) AS Classes,
+                COUNT(DISTINCT es.ClassId) AS Sections,
                 COUNT(DISTINCT es.SubjectKey) AS Subjects,
                 COUNT(*) AS ExpectedPeriods,
                 SUM(CASE WHEN ms.Period IS NOT NULL THEN 1 ELSE 0 END) AS MarkedPeriods,
