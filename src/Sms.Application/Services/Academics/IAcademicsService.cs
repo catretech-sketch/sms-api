@@ -25,6 +25,24 @@ public interface IAcademicsService
         Guid classId, DateTime date, ClaimsPrincipal caller, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<AttendanceRecordResponse>>> ListAttendanceForStudentAsync(
         Guid studentId, DateTime from, DateTime to, ClaimsPrincipal caller, CancellationToken ct = default);
+    Task<ApiResult<PeriodAttendanceAdvancedPage>> ListPeriodAttendanceAdvancedAsync(
+        ClaimsPrincipal caller,
+        string? preset,
+        DateOnly? from,
+        DateOnly? to,
+        Guid? classId,
+        string? grade,
+        string? section,
+        string? subject,
+        int? period,
+        Guid? assignedTeacherId,
+        Guid? markedBy,
+        string? markedByRole,
+        string? status,
+        string? q,
+        int page = 1,
+        int pageSize = 25,
+        CancellationToken ct = default);
 
     Task<ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>> ListStaffAttendanceAsync(
         string personType, DateTime date, CancellationToken ct = default);

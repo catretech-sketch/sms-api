@@ -1,6 +1,7 @@
 using System.Security.Claims;
 using Sms.Application.Common;
 using Sms.Application.Services.Sis;
+using Sms.Modules.Academics;
 using Sms.Modules.Academics.Contracts;
 using Sms.Modules.Academics.Data;
 using Sms.Shared.Kernel.Authz;
@@ -14,6 +15,7 @@ public sealed class AcademicsService(
     ClassRepository classes,
     SubjectRepository subjects,
     AttendanceRepository attendance,
+    PeriodAttendanceQueryRepository periodAttendanceQuery,
     StaffAttendanceRepository staffAttendance,
     ExamRepository exams,
     HomeworkRepository homework,
@@ -43,6 +45,23 @@ public sealed class AcademicsService(
             .Select(c => c.Value.Trim().ToLowerInvariant())
             .Any(r => r == Policies.StudentOrParent ||
                 r.Split('.').LastOrDefault() is "student" or "parent");
+
+    private static DateOnly SchoolToday(DateTime utcNow)
+    {
+        var utc = utcNow.Kind == DateTimeKind.Unspecified
+            ? DateTime.SpecifyKind(utcNow, DateTimeKind.Utc)
+            : utcNow.ToUniversalTime();
+        try
+        {
+            var timeZone = TimeZoneInfo.FindSystemTimeZoneById(
+                OperatingSystem.IsWindows() ? "India Standard Time" : "Asia/Kolkata");
+            return DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(utc, timeZone));
+        }
+        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            return DateOnly.FromDateTime(utc.AddHours(5).AddMinutes(30));
+        }
+    }
 
     // Only narrows for a caller whose SOLE role is "teacher" — principal/admin/owner tokens
     // (however else combined) keep seeing every class, matching sms-admin's and the
@@ -132,6 +151,74 @@ public sealed class AcademicsService(
     public async Task<ApiResult<IReadOnlyList<AttendanceRecordResponse>>> ListAttendanceAsync(
         Guid classId, DateTime date, CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<AttendanceRecordResponse>>.Ok(await attendance.ListAsync(classId, date, ct));
+
+    public async Task<ApiResult<PeriodAttendanceAdvancedPage>> ListPeriodAttendanceAdvancedAsync(
+        ClaimsPrincipal caller,
+        string? preset,
+        DateOnly? from,
+        DateOnly? to,
+        Guid? classId,
+        string? grade,
+        string? section,
+        string? subject,
+        int? period,
+        Guid? assignedTeacherId,
+        Guid? markedBy,
+        string? markedByRole,
+        string? status,
+        string? q,
+        int page = 1,
+        int pageSize = 25,
+        CancellationToken ct = default)
+    {
+        if (tenant.TenantId is null)
+            return ApiResult<PeriodAttendanceAdvancedPage>.Fail(
+                new Error("forbidden", "no tenant context"), 403);
+
+        var roles = caller.FindAll("role")
+            .Select(c => c.Value.Trim().ToLowerInvariant().Split('.').LastOrDefault())
+            .ToArray();
+        var leadership = roles.Any(r => r is "principal" or "admin" or "owner");
+        var teacher = roles.Contains("teacher");
+        if (!leadership && !teacher)
+            return ApiResult<PeriodAttendanceAdvancedPage>.Fail(
+                new Error("forbidden", "period attendance records require teacher or leadership access"), 403);
+
+        if (!leadership)
+        {
+            var callerTeacherId = tenant.UserId is { } userId
+                ? await classes.TeacherIdForUserAsync(userId, ct)
+                : null;
+            if (callerTeacherId is null)
+                return ApiResult<PeriodAttendanceAdvancedPage>.Fail(
+                    new Error("forbidden", "teacher profile is required to list period attendance records"), 403);
+
+            // A query filter never changes caller identity. Teacher scope always wins over
+            // a requested assignedTeacherId so another teacher cannot be impersonated.
+            assignedTeacherId = callerTeacherId;
+        }
+
+        var today = SchoolToday(clock.UtcNow);
+        var range = PeriodAttendanceDatePresets.Resolve(preset, from, to, today);
+        var query = new PeriodAttendanceAdvancedQuery(
+            range.From,
+            range.To,
+            classId,
+            grade,
+            section,
+            subject,
+            period,
+            assignedTeacherId,
+            markedBy,
+            markedByRole,
+            status,
+            q,
+            page,
+            pageSize);
+
+        return ApiResult<PeriodAttendanceAdvancedPage>.Ok(
+            await periodAttendanceQuery.SearchAsync(query, ct));
+    }
 
     public async Task<ApiResult> BulkUpsertAttendanceAsync(
         Guid classId, BulkAttendanceRequest req, ClaimsPrincipal caller, CancellationToken ct = default)
