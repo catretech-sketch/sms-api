@@ -11,67 +11,13 @@ public sealed class PeriodAttendanceQueryRepository(IDbConnectionFactory factory
         CancellationToken ct = default)
     {
         var command = PeriodAttendanceQuerySql.Build(q);
-        var rows = await QueryInlineAsync<QueryRow>(command.Sql, command.Parameters, ct);
-        var items = rows.Select(static row => row.ToContract()).ToList();
+        await using var conn = await Factory.OpenAsync(ct);
+        using var results = await conn.QueryMultipleAsync(
+            new CommandDefinition(command.Sql, command.Parameters, cancellationToken: ct));
+        var totalCount = await results.ReadSingleAsync<int>();
+        var items = (await results.ReadAsync<PeriodAttendanceAdvancedRow>()).AsList();
 
-        return new PeriodAttendanceAdvancedPage(
-            items,
-            rows.FirstOrDefault()?.TotalCount ?? 0,
-            command.Page,
-            command.PageSize);
-    }
-
-    private sealed record QueryRow(
-        Guid Id,
-        Guid ClassId,
-        string Grade,
-        string Section,
-        string ClassLabel,
-        Guid StudentId,
-        string StudentName,
-        string AdmissionNo,
-        DateTime Date,
-        int Period,
-        Guid? PeriodId,
-        string Subject,
-        Guid? SubjectId,
-        string? StartTime,
-        string? EndTime,
-        string Status,
-        Guid? AssignedTeacherId,
-        string? AssignedTeacherName,
-        Guid? MarkedBy,
-        string? MarkedByName,
-        string? MarkedByRole,
-        DateTime? MarkedAt,
-        string GeoFenceStatus,
-        int TotalCount)
-    {
-        public PeriodAttendanceAdvancedRow ToContract() =>
-            new(
-                Id,
-                ClassId,
-                Grade,
-                Section,
-                ClassLabel,
-                StudentId,
-                StudentName,
-                AdmissionNo,
-                Date,
-                Period,
-                PeriodId,
-                Subject,
-                SubjectId,
-                StartTime,
-                EndTime,
-                Status,
-                AssignedTeacherId,
-                AssignedTeacherName,
-                MarkedBy,
-                MarkedByName,
-                MarkedByRole,
-                MarkedAt,
-                GeoFenceStatus);
+        return command.ToPage(items, totalCount);
     }
 }
 
@@ -79,11 +25,45 @@ public sealed record PeriodAttendanceQueryCommand(
     string Sql,
     DynamicParameters Parameters,
     int Page,
-    int PageSize);
+    int PageSize)
+{
+    public PeriodAttendanceAdvancedPage ToPage(
+        IReadOnlyList<PeriodAttendanceAdvancedRow> items,
+        int totalCount) =>
+        new(items, totalCount, Page, PageSize);
+}
 
 public static class PeriodAttendanceQuerySql
 {
-    private const string Sql = """
+    private const string FromAndJoins = """
+        FROM dbo.PeriodAttendanceRecords par
+        INNER JOIN dbo.Students s ON s.Id = par.StudentId
+        INNER JOIN dbo.Classes c ON c.Id = par.ClassId
+        LEFT JOIN dbo.Users u ON u.Id = par.MarkedBy
+        LEFT JOIN dbo.TimetableSlots ts
+          ON ts.ClassId = par.ClassId
+         AND ts.Period = par.Period
+         AND UPPER(LEFT(LTRIM(RTRIM(ts.[Day])), 3)) = UPPER(LEFT(DATENAME(WEEKDAY, par.[Date]), 3))
+         AND LOWER(LTRIM(RTRIM(ts.Subject))) = LOWER(LTRIM(RTRIM(par.Subject)))
+        LEFT JOIN dbo.Teachers t ON t.Id = ts.TeacherId
+        """;
+
+    private const string Filters = """
+        WHERE par.[Date] >= @From
+          AND par.[Date] <= @To
+          AND (@ClassId IS NULL OR par.ClassId = @ClassId)
+          AND (@Grade IS NULL OR c.Grade = @Grade)
+          AND (@Section IS NULL OR c.Section = @Section)
+          AND (@Subject IS NULL OR LOWER(LTRIM(RTRIM(par.Subject))) = LOWER(LTRIM(RTRIM(@Subject))))
+          AND (@Period IS NULL OR par.Period = @Period)
+          AND (@AssignedTeacherId IS NULL OR ts.TeacherId = @AssignedTeacherId)
+          AND (@MarkedBy IS NULL OR par.MarkedBy = @MarkedBy)
+          AND (@MarkedByRole IS NULL OR par.MarkedByRole = @MarkedByRole)
+          AND (@Status IS NULL OR par.Status = @Status)
+          AND (@Q IS NULL OR s.Name LIKE N'%' + @Q + N'%' OR s.AdmissionNo LIKE N'%' + @Q + N'%')
+        """;
+
+    private const string Sql = "SELECT COUNT(*)\n" + FromAndJoins + "\n" + Filters + ";\n" + """
         SELECT par.Id,
                par.ClassId,
                COALESCE(c.Grade, N'') AS Grade,
@@ -106,30 +86,8 @@ public static class PeriodAttendanceQuerySql
                u.Name AS MarkedByName,
                par.MarkedByRole,
                COALESCE(par.UpdatedAt, par.CreatedAt) AS MarkedAt,
-               CAST(N'not_required' AS nvarchar(32)) AS GeoFenceStatus,
-               COUNT(*) OVER() AS TotalCount
-        FROM dbo.PeriodAttendanceRecords par
-        INNER JOIN dbo.Students s ON s.Id = par.StudentId
-        INNER JOIN dbo.Classes c ON c.Id = par.ClassId
-        LEFT JOIN dbo.Users u ON u.Id = par.MarkedBy
-        LEFT JOIN dbo.TimetableSlots ts
-          ON ts.ClassId = par.ClassId
-         AND ts.Period = par.Period
-         AND UPPER(LEFT(LTRIM(RTRIM(ts.[Day])), 3)) = UPPER(LEFT(DATENAME(WEEKDAY, par.[Date]), 3))
-         AND LOWER(LTRIM(RTRIM(ts.Subject))) = LOWER(LTRIM(RTRIM(par.Subject)))
-        LEFT JOIN dbo.Teachers t ON t.Id = ts.TeacherId
-        WHERE par.[Date] >= @From
-          AND par.[Date] <= @To
-          AND (@ClassId IS NULL OR par.ClassId = @ClassId)
-          AND (@Grade IS NULL OR c.Grade = @Grade)
-          AND (@Section IS NULL OR c.Section = @Section)
-          AND (@Subject IS NULL OR LOWER(LTRIM(RTRIM(par.Subject))) = LOWER(LTRIM(RTRIM(@Subject))))
-          AND (@Period IS NULL OR par.Period = @Period)
-          AND (@AssignedTeacherId IS NULL OR ts.TeacherId = @AssignedTeacherId)
-          AND (@MarkedBy IS NULL OR par.MarkedBy = @MarkedBy)
-          AND (@MarkedByRole IS NULL OR par.MarkedByRole = @MarkedByRole)
-          AND (@Status IS NULL OR par.Status = @Status)
-          AND (@Q IS NULL OR s.Name LIKE N'%' + @Q + N'%' OR s.AdmissionNo LIKE N'%' + @Q + N'%')
+               CAST(N'not_required' AS nvarchar(32)) AS GeoFenceStatus
+        """ + "\n" + FromAndJoins + "\n" + Filters + "\n" + """
         ORDER BY par.[Date] DESC, c.Name, par.Period, s.Name
         OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;
         """;
@@ -151,7 +109,7 @@ public static class PeriodAttendanceQuerySql
         parameters.Add("MarkedByRole", Clean(q.MarkedByRole));
         parameters.Add("Status", Clean(q.Status));
         parameters.Add("Q", Clean(q.Q));
-        parameters.Add("Offset", (page - 1) * pageSize);
+        parameters.Add("Offset", (page - 1L) * pageSize);
         parameters.Add("PageSize", pageSize);
 
         return new PeriodAttendanceQueryCommand(Sql, parameters, page, pageSize);

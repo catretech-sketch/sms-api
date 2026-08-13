@@ -30,7 +30,7 @@ public class PeriodAttendanceQueryFilterTests
         Assert.Contains("par.Status = @Status", command.Sql);
         Assert.Equal("Music", command.Parameters.Get<string?>("Subject"));
         Assert.Equal("absent", command.Parameters.Get<string?>("Status"));
-        Assert.Equal(10, command.Parameters.Get<int>("Offset"));
+        Assert.Equal(10L, command.Parameters.Get<long>("Offset"));
         Assert.Equal(10, command.PageSize);
         Assert.Equal(2, command.Page);
     }
@@ -66,7 +66,31 @@ public class PeriodAttendanceQueryFilterTests
 
         Assert.Equal(expectedPage, command.Page);
         Assert.Equal(expectedPageSize, command.PageSize);
-        Assert.Equal((expectedPage - 1) * expectedPageSize, command.Parameters.Get<int>("Offset"));
+        Assert.Equal((expectedPage - 1L) * expectedPageSize, command.Parameters.Get<long>("Offset"));
+    }
+
+    [Fact]
+    public void Build_uses_long_offset_for_largest_page()
+    {
+        var query = CreateQuery(int.MaxValue, 100);
+
+        var command = PeriodAttendanceQuerySql.Build(query);
+
+        Assert.Equal((int.MaxValue - 1L) * 100, command.Parameters.Get<long>("Offset"));
+    }
+
+    [Fact]
+    public void Out_of_range_page_preserves_independent_total()
+    {
+        var command = PeriodAttendanceQuerySql.Build(CreateQuery(999, 25));
+
+        var page = command.ToPage([], 7);
+
+        Assert.Empty(page.Items);
+        Assert.Equal(7, page.TotalCount);
+        Assert.Equal(999, page.Page);
+        Assert.Contains("SELECT COUNT(*)", command.Sql);
+        Assert.DoesNotContain("COUNT(*) OVER()", command.Sql);
     }
 
     [Fact]
@@ -79,4 +103,21 @@ public class PeriodAttendanceQueryFilterTests
         Assert.NotNull(method);
         Assert.Equal(typeof(Task<PeriodAttendanceAdvancedPage>), method!.ReturnType);
     }
+
+    private static PeriodAttendanceAdvancedQuery CreateQuery(int page, int pageSize) =>
+        new(
+            new DateOnly(2026, 8, 1),
+            new DateOnly(2026, 8, 13),
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
+            page,
+            pageSize);
 }
