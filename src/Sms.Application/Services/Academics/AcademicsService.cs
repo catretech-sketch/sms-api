@@ -16,6 +16,7 @@ public sealed class AcademicsService(
     SubjectRepository subjects,
     AttendanceRepository attendance,
     PeriodAttendanceQueryRepository periodAttendanceQuery,
+    IAttendanceViewPermissionService attendanceViewPermissions,
     StaffAttendanceRepository staffAttendance,
     ExamRepository exams,
     HomeworkRepository homework,
@@ -174,17 +175,18 @@ public sealed class AcademicsService(
         if (tenant.TenantId is null)
             return ApiResult<PeriodAttendanceAdvancedPage>.Fail(
                 new Error("forbidden", "no tenant context"), 403);
+        if (!await attendanceViewPermissions.CanViewAsync(caller, ct))
+            return ApiResult<PeriodAttendanceAdvancedPage>.Fail(
+                new Error("forbidden", "attendance view permission is required"), 403);
 
         var roles = caller.FindAll("role")
-            .Select(c => c.Value.Trim().ToLowerInvariant().Split('.').LastOrDefault())
+            .Select(c => c.Value.Trim().ToLowerInvariant().Split('.').LastOrDefault()?.Replace('-', '_'))
             .ToArray();
-        var leadership = roles.Any(r => r is "principal" or "admin" or "owner");
+        var leadership = roles.Any(r => r is "principal" or "admin" or "owner" or "vice_principal");
         var teacher = roles.Contains("teacher");
-        if (!leadership && !teacher)
-            return ApiResult<PeriodAttendanceAdvancedPage>.Fail(
-                new Error("forbidden", "period attendance records require teacher or leadership access"), 403);
+        Guid? authorizedTeacherId = null;
 
-        if (!leadership)
+        if (teacher && !leadership)
         {
             var callerTeacherId = tenant.UserId is { } userId
                 ? await classes.TeacherIdForUserAsync(userId, ct)
@@ -193,9 +195,9 @@ public sealed class AcademicsService(
                 return ApiResult<PeriodAttendanceAdvancedPage>.Fail(
                     new Error("forbidden", "teacher profile is required to list period attendance records"), 403);
 
-            // A query filter never changes caller identity. Teacher scope always wins over
-            // a requested assignedTeacherId so another teacher cannot be impersonated.
-            assignedTeacherId = callerTeacherId;
+            // Keep the requested assignedTeacherId as a search filter. The independent
+            // authorization scope admits the caller's assigned periods and class-teacher classes.
+            authorizedTeacherId = callerTeacherId;
         }
 
         var today = SchoolToday(clock.UtcNow);
@@ -214,7 +216,8 @@ public sealed class AcademicsService(
             status,
             q,
             page,
-            pageSize);
+            pageSize,
+            authorizedTeacherId);
 
         return ApiResult<PeriodAttendanceAdvancedPage>.Ok(
             await periodAttendanceQuery.SearchAsync(query, ct));

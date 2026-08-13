@@ -94,6 +94,19 @@ public class PeriodAttendanceQueryFilterTests
     }
 
     [Fact]
+    public void Teacher_authorization_scope_includes_assigned_periods_and_class_teacher_classes()
+    {
+        var teacherId = Guid.NewGuid();
+        var query = CreateQuery(1, 25) with { AuthorizedTeacherId = teacherId };
+
+        var command = PeriodAttendanceQuerySql.Build(query);
+
+        Assert.Contains("ts.TeacherId = @AuthorizedTeacherId", command.Sql);
+        Assert.Contains("c.ClassTeacherId = @AuthorizedTeacherId", command.Sql);
+        Assert.Equal(teacherId, command.Parameters.Get<Guid?>("AuthorizedTeacherId"));
+    }
+
+    [Fact]
     public void Repository_exposes_search_async_with_advanced_page_contract()
     {
         var method = typeof(PeriodAttendanceQueryRepository).GetMethod(

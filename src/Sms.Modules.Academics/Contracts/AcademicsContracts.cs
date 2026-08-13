@@ -120,4 +120,5 @@ public sealed record PeriodAttendanceAdvancedQuery(
     string? Status,
     string? Q,
     int Page,
-    int PageSize);
+    int PageSize,
+    Guid? AuthorizedTeacherId = null);

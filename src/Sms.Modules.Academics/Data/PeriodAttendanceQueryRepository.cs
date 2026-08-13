@@ -57,6 +57,9 @@ public static class PeriodAttendanceQuerySql
           AND (@Subject IS NULL OR LOWER(LTRIM(RTRIM(par.Subject))) = LOWER(LTRIM(RTRIM(@Subject))))
           AND (@Period IS NULL OR par.Period = @Period)
           AND (@AssignedTeacherId IS NULL OR ts.TeacherId = @AssignedTeacherId)
+          AND (@AuthorizedTeacherId IS NULL
+               OR ts.TeacherId = @AuthorizedTeacherId
+               OR c.ClassTeacherId = @AuthorizedTeacherId)
           AND (@MarkedBy IS NULL OR par.MarkedBy = @MarkedBy)
           AND (@MarkedByRole IS NULL OR par.MarkedByRole = @MarkedByRole)
           AND (@Status IS NULL OR par.Status = @Status)
@@ -105,6 +108,7 @@ public static class PeriodAttendanceQuerySql
         parameters.Add("Subject", Clean(q.Subject));
         parameters.Add("Period", q.Period);
         parameters.Add("AssignedTeacherId", q.AssignedTeacherId);
+        parameters.Add("AuthorizedTeacherId", q.AuthorizedTeacherId);
         parameters.Add("MarkedBy", q.MarkedBy);
         parameters.Add("MarkedByRole", Clean(q.MarkedByRole));
         parameters.Add("Status", Clean(q.Status));

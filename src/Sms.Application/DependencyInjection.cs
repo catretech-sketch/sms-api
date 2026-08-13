@@ -31,6 +31,7 @@ public static class DependencyInjection
         services.AddScoped<IPayrollService, PayrollService>();
         services.AddScoped<ISisService, SisService>();
         services.AddScoped<IStaffingService, StaffingService>();
+        services.AddScoped<IAttendanceViewPermissionService, AttendanceViewPermissionService>();
         services.AddScoped<IAcademicsService, AcademicsService>();
         services.AddScoped<AcademicsCommsNotifier>();
         services.AddScoped<IExamMarksNotifyService, ExamMarksNotifyService>();

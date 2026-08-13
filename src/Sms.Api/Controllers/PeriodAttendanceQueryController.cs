@@ -1,12 +1,11 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Sms.Application.Services.Academics;
-using Sms.Shared.Kernel.Authz;
 
 namespace Sms.Api.Controllers;
 
 [Route("v1/attendance")]
-[Authorize(Policy = AuthorizationPolicies.TeacherApp)]
+[Authorize]
 public sealed class PeriodAttendanceQueryController(IAcademicsService academics) : ApiControllerBase
 {
     [HttpGet("period-records")]
