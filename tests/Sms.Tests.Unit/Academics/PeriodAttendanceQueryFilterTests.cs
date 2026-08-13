@@ -107,6 +107,21 @@ public class PeriodAttendanceQueryFilterTests
     }
 
     [Fact]
+    public void Marker_role_filter_and_projection_normalize_school_policy_claims()
+    {
+        var query = CreateQuery(1, 25) with { MarkedByRole = "admin" };
+
+        var command = PeriodAttendanceQuerySql.Build(query);
+
+        Assert.Contains(
+            "REPLACE(LOWER(par.MarkedByRole), N'school.', N'') = LOWER(@MarkedByRole)",
+            command.Sql);
+        Assert.Contains(
+            "REPLACE(LOWER(par.MarkedByRole), N'school.', N'') AS MarkedByRole",
+            command.Sql);
+    }
+
+    [Fact]
     public void Repository_exposes_search_async_with_advanced_page_contract()
     {
         var method = typeof(PeriodAttendanceQueryRepository).GetMethod(

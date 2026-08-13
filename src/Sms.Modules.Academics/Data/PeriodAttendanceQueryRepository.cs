@@ -61,7 +61,8 @@ public static class PeriodAttendanceQuerySql
                OR ts.TeacherId = @AuthorizedTeacherId
                OR c.ClassTeacherId = @AuthorizedTeacherId)
           AND (@MarkedBy IS NULL OR par.MarkedBy = @MarkedBy)
-          AND (@MarkedByRole IS NULL OR par.MarkedByRole = @MarkedByRole)
+          AND (@MarkedByRole IS NULL
+               OR REPLACE(LOWER(par.MarkedByRole), N'school.', N'') = LOWER(@MarkedByRole))
           AND (@Status IS NULL OR par.Status = @Status)
           AND (@Q IS NULL OR s.Name LIKE N'%' + @Q + N'%' OR s.AdmissionNo LIKE N'%' + @Q + N'%')
         """;
@@ -87,7 +88,7 @@ public static class PeriodAttendanceQuerySql
                t.Name AS AssignedTeacherName,
                par.MarkedBy,
                u.Name AS MarkedByName,
-               par.MarkedByRole,
+               REPLACE(LOWER(par.MarkedByRole), N'school.', N'') AS MarkedByRole,
                COALESCE(par.UpdatedAt, par.CreatedAt) AS MarkedAt,
                CAST(N'not_required' AS nvarchar(32)) AS GeoFenceStatus
         """ + "\n" + FromAndJoins + "\n" + Filters + "\n" + """
