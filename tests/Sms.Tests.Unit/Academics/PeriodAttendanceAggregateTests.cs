@@ -56,10 +56,36 @@ public class PeriodAttendanceAggregateTests
         var command = PeriodAttendanceAggregateSql.BuildClassDay(
             Guid.NewGuid(), new DateOnly(2026, 8, 13));
 
-        command.Sql.Should().Contain("INNER JOIN ExpectedSessions es");
-        command.Sql.Should().Contain("es.Period = par.Period");
+        command.Sql.Should().Contain("FROM ExpectedSessions es");
+        command.Sql.Should().Contain("LEFT JOIN dbo.PeriodAttendanceRecords par");
+        command.Sql.Should().Contain("par.Period = es.Period");
         command.Sql.Should().Contain(
-            "es.Subject = LOWER(LTRIM(RTRIM(par.Subject)))");
+            "LOWER(LTRIM(RTRIM(par.Subject))) = es.Subject");
+    }
+
+    [Fact]
+    public void Fully_unmarked_class_day_returns_zero_buckets_and_expected_not_marked()
+    {
+        var command = PeriodAttendanceAggregateSql.BuildClassDay(
+            Guid.NewGuid(), new DateOnly(2026, 8, 13));
+        var summary = new PeriodAttendanceClassDayRow(
+            TotalStudents: 10,
+            Present: 0,
+            Absent: 0,
+            Late: 0,
+            Leave: 0,
+            TotalPeriods: 1,
+            MarkedPeriods: 0).ToContract();
+
+        command.Sql.Should().Contain("FROM ExpectedSessions es");
+        command.Sql.Should().Contain("LEFT JOIN dbo.PeriodAttendanceRecords par");
+        summary.Present.Should().Be(0);
+        summary.Absent.Should().Be(0);
+        summary.Late.Should().Be(0);
+        summary.Leave.Should().Be(0);
+        summary.NotMarked.Should().Be(10);
+        summary.AttendancePercentage.Should().BeNull();
+        summary.PendingPeriods.Should().Be(1);
     }
 
     [Fact]

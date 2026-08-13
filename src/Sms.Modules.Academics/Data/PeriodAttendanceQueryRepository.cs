@@ -203,11 +203,12 @@ public static class PeriodAttendanceAggregateSql
                     ISNULL(SUM(CASE WHEN par.Status = N'absent' THEN 1 ELSE 0 END), 0) AS Absent,
                     ISNULL(SUM(CASE WHEN par.Status = N'late' THEN 1 ELSE 0 END), 0) AS Late,
                     ISNULL(SUM(CASE WHEN par.Status = N'leave' THEN 1 ELSE 0 END), 0) AS Leave
-                FROM dbo.PeriodAttendanceRecords par
-                INNER JOIN ExpectedSessions es
-                  ON es.Period = par.Period
-                 AND es.Subject = LOWER(LTRIM(RTRIM(par.Subject)))
-                WHERE par.ClassId = @ClassId AND par.[Date] = @Date
+                FROM ExpectedSessions es
+                LEFT JOIN dbo.PeriodAttendanceRecords par
+                  ON par.ClassId = @ClassId
+                 AND par.[Date] = @Date
+                 AND par.Period = es.Period
+                 AND LOWER(LTRIM(RTRIM(par.Subject))) = es.Subject
             ),
             MarkedSessions AS (
                 SELECT par.Period, LOWER(LTRIM(RTRIM(par.Subject))) AS Subject
