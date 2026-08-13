@@ -16,9 +16,11 @@ public sealed record ClassResponse(
         string? Room, int StudentCount, Guid? ClassTeacherId, string? NextPeriod)
         : this(Id, TenantId, Name, Grade, Section, Subject, Room, StudentCount, ClassTeacherId) =>
         this.NextPeriod = NextPeriod;
+    public IReadOnlyList<string> Subjects { get; init; } = [];
 }
 public sealed record CreateClassRequest(
-    string Name, string? Grade, string? Section, string? Subject, string? Room, Guid? ClassTeacherId);
+    string Name, string? Grade, string? Section, string? Subject, string? Room, Guid? ClassTeacherId,
+    IReadOnlyList<string>? Subjects = null);
 
 public sealed record UpdateClassRequest(
     string? Name = null,
@@ -27,10 +29,25 @@ public sealed record UpdateClassRequest(
     string? Subject = null,
     string? Room = null,
     Guid? ClassTeacherId = null,
-    bool ClearClassTeacher = false);
+    bool ClearClassTeacher = false,
+    IReadOnlyList<string>? Subjects = null);
+
+public sealed record ReplaceClassSubjectsRequest(IReadOnlyList<string>? Subjects = null);
 
 // ---- Subject ----
-public sealed record SubjectResponse(Guid Id, Guid TenantId, string Name, string? Short, Guid? TeacherId, string? Color);
+// TeacherName is a trailing init-only property with a secondary constructor, not a primary-
+// constructor parameter: Dapper materializes via a constructor matching the exact column count
+// of whatever query ran, and Subject_Create/Update/Get still return the original 6 columns
+// while ListAsync now returns 7 (+ TeacherName).
+public sealed record SubjectResponse(Guid Id, Guid TenantId, string Name, string? Short, Guid? TeacherId, string? Color)
+{
+    public string? TeacherName { get; init; }
+
+    public SubjectResponse(
+        Guid Id, Guid TenantId, string Name, string? Short, Guid? TeacherId, string? Color, string? TeacherName)
+        : this(Id, TenantId, Name, Short, TeacherId, Color) =>
+        this.TeacherName = TeacherName;
+}
 public sealed record CreateSubjectRequest(string Name, string? Short, Guid? TeacherId, string? Color);
 public sealed record UpdateSubjectRequest(
     string? Name = null,
@@ -74,6 +91,47 @@ public sealed record AttendanceRollCallResponse(
     bool CanMark,
     string Reason,
     bool Marked);
+
+// ---- Period attendance (timetable subject + period; independent of daily AttendanceRecords) ----
+public sealed record PeriodAttendanceRecordResponse(
+    Guid Id, Guid TenantId, Guid ClassId, Guid StudentId, DateTime Date,
+    int Period, Guid? PeriodId, string Subject, Guid? SubjectId,
+    string Status, Guid? MarkedBy, string? MarkedByRole);
+
+public sealed record BulkPeriodAttendanceRequest(
+    DateTime Date,
+    int Period,
+    string Subject,
+    Guid? SubjectId,
+    Guid? PeriodId,
+    IReadOnlyList<AttendanceUpsertRow> Records);
+
+public sealed record ClassDayTimetableSlotResponse(
+    Guid Id,
+    int Period,
+    string? Subject,
+    Guid? SubjectId,
+    string? StartTime,
+    string? EndTime,
+    Guid? TeacherId,
+    string? TeacherName,
+    bool IsCurrent,
+    bool Marked,
+    bool CanMark);
+
+/// <summary>
+/// Official period-based attendance aggregate. Same shape for CRM / Teacher / Student / Parent.
+/// <see cref="AttendancePercentage"/> is null when no periods are marked (not 0%).
+/// <see cref="PresentTodayBadge"/> is UI-only (≥50% of today's marked periods); never use as official %.
+/// </summary>
+public sealed record PeriodAttendanceSummaryResponse(
+    int TotalMarkedPeriods,
+    int PresentPeriods,
+    int LatePeriods,
+    int AbsentPeriods,
+    int LeavePeriods,
+    decimal? AttendancePercentage,
+    bool? PresentTodayBadge);
 
 public sealed record PeriodAttendanceAdvancedRow(
     Guid Id,
@@ -122,3 +180,22 @@ public sealed record PeriodAttendanceAdvancedQuery(
     int Page,
     int PageSize,
     Guid? AuthorizedTeacherId = null);
+
+public sealed record AdvClassDaySummary(
+    int TotalStudents, int Present, int Absent, int Late, int Leave, int NotMarked,
+    decimal? AttendancePercentage,
+    int TotalPeriods, int MarkedPeriods, int PendingPeriods);
+
+public sealed record AdvSubjectSummaryRow(
+    string Subject, string? TeacherName, int Periods, int Marked, int Pending,
+    int Present, int Absent, int Late, decimal? AttendancePercentage);
+
+public sealed record AdvTeacherSummaryRow(
+    Guid TeacherId, string TeacherName,
+    int Classes, int Sections, int Subjects,
+    int ExpectedPeriods, int MarkedPeriods, int PendingPeriods,
+    int TeacherMarked, int StaffMarked, int PrincipalMarked, int AdminMarked);
+
+public sealed record AdvRangeRollup(
+    int TotalMarkedPeriods, int Present, int Absent, int Late, int Leave,
+    decimal? AttendancePercentage);
