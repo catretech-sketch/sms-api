@@ -44,6 +44,36 @@ public interface IAcademicsService
         int pageSize = 25,
         CancellationToken ct = default);
 
+    Task<ApiResult<AdvClassDaySummary>> GetPeriodAttendanceClassDaySummaryAsync(
+        ClaimsPrincipal caller,
+        Guid classId,
+        DateOnly date,
+        CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<AdvSubjectSummaryRow>>> ListPeriodAttendanceSubjectSummariesAsync(
+        ClaimsPrincipal caller,
+        Guid classId,
+        string? preset,
+        DateOnly? from,
+        DateOnly? to,
+        CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<AdvTeacherSummaryRow>>> ListPeriodAttendanceTeacherSummariesAsync(
+        ClaimsPrincipal caller,
+        string? preset,
+        DateOnly? from,
+        DateOnly? to,
+        CancellationToken ct = default);
+    Task<ApiResult<AdvRangeRollup>> GetPeriodAttendanceRangeSummaryAsync(
+        ClaimsPrincipal caller,
+        string? preset,
+        DateOnly? from,
+        DateOnly? to,
+        Guid? classId,
+        string? grade,
+        string? section,
+        Guid? studentId,
+        string? subject,
+        Guid? teacherId,
+        CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>> ListStaffAttendanceAsync(
         string personType, DateTime date, CancellationToken ct = default);
     Task<ApiResult> BulkUpsertStaffAttendanceAsync(BulkStaffAttendanceRequest req, CancellationToken ct = default);

@@ -64,7 +64,7 @@ public sealed class AcademicsService(
         }
     }
 
-    // Only narrows for a caller whose SOLE role is "teacher" — principal/admin/owner tokens
+    // Only narrows for a caller whose SOLE role is "teacher" - principal/admin/owner tokens
     // (however else combined) keep seeing every class, matching sms-admin's and the
     // principal screens' existing expectation of an unscoped list.
     public async Task<ApiResult<IReadOnlyList<ClassResponse>>> ListClassesAsync(
@@ -153,6 +153,52 @@ public sealed class AcademicsService(
         Guid classId, DateTime date, CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<AttendanceRecordResponse>>.Ok(await attendance.ListAsync(classId, date, ct));
 
+    private sealed record AttendanceQueryScope(
+        Guid? AuthorizedTeacherId,
+        Guid? TeacherUserId,
+        Error? Error);
+
+    private async Task<AttendanceQueryScope> AuthorizeAttendanceQueryAsync(
+        ClaimsPrincipal caller,
+        CancellationToken ct)
+    {
+        if (tenant.TenantId is null)
+            return new(null, null, new Error("forbidden", "no tenant context"));
+        if (!await attendanceViewPermissions.CanViewAsync(caller, ct))
+            return new(
+                null,
+                null,
+                new Error("forbidden", "attendance view permission is required"));
+
+        var roles = caller.FindAll("role")
+            .Select(c => c.Value.Trim().ToLowerInvariant().Split('.').LastOrDefault()?.Replace('-', '_'))
+            .ToArray();
+        var leadership = roles.Any(r => r is "principal" or "admin" or "owner" or "vice_principal");
+        if (!roles.Contains("teacher") || leadership)
+            return new(null, null, null);
+
+        var teacherUserId = tenant.UserId;
+        var teacherId = teacherUserId is { } userId
+            ? await classes.TeacherIdForUserAsync(userId, ct)
+            : null;
+        return teacherId is null
+            ? new(
+                null,
+                teacherUserId,
+                new Error("forbidden", "teacher profile is required to list period attendance records"))
+            : new(teacherId, teacherUserId, null);
+    }
+
+    private async Task<bool> CanQueryClassAsync(
+        AttendanceQueryScope scope,
+        Guid classId,
+        CancellationToken ct)
+    {
+        if (scope.AuthorizedTeacherId is null) return true;
+        if (scope.TeacherUserId is not { } teacherUserId) return false;
+        return (await classes.ListForTeacherAsync(teacherUserId, ct)).Any(row => row.Id == classId);
+    }
+
     public async Task<ApiResult<PeriodAttendanceAdvancedPage>> ListPeriodAttendanceAdvancedAsync(
         ClaimsPrincipal caller,
         string? preset,
@@ -172,33 +218,10 @@ public sealed class AcademicsService(
         int pageSize = 25,
         CancellationToken ct = default)
     {
-        if (tenant.TenantId is null)
+        var scope = await AuthorizeAttendanceQueryAsync(caller, ct);
+        if (scope.Error is { } authorizationError)
             return ApiResult<PeriodAttendanceAdvancedPage>.Fail(
-                new Error("forbidden", "no tenant context"), 403);
-        if (!await attendanceViewPermissions.CanViewAsync(caller, ct))
-            return ApiResult<PeriodAttendanceAdvancedPage>.Fail(
-                new Error("forbidden", "attendance view permission is required"), 403);
-
-        var roles = caller.FindAll("role")
-            .Select(c => c.Value.Trim().ToLowerInvariant().Split('.').LastOrDefault()?.Replace('-', '_'))
-            .ToArray();
-        var leadership = roles.Any(r => r is "principal" or "admin" or "owner" or "vice_principal");
-        var teacher = roles.Contains("teacher");
-        Guid? authorizedTeacherId = null;
-
-        if (teacher && !leadership)
-        {
-            var callerTeacherId = tenant.UserId is { } userId
-                ? await classes.TeacherIdForUserAsync(userId, ct)
-                : null;
-            if (callerTeacherId is null)
-                return ApiResult<PeriodAttendanceAdvancedPage>.Fail(
-                    new Error("forbidden", "teacher profile is required to list period attendance records"), 403);
-
-            // Keep the requested assignedTeacherId as a search filter. The independent
-            // authorization scope admits the caller's assigned periods and class-teacher classes.
-            authorizedTeacherId = callerTeacherId;
-        }
+                authorizationError, 403);
 
         var today = SchoolToday(clock.UtcNow);
         var range = PeriodAttendanceDatePresets.Resolve(preset, from, to, today);
@@ -217,10 +240,102 @@ public sealed class AcademicsService(
             q,
             page,
             pageSize,
-            authorizedTeacherId);
+            scope.AuthorizedTeacherId);
 
         return ApiResult<PeriodAttendanceAdvancedPage>.Ok(
             await periodAttendanceQuery.SearchAsync(query, ct));
+    }
+
+    public async Task<ApiResult<AdvClassDaySummary>> GetPeriodAttendanceClassDaySummaryAsync(
+        ClaimsPrincipal caller,
+        Guid classId,
+        DateOnly date,
+        CancellationToken ct = default)
+    {
+        var scope = await AuthorizeAttendanceQueryAsync(caller, ct);
+        if (scope.Error is { } authorizationError)
+            return ApiResult<AdvClassDaySummary>.Fail(authorizationError, 403);
+        if (!await CanQueryClassAsync(scope, classId, ct))
+            return ApiResult<AdvClassDaySummary>.Fail(
+                new Error("forbidden", "teacher is not authorized for this class"), 403);
+
+        return ApiResult<AdvClassDaySummary>.Ok(
+            await periodAttendanceQuery.SummarizeClassDayAsync(classId, date, ct));
+    }
+
+    public async Task<ApiResult<IReadOnlyList<AdvSubjectSummaryRow>>> ListPeriodAttendanceSubjectSummariesAsync(
+        ClaimsPrincipal caller,
+        Guid classId,
+        string? preset,
+        DateOnly? from,
+        DateOnly? to,
+        CancellationToken ct = default)
+    {
+        var scope = await AuthorizeAttendanceQueryAsync(caller, ct);
+        if (scope.Error is { } authorizationError)
+            return ApiResult<IReadOnlyList<AdvSubjectSummaryRow>>.Fail(authorizationError, 403);
+        if (!await CanQueryClassAsync(scope, classId, ct))
+            return ApiResult<IReadOnlyList<AdvSubjectSummaryRow>>.Fail(
+                new Error("forbidden", "teacher is not authorized for this class"), 403);
+
+        var range = PeriodAttendanceDatePresets.Resolve(
+            preset, from, to, SchoolToday(clock.UtcNow));
+        return ApiResult<IReadOnlyList<AdvSubjectSummaryRow>>.Ok(
+            await periodAttendanceQuery.SummarizeSubjectsAsync(
+                classId, range.From, range.To, ct));
+    }
+
+    public async Task<ApiResult<IReadOnlyList<AdvTeacherSummaryRow>>> ListPeriodAttendanceTeacherSummariesAsync(
+        ClaimsPrincipal caller,
+        string? preset,
+        DateOnly? from,
+        DateOnly? to,
+        CancellationToken ct = default)
+    {
+        var scope = await AuthorizeAttendanceQueryAsync(caller, ct);
+        if (scope.Error is { } authorizationError)
+            return ApiResult<IReadOnlyList<AdvTeacherSummaryRow>>.Fail(authorizationError, 403);
+
+        var range = PeriodAttendanceDatePresets.Resolve(
+            preset, from, to, SchoolToday(clock.UtcNow));
+        var rows = await periodAttendanceQuery.SummarizeTeachersAsync(
+            range.From, range.To, ct);
+        if (scope.AuthorizedTeacherId is { } teacherId)
+            rows = rows.Where(row => row.TeacherId == teacherId).ToList();
+        return ApiResult<IReadOnlyList<AdvTeacherSummaryRow>>.Ok(rows);
+    }
+
+    public async Task<ApiResult<AdvRangeRollup>> GetPeriodAttendanceRangeSummaryAsync(
+        ClaimsPrincipal caller,
+        string? preset,
+        DateOnly? from,
+        DateOnly? to,
+        Guid? classId,
+        string? grade,
+        string? section,
+        Guid? studentId,
+        string? subject,
+        Guid? teacherId,
+        CancellationToken ct = default)
+    {
+        var scope = await AuthorizeAttendanceQueryAsync(caller, ct);
+        if (scope.Error is { } authorizationError)
+            return ApiResult<AdvRangeRollup>.Fail(authorizationError, 403);
+
+        var range = PeriodAttendanceDatePresets.Resolve(
+            preset, from, to, SchoolToday(clock.UtcNow));
+        var effectiveTeacherId = scope.AuthorizedTeacherId ?? teacherId;
+        return ApiResult<AdvRangeRollup>.Ok(
+            await periodAttendanceQuery.SummarizeRangeAsync(
+                range.From,
+                range.To,
+                classId,
+                grade,
+                section,
+                studentId,
+                subject,
+                effectiveTeacherId,
+                ct));
     }
 
     public async Task<ApiResult> BulkUpsertAttendanceAsync(
@@ -543,7 +658,7 @@ public sealed class AcademicsService(
         return ApiResult<IReadOnlyList<LibraryBookResponse>>.Ok(await library.ListAsync(clock.UtcNow, ct));
     }
 
-    /// Flat late-fee rate (₹/day) applied to overdue books when computing library fines due.
+    /// Flat late-fee rate (?/day) applied to overdue books when computing library fines due.
     private const decimal LibraryFinePerDay = 5m;
 
     public async Task<ApiResult<LibrarySummaryResponse>> GetLibrarySummaryAsync(CancellationToken ct = default)

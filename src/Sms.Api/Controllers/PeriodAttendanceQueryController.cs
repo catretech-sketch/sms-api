@@ -44,4 +44,56 @@ public sealed class PeriodAttendanceQueryController(IAcademicsService academics)
             page,
             pageSize,
             ct));
+
+    [HttpGet("period-records/summary/class")]
+    public async Task<IActionResult> GetClassDaySummary(
+        [FromQuery] Guid classId,
+        [FromQuery] DateOnly date,
+        CancellationToken ct = default) =>
+        FromResult(await academics.GetPeriodAttendanceClassDaySummaryAsync(
+            User, classId, date, ct));
+
+    [HttpGet("period-records/summary/subjects")]
+    public async Task<IActionResult> ListSubjectSummaries(
+        [FromQuery] Guid classId,
+        [FromQuery] string? preset,
+        [FromQuery] DateOnly? from,
+        [FromQuery] DateOnly? to,
+        CancellationToken ct = default) =>
+        FromResult(await academics.ListPeriodAttendanceSubjectSummariesAsync(
+            User, classId, preset, from, to, ct));
+
+    [HttpGet("period-records/summary/teachers")]
+    public async Task<IActionResult> ListTeacherSummaries(
+        [FromQuery] string? preset,
+        [FromQuery] DateOnly? from,
+        [FromQuery] DateOnly? to,
+        CancellationToken ct = default) =>
+        FromResult(await academics.ListPeriodAttendanceTeacherSummariesAsync(
+            User, preset, from, to, ct));
+
+    [HttpGet("period-records/summary/range")]
+    public async Task<IActionResult> GetRangeSummary(
+        [FromQuery] string? preset,
+        [FromQuery] DateOnly? from,
+        [FromQuery] DateOnly? to,
+        [FromQuery] Guid? classId,
+        [FromQuery] string? grade,
+        [FromQuery] string? section,
+        [FromQuery] Guid? studentId,
+        [FromQuery] string? subject,
+        [FromQuery] Guid? teacherId,
+        CancellationToken ct = default) =>
+        FromResult(await academics.GetPeriodAttendanceRangeSummaryAsync(
+            User,
+            preset,
+            from,
+            to,
+            classId,
+            grade,
+            section,
+            studentId,
+            subject,
+            teacherId,
+            ct));
 }
