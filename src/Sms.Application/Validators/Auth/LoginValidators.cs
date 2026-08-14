@@ -17,7 +17,10 @@ public sealed class LoginRequestValidator : AbstractValidator<LoginRequest>
     public LoginRequestValidator()
     {
         RuleFor(x => x).Must(r =>
-                (!string.IsNullOrWhiteSpace(r.Email) || !string.IsNullOrWhiteSpace(r.Phone)) && r.Password is not null)
-            .WithMessage("email or phone and password required");
+                (!string.IsNullOrWhiteSpace(r.Email)
+                 || !string.IsNullOrWhiteSpace(r.Phone)
+                 || !string.IsNullOrWhiteSpace(r.StudentId))
+                && r.Password is not null)
+            .WithMessage("email, phone, or student_id and password required");
     }
 }

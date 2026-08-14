@@ -23,6 +23,9 @@ public class IdentifierClassifierTests
     [InlineData("WBA-2024-1042")]
     [InlineData("STU2024001")]
     [InlineData("12A")]
+    [InlineData("sccrdtb/STU/26/0002")]
+    [InlineData("sccrdtb/STU/26/0003")]
+    [InlineData("26/0003")]
     public void Classifies_admission_id(string identifier) =>
         IdentifierClassifier.Classify(identifier).Should().Be(IdentifierKind.AdmissionId);
 }

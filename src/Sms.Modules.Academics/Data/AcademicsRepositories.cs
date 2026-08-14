@@ -136,10 +136,41 @@ public sealed class SubjectRepository(IDbConnectionFactory factory) : BaseReposi
         .FirstOrDefault();
 
     public Task<IReadOnlyList<SubjectResponse>> ListAsync(CancellationToken ct = default) =>
-        QueryInlineAsync<SubjectResponse>($"SELECT {Cols} FROM dbo.Subjects ORDER BY Name", null, ct);
+        QueryInlineAsync<SubjectResponse>($@"
+SELECT s.Id, s.TenantId, s.Name, s.Short, s.TeacherId, s.Color, t.Name AS TeacherName
+FROM dbo.Subjects s
+LEFT JOIN dbo.Teachers t ON t.Id = s.TeacherId
+ORDER BY s.Name", null, ct);
 
     public Task<int> DeleteAsync(Guid id, Guid tenantId, CancellationToken ct = default) =>
         ExecuteProcAsync("dbo.Subject_Delete", new { Id = id, TenantId = tenantId }, ct);
+}
+
+public sealed record ClassSubjectNameRow(Guid ClassId, string Name);
+
+public sealed class ClassSubjectRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+{
+    public Task<IReadOnlyList<string>> ListNamesAsync(Guid classId, CancellationToken ct = default) =>
+        QueryProcAsync<string>("dbo.ClassSubject_List", new { ClassId = classId }, ct);
+
+    public Task<IReadOnlyList<string>> ReplaceAsync(
+        Guid tenantId, Guid classId, IReadOnlyList<string> names, CancellationToken ct = default)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            names.Select(n => n.Trim()).Where(n => n.Length > 0).Distinct(StringComparer.OrdinalIgnoreCase));
+        return QueryProcAsync<string>("dbo.ClassSubject_Replace",
+            new { TenantId = tenantId, ClassId = classId, NamesJson = json }, ct);
+    }
+
+    public Task<IReadOnlyList<ClassSubjectNameRow>> ListForClassesAsync(
+        IReadOnlyCollection<Guid> classIds, CancellationToken ct = default)
+    {
+        if (classIds.Count == 0)
+            return Task.FromResult<IReadOnlyList<ClassSubjectNameRow>>([]);
+        return QueryInlineAsync<ClassSubjectNameRow>(
+            "SELECT ClassId, Name FROM dbo.ClassSubjects WHERE ClassId IN @classIds ORDER BY Name",
+            new { classIds }, ct);
+    }
 }
 
 public sealed class AttendanceRepository(IDbConnectionFactory factory) : BaseRepository(factory)
@@ -168,6 +199,13 @@ public sealed class AttendanceRepository(IDbConnectionFactory factory) : BaseRep
             "SELECT Id, TenantId, ClassId, StudentId, [Date], Status, MarkedBy FROM dbo.AttendanceRecords " +
             "WHERE ClassId = @classId AND [Date] = @date ORDER BY StudentId",
             new { classId, date = date.Date }, ct);
+
+    public Task<IReadOnlyList<AttendanceRecordResponse>> ListRangeAsync(
+        Guid classId, DateTime from, DateTime to, CancellationToken ct = default) =>
+        QueryInlineAsync<AttendanceRecordResponse>(
+            "SELECT Id, TenantId, ClassId, StudentId, [Date], Status, MarkedBy FROM dbo.AttendanceRecords " +
+            "WHERE ClassId = @classId AND [Date] BETWEEN @from AND @to ORDER BY [Date], StudentId",
+            new { classId, from = from.Date, to = to.Date }, ct);
 
     /// Every day-mark for the current tenant since a date (RLS-scoped). Used to compute absence streaks.
     public Task<IReadOnlyList<AttendanceMarkRow>> ListSinceAsync(DateTime since, CancellationToken ct = default) =>
@@ -218,4 +256,142 @@ public sealed class StaffAttendanceRepository(IDbConnectionFactory factory) : Ba
             "SELECT Id, TenantId, PersonType, PersonId, [Date], Status, MarkedBy FROM dbo.StaffAttendanceRecords " +
             "WHERE PersonType = @personType AND PersonId = @personId AND [Date] BETWEEN @from AND @to ORDER BY [Date]",
             new { personType, personId, from = from.Date, to = to.Date }, ct);
+}
+
+public sealed class SchoolHouseRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+{
+    public Task<IReadOnlyList<string>> ListNamesAsync(CancellationToken ct = default) =>
+        QueryProcAsync<string>("dbo.SchoolHouse_List", new { }, ct);
+
+    public Task<IReadOnlyList<string>> ReplaceAsync(
+        Guid tenantId, IReadOnlyList<string> names, CancellationToken ct = default)
+    {
+        var cleaned = names
+            .Select(n => (n ?? "").Trim())
+            .Where(n => n.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        var json = System.Text.Json.JsonSerializer.Serialize(cleaned);
+        return QueryProcAsync<string>("dbo.SchoolHouse_Replace", new
+        {
+            TenantId = tenantId,
+            NamesJson = json,
+        }, ct);
+    }
+}
+
+public sealed class PeriodAttendanceRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+{
+    public Task BulkUpsertAsync(
+        Guid tenantId, Guid classId, DateTime date, int period, string subject,
+        Guid? periodId, Guid? subjectId, Guid? markedBy, string? markedByRole,
+        IReadOnlyList<AttendanceUpsertRow> rows, CancellationToken ct = default)
+    {
+        var table = new DataTable();
+        table.Columns.Add("StudentId", typeof(Guid));
+        table.Columns.Add("Status", typeof(string));
+        foreach (var r in rows) table.Rows.Add(r.StudentId, r.Status);
+
+        var p = new DynamicParameters();
+        p.Add("@TenantId", tenantId);
+        p.Add("@ClassId", classId);
+        p.Add("@Date", date.Date);
+        p.Add("@Period", period);
+        p.Add("@PeriodId", periodId);
+        p.Add("@Subject", subject);
+        p.Add("@SubjectId", subjectId);
+        p.Add("@MarkedBy", markedBy);
+        p.Add("@MarkedByRole", markedByRole);
+        p.Add("@Rows", table.AsTableValuedParameter("dbo.PeriodAttendanceTvp"));
+        return ExecuteProcAsync("dbo.PeriodAttendance_BulkUpsert", p, ct);
+    }
+
+    public Task<IReadOnlyList<PeriodAttendanceRecordResponse>> ListAsync(
+        Guid classId, DateTime date, int period, string subject, CancellationToken ct = default) =>
+        QueryInlineAsync<PeriodAttendanceRecordResponse>(@"
+SELECT Id, TenantId, ClassId, StudentId, [Date], Period, PeriodId, Subject, SubjectId, Status, MarkedBy, MarkedByRole
+FROM dbo.PeriodAttendanceRecords
+WHERE ClassId = @classId AND [Date] = @date AND Period = @period AND Subject = @subject
+ORDER BY StudentId",
+            new { classId, date = date.Date, period, subject }, ct);
+
+    public Task<IReadOnlyList<PeriodAttendanceRecordResponse>> ListForClassDayAsync(
+        Guid classId, DateTime date, CancellationToken ct = default) =>
+        QueryInlineAsync<PeriodAttendanceRecordResponse>(@"
+SELECT Id, TenantId, ClassId, StudentId, [Date], Period, PeriodId, Subject, SubjectId, Status, MarkedBy, MarkedByRole
+FROM dbo.PeriodAttendanceRecords
+WHERE ClassId = @classId AND [Date] = @date
+ORDER BY Period, Subject, StudentId",
+            new { classId, date = date.Date }, ct);
+
+    public Task<IReadOnlyList<PeriodAttendanceRecordResponse>> ListForStudentAsync(
+        Guid studentId, DateTime from, DateTime to, CancellationToken ct = default) =>
+        QueryInlineAsync<PeriodAttendanceRecordResponse>(@"
+SELECT Id, TenantId, ClassId, StudentId, [Date], Period, PeriodId, Subject, SubjectId, Status, MarkedBy, MarkedByRole
+FROM dbo.PeriodAttendanceRecords
+WHERE StudentId = @studentId AND [Date] BETWEEN @from AND @to
+ORDER BY [Date], Period, Subject",
+            new { studentId, from = from.Date, to = to.Date }, ct);
+
+    public async Task<PeriodAttendanceSummaryResponse> SummarizeForStudentAsync(
+        Guid studentId, DateTime from, DateTime to, DateTime today, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<AggRow>(@"
+SELECT
+  COUNT(*) AS Marked,
+  ISNULL(SUM(CASE WHEN Status = N'present' THEN 1 ELSE 0 END), 0) AS Present,
+  ISNULL(SUM(CASE WHEN Status = N'late' THEN 1 ELSE 0 END), 0) AS Late,
+  ISNULL(SUM(CASE WHEN Status = N'absent' THEN 1 ELSE 0 END), 0) AS Absent,
+  ISNULL(SUM(CASE WHEN Status = N'leave' THEN 1 ELSE 0 END), 0) AS LeaveCnt,
+  ISNULL(SUM(CASE WHEN [Date] = @today AND Status = N'present' THEN 1 ELSE 0 END), 0) AS TodayPresent,
+  ISNULL(SUM(CASE WHEN [Date] = @today AND Status = N'late' THEN 1 ELSE 0 END), 0) AS TodayLate,
+  ISNULL(SUM(CASE WHEN [Date] = @today THEN 1 ELSE 0 END), 0) AS TodayMarked
+FROM dbo.PeriodAttendanceRecords
+WHERE StudentId = @studentId AND [Date] BETWEEN @from AND @to",
+            new { studentId, from = from.Date, to = to.Date, today = today.Date }, ct);
+
+        var r = rows.Count > 0 ? rows[0] : new AggRow(0, 0, 0, 0, 0, 0, 0, 0);
+        var counts = PeriodAttendanceMath.FromStatusBuckets(r.Present, r.Late, r.Absent, r.LeaveCnt);
+        return new PeriodAttendanceSummaryResponse(
+            counts.TotalMarkedPeriods,
+            counts.PresentPeriods,
+            counts.LatePeriods,
+            counts.AbsentPeriods,
+            counts.LeavePeriods,
+            counts.AttendancePercentage,
+            PeriodAttendanceMath.PresentTodayBadge(r.TodayPresent, r.TodayLate, r.TodayMarked));
+    }
+
+    public async Task<PeriodAttendanceSummaryResponse> SummarizeForClassAsync(
+        Guid classId, DateTime from, DateTime to, DateTime today, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<AggRow>(@"
+SELECT
+  COUNT(*) AS Marked,
+  ISNULL(SUM(CASE WHEN Status = N'present' THEN 1 ELSE 0 END), 0) AS Present,
+  ISNULL(SUM(CASE WHEN Status = N'late' THEN 1 ELSE 0 END), 0) AS Late,
+  ISNULL(SUM(CASE WHEN Status = N'absent' THEN 1 ELSE 0 END), 0) AS Absent,
+  ISNULL(SUM(CASE WHEN Status = N'leave' THEN 1 ELSE 0 END), 0) AS LeaveCnt,
+  ISNULL(SUM(CASE WHEN [Date] = @today AND Status = N'present' THEN 1 ELSE 0 END), 0) AS TodayPresent,
+  ISNULL(SUM(CASE WHEN [Date] = @today AND Status = N'late' THEN 1 ELSE 0 END), 0) AS TodayLate,
+  ISNULL(SUM(CASE WHEN [Date] = @today THEN 1 ELSE 0 END), 0) AS TodayMarked
+FROM dbo.PeriodAttendanceRecords
+WHERE ClassId = @classId AND [Date] BETWEEN @from AND @to",
+            new { classId, from = from.Date, to = to.Date, today = today.Date }, ct);
+
+        var r = rows.Count > 0 ? rows[0] : new AggRow(0, 0, 0, 0, 0, 0, 0, 0);
+        var counts = PeriodAttendanceMath.FromStatusBuckets(r.Present, r.Late, r.Absent, r.LeaveCnt);
+        return new PeriodAttendanceSummaryResponse(
+            counts.TotalMarkedPeriods,
+            counts.PresentPeriods,
+            counts.LatePeriods,
+            counts.AbsentPeriods,
+            counts.LeavePeriods,
+            counts.AttendancePercentage,
+            PeriodAttendanceMath.PresentTodayBadge(r.TodayPresent, r.TodayLate, r.TodayMarked));
+    }
+
+    private sealed record AggRow(
+        int Marked, int Present, int Late, int Absent, int LeaveCnt,
+        int TodayPresent, int TodayLate, int TodayMarked);
 }

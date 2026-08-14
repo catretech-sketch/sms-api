@@ -5,7 +5,8 @@ namespace Sms.Application.Interfaces.DAO;
 
 public interface IUserProvisioningDao
 {
-    Task<Guid> CreateUserAsync(Guid tenantId, string? email, string? phone, bool isPlatform, string[] roles, CancellationToken ct = default);
+    Task<Guid> CreateUserAsync(Guid tenantId, string? email, string? phone, bool isPlatform, string[] roles,
+        CancellationToken ct = default, string? studentId = null, bool mustSetPassword = false);
     Task<ImportResult> BulkCreateAsync(Guid tenantId, IReadOnlyList<ImportRow> rows, CancellationToken ct = default);
 
     Task<IReadOnlyList<SchoolUserListRow>> ListByTenantAsync(Guid tenantId, CancellationToken ct = default);

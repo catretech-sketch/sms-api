@@ -108,6 +108,16 @@ public class SwaggerPerAppTests(SqlServerFixture fx)
         paths.Should().Contain("/v1/calendar",    "calendar is a teacher-app screen");
         paths.Should().Contain("/v1/library",     "library is a teacher-app screen");
         paths.Should().Contain("/v1/assignments", "assignments is a teacher-app screen");
+        paths.Should().Contain("/v1/achievements", "teachers award student achievements");
+        paths.Should().Contain("/v1/me/settings", "in-app notice preferences");
+    }
+
+    [Fact]
+    public void School_admin_doc_includes_calendar()
+    {
+        using var app = App();
+        Doc(app, "school-admin").Paths.Keys.Should()
+            .Contain("/v1/calendar", "CRM calendar is backed by GET/POST/DELETE /v1/calendar");
     }
 
     [Fact]

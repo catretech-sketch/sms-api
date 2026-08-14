@@ -40,13 +40,16 @@ BEGIN
             INNER JOIN dbo.Users u ON u.Id = ur.UserId
             WHERE u.TenantId = @Id;
         /* UserLogin.UserId is int (legacy) — not linked to dbo.Users.Id */
+        DELETE FROM dbo.UserAppSettings WHERE TenantId = @Id;
         DELETE FROM dbo.Users WHERE TenantId = @Id;
 
         /* Empty operational leftovers (no people, but wizard may have created shells) */
         DELETE FROM dbo.AttendanceRecords WHERE TenantId = @Id;
+        DELETE FROM dbo.PeriodAttendanceRecords WHERE TenantId = @Id;
         DELETE FROM dbo.ExamPapers WHERE TenantId = @Id;
         DELETE FROM dbo.Exams WHERE TenantId = @Id;
         DELETE FROM dbo.Homework WHERE TenantId = @Id;
+        DELETE FROM dbo.Achievements WHERE TenantId = @Id;
         DELETE FROM dbo.Assignments WHERE TenantId = @Id;
         DELETE FROM dbo.FeePayments WHERE TenantId = @Id;
         DELETE FROM dbo.FeeInvoices WHERE TenantId = @Id;

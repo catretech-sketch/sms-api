@@ -37,6 +37,7 @@ public static class ApiAudienceMap
         ("v1/me/upgrade-requests", [SchoolAdmin]),
         ("v1/me/switch-school", [SchoolAdmin]),
         ("v1/me/children",   [Student]),                // parent app · child's live bus
+        ("v1/me/settings",   [Student, Teacher, SchoolAdmin]),
         ("v1/webhooks/razorpay", All),
         ("health",           All),
 
@@ -74,6 +75,7 @@ public static class ApiAudienceMap
         ("v1/exams",         [SchoolAdmin]),
         ("v1/grades",        [SchoolAdmin, Teacher, Student]),
         ("v1/homework",      [Teacher, Student]),
+        ("v1/achievements",  [Teacher, Student, SchoolAdmin]),
         ("v1/fees",          [SchoolAdmin, Student]),
         ("v1/payslips",      [SchoolAdmin, Teacher, Staff]),
         ("v1/payroll",       [SchoolAdmin]),               // salary master + monthly run/approve
@@ -84,8 +86,8 @@ public static class ApiAudienceMap
         ("v1/threads",       [SchoolAdmin, Teacher, Student]),
         ("v1/complaints",    [SchoolAdmin]),
         ("v1/notifications", [SchoolAdmin, Teacher, Student]),
-        ("v1/timetable",     [Teacher]),
-        ("v1/calendar",      [Teacher, Student]),
+        ("v1/timetable",     [Teacher, Student]),
+        ("v1/calendar",      [SchoolAdmin, Teacher, Student]),
         ("v1/library/summary", [SchoolAdmin]),             // admin Operations · Library KPIs
         ("v1/library",       [Teacher]),
         ("v1/assignments",   [SchoolAdmin, Teacher, Student]),

@@ -104,7 +104,7 @@ public sealed class UserService(
                 schoolName = string.Join(", ", req.SchoolNames);
             else
                 schoolName = (await clients.GetAsync(tid, ct))?.Name ?? "your school";
-            try { await auth.SendInviteSetupAsync(inviteId!, schoolName, roleLabel, TimeSpan.FromHours(24), req.Method, req.Message, ct); }
+            try { await auth.SendInviteSetupAsync(inviteId!, schoolName, roleLabel, TimeSpan.FromHours(24), req.Method, req.Message, ct: ct); }
             catch { /* user row exists; invite email is best-effort */ }
         }
         return ApiResult<object>.Ok(new { id, invited = true }, 201);

@@ -50,6 +50,7 @@ public static class DependencyInjection
         services.AddScoped<IAnnouncementService, AnnouncementService>();
         services.AddScoped<IComplaintService, ComplaintService>();
         services.AddScoped<INotificationService, NotificationService>();
+        services.AddScoped<IUserSettingsService, UserSettingsService>();
         services.AddScoped<IReportingService, ReportingService>();
         return services;
     }

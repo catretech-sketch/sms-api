@@ -14,4 +14,8 @@ public static class AuthQueries
     public const string OtpGetActive = "dbo.Otp_GetActive";
     public const string OtpConsume = "dbo.Otp_Consume";
     public const string OtpConsumeAll = "dbo.Otp_ConsumeAllForIdentifier";
+    public const string EnsureStudentLogin = "dbo.Student_EnsureLogin";
+    public const string EnsureParentLogin = "dbo.Parent_EnsureLogin";
+    public const string ListByAdmissionId = "dbo.User_ListByAdmissionId";
+    public const string GetRosterByAdmissionNo = "dbo.Student_GetByAdmissionNo";
 }

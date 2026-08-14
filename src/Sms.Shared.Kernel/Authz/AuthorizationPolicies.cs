@@ -15,6 +15,7 @@ public static class AuthorizationPolicies
             .AddPolicy(Policies.Principal, p => p.RequireRole(Policies.Principal, Policies.SchoolAdmin, Policies.SchoolOwner))
             .AddPolicy(TeacherApp, p => p.RequireRole(Policies.Teacher, Policies.Principal, Policies.SchoolAdmin, Policies.SchoolOwner))
             // Student & Parent app — the only role that resolves a linked student (e.g. child's live bus).
-            .AddPolicy(Policies.StudentOrParent, p => p.RequireRole(Policies.StudentOrParent))
+            .AddPolicy(Policies.StudentOrParent, p => p.RequireRole(
+                Policies.StudentOrParent, "student", "parent"))
             .Services;
 }

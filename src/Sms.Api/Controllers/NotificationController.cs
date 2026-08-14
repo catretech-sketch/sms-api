@@ -13,6 +13,10 @@ public sealed class NotificationController(INotificationService notifications) :
     public async Task<IActionResult> List(CancellationToken ct) =>
         FromResult(await notifications.ListAsync(ct));
 
+    [HttpPost("notifications/read")]
+    public async Task<IActionResult> MarkRead(CancellationToken ct) =>
+        FromResult(await notifications.MarkReadAsync(ct));
+
     [HttpPost("notifications")]
     public async Task<IActionResult> Create([FromBody] CreateNotificationRequest req, CancellationToken ct) =>
         FromResult(await notifications.CreateAsync(req, ct));

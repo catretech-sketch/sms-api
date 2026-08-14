@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Sms.Application.Services.Academics;
+using Sms.Application.Services.Sis;
 using Sms.Modules.Academics.Contracts;
 using Sms.Shared.Kernel.Authz;
 
@@ -10,12 +11,24 @@ namespace Sms.Api.Controllers;
 [Authorize]
 public sealed class ExamPaperController(
     IAcademicsService academics,
-    IExamMarksNotifyService marksNotify) : ApiControllerBase
+    IExamMarksNotifyService marksNotify,
+    ISisService sis) : ApiControllerBase
 {
     [HttpGet("exam-papers")]
     public async Task<IActionResult> List(
-        [FromQuery(Name = "exam_id")] Guid? examId, CancellationToken ct) =>
-        FromResult(await academics.ListExamPapersAsync(examId, ct));
+        [FromQuery(Name = "exam_id")] Guid? examId,
+        [FromQuery(Name = "student_id")] Guid? studentId,
+        CancellationToken ct)
+    {
+        if (studentId is Guid sid)
+            return FromResult(await academics.ListExamPapersForStudentAsync(examId, sid, ct));
+
+        var me = await sis.GetMyStudentAsync(ct);
+        if (me.IsSuccess)
+            return FromResult(await academics.ListExamPapersForStudentAsync(examId, me.Data!.Id, ct));
+
+        return FromResult(await academics.ListExamPapersAsync(examId, ct));
+    }
 
     [HttpGet("exam-papers/{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct) =>

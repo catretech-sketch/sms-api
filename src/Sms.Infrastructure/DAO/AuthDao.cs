@@ -33,6 +33,50 @@ public sealed class AuthDao(IDbConnectionFactory factory, ITenantContext tenant)
             "ORDER BY CASE WHEN IsPlatform = 1 THEN 0 ELSE 1 END, CreatedAt",
             new { Phone = phone }, ct);
 
+    public Task<IReadOnlyList<UserRecord>> ListByAdmissionIdAsync(string admissionId, CancellationToken ct = default) =>
+        QueryProcAsync<UserRecord>(AuthQueries.ListByAdmissionId, new { AdmissionId = admissionId }, ct);
+
+    public async Task<string?> GetRosterEmailByAdmissionIdAsync(string admissionId, CancellationToken ct = default)
+    {
+        var roster = await GetRosterByAdmissionIdAsync(admissionId, ct);
+        return string.IsNullOrWhiteSpace(roster?.Email) ? null : roster.Email;
+    }
+
+    public Task<RosterStudentRecord?> GetRosterByAdmissionIdAsync(string admissionId, CancellationToken ct = default) =>
+        QuerySingleProcAsync<RosterStudentRecord>(AuthQueries.GetRosterByAdmissionNo, new { AdmissionId = admissionId }, ct);
+
+    public async Task<RosterStudentRecord?> GetRosterByEmailAsync(string email, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<RosterStudentRecord>(
+            "SELECT TOP 1 s.Id, s.TenantId, s.AdmissionNo, s.Name, s.Email, s.GuardianPhone, s.Status, s.GuardianEmail " +
+            "FROM dbo.Students s " +
+            "WHERE s.Email IS NOT NULL " +
+            "AND LOWER(LTRIM(RTRIM(s.Email))) = LOWER(LTRIM(RTRIM(@Email))) " +
+            "AND LOWER(ISNULL(s.Status, N'active')) NOT IN (N'removed', N'inactive', N'left', N'withdrawn') " +
+            "ORDER BY s.CreatedAt",
+            new { Email = email }, ct);
+        return rows.FirstOrDefault();
+    }
+
+    public async Task<RosterStudentRecord?> GetRosterByGuardianEmailAsync(string email, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<RosterStudentRecord>(
+            "SELECT TOP 1 s.Id, s.TenantId, s.AdmissionNo, s.Name, s.Email, s.GuardianPhone, s.Status, s.GuardianEmail " +
+            "FROM dbo.Students s " +
+            "WHERE s.GuardianEmail IS NOT NULL " +
+            "AND LOWER(LTRIM(RTRIM(s.GuardianEmail))) = LOWER(LTRIM(RTRIM(@Email))) " +
+            "AND LOWER(ISNULL(s.Status, N'active')) NOT IN (N'removed', N'inactive', N'left', N'withdrawn') " +
+            "ORDER BY s.CreatedAt",
+            new { Email = email }, ct);
+        return rows.FirstOrDefault();
+    }
+
+    public Task<UserRecord?> EnsureStudentLoginAsync(string admissionId, CancellationToken ct = default) =>
+        QuerySingleProcAsync<UserRecord>(AuthQueries.EnsureStudentLogin, new { AdmissionId = admissionId }, ct);
+
+    public Task<UserRecord?> EnsureParentLoginAsync(string admissionId, CancellationToken ct = default) =>
+        QuerySingleProcAsync<UserRecord>(AuthQueries.EnsureParentLogin, new { AdmissionId = admissionId }, ct);
+
     public async Task<UserRecord?> GetByEmailAndTenantAsync(string email, Guid tenantId, CancellationToken ct = default) =>
         (await QueryInlineAsync<UserRecord>(
             "SELECT Id, TenantId, Email, StudentId, Phone, PasswordHash, IsPlatform, Status, Name, MustSetPassword, CreatedAt, PhotoUrl " +

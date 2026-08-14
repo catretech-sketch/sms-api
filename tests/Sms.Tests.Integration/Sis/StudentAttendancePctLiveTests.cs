@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Http.Json;
 using System.Text.Json;
 using Dapper;
 using FluentAssertions;
@@ -17,7 +16,7 @@ public class StudentAttendancePctLiveTests(SqlServerFixture fx)
     private const string Key = "integration-test-signing-key-32-bytes-min!!";
 
     [Fact]
-    public async Task Student_attendance_pct_reflects_real_attendance_records()
+    public async Task Student_attendance_pct_uses_period_records_not_daily()
     {
         var app = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
@@ -39,12 +38,28 @@ public class StudentAttendancePctLiveTests(SqlServerFixture fx)
             await conn.ExecuteAsync(
                 "INSERT dbo.Classes (Id, TenantId, Name, StudentCount) VALUES (@classId, @tenantId, 'C1', 0)",
                 new { classId, tenantId });
-            // 3 present, 1 absent => 75%
-            var statuses = new[] { "present", "present", "present", "absent" };
-            for (int i = 0; i < statuses.Length; i++)
+
+            // Legacy daily: would be 25% if used (1 present / 4 days) — must be ignored
+            var daily = new[] { "present", "absent", "absent", "absent" };
+            for (int i = 0; i < daily.Length; i++)
                 await conn.ExecuteAsync(
                     "INSERT dbo.AttendanceRecords (TenantId, ClassId, StudentId, [Date], Status) VALUES (@tenantId, @classId, @studentId, @date, @status)",
-                    new { tenantId, classId, studentId, date = DateTime.UtcNow.Date.AddDays(-i), status = statuses[i] });
+                    new { tenantId, classId, studentId, date = DateTime.UtcNow.Date.AddDays(-i), status = daily[i] });
+
+            // Period: 8 present + 1 late + 2 absent = 81.82%
+            var periods = new (string Status, int Period)[]
+            {
+                ("present", 1), ("present", 2), ("present", 3), ("present", 4),
+                ("present", 5), ("present", 6), ("present", 7), ("present", 8),
+                ("late", 9), ("absent", 10), ("absent", 11),
+            };
+            foreach (var (status, period) in periods)
+                await conn.ExecuteAsync(@"
+INSERT dbo.PeriodAttendanceRecords
+  (Id, TenantId, ClassId, StudentId, [Date], Period, Subject, Status, CreatedAt, UpdatedAt)
+VALUES
+  (NEWID(), @tenantId, @classId, @studentId, @date, @period, N'Math', @status, SYSUTCDATETIME(), SYSUTCDATETIME())",
+                    new { tenantId, classId, studentId, date = DateTime.UtcNow.Date, period, status });
         }
 
         var jwt = new JwtTokenService(
@@ -57,6 +72,62 @@ public class StudentAttendancePctLiveTests(SqlServerFixture fx)
         var res = await client.GetAsync($"/v1/students/{studentId}");
         res.StatusCode.Should().Be(HttpStatusCode.OK);
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
-        doc.RootElement.GetProperty("data").GetProperty("attendance_pct").GetDecimal().Should().Be(75.00m);
+        doc.RootElement.GetProperty("data").GetProperty("attendance_pct").GetDecimal().Should().Be(81.82m);
+
+        var summary = await client.GetAsync($"/v1/students/{studentId}/attendance/summary");
+        summary.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var sumDoc = JsonDocument.Parse(await summary.Content.ReadAsStringAsync());
+        var data = sumDoc.RootElement.GetProperty("data");
+        data.GetProperty("total_marked_periods").GetInt32().Should().Be(11);
+        data.GetProperty("present_periods").GetInt32().Should().Be(8);
+        data.GetProperty("late_periods").GetInt32().Should().Be(1);
+        data.GetProperty("absent_periods").GetInt32().Should().Be(2);
+        data.GetProperty("attendance_percentage").GetDecimal().Should().Be(81.82m);
+    }
+
+    [Fact]
+    public async Task Student_attendance_pct_null_when_only_legacy_daily_exists()
+    {
+        var app = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("environment", "Production");
+            b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
+            b.UseSetting("Jwt:SigningKey", Key);
+        });
+        var tenantId = Guid.NewGuid();
+        var studentId = Guid.NewGuid();
+        var classId = Guid.NewGuid();
+
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name, Status) VALUES (@studentId, @tenantId, 'A2', 'S2', 'active')",
+                new { studentId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Classes (Id, TenantId, Name, StudentCount) VALUES (@classId, @tenantId, 'C2', 0)",
+                new { classId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.AttendanceRecords (TenantId, ClassId, StudentId, [Date], Status) VALUES (@tenantId, @classId, @studentId, @date, N'present')",
+                new { tenantId, classId, studentId, date = DateTime.UtcNow.Date });
+        }
+
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, new[] { Policies.Teacher }, isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var res = await client.GetAsync($"/v1/students/{studentId}");
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("data").GetProperty("attendance_pct").ValueKind.Should().Be(JsonValueKind.Null);
+
+        var summary = await client.GetAsync($"/v1/students/{studentId}/attendance/summary");
+        using var sumDoc = JsonDocument.Parse(await summary.Content.ReadAsStringAsync());
+        sumDoc.RootElement.GetProperty("data").GetProperty("attendance_percentage").ValueKind.Should().Be(JsonValueKind.Null);
+        sumDoc.RootElement.GetProperty("data").GetProperty("total_marked_periods").GetInt32().Should().Be(0);
     }
 }

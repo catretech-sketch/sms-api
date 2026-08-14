@@ -56,6 +56,29 @@ public class StudentAttendanceScopeTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Unlinked_parent_can_read_tenant_student_attendance()
+    {
+        await using var app = App();
+        var seed = await SeedAsync();
+        var unlinkedParent = Guid.NewGuid();
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync(
+                "EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId",
+                new { tenantId = seed.TenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, StudentId, IsPlatform, Status) VALUES (@id, @tenantId, NULL, 0, N'active');",
+                new { id = unlinkedParent, tenantId = seed.TenantId });
+        }
+
+        var client = Client(app, unlinkedParent, seed.TenantId, "parent");
+        var response = await client.GetAsync(
+            $"/v1/students/{seed.OtherStudentId}/attendance{AttendanceDateQuery}");
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
     public async Task Staff_can_read_any_students_attendance()
     {
         await using var app = App();

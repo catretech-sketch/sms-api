@@ -75,6 +75,31 @@ public class CalendarTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Principal_can_delete_event()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var principal = Client(app, tenantId, Policies.Principal);
+
+        var ev = await Data(await principal.PostAsJsonAsync("/v1/calendar", new
+        {
+            title = "To Delete",
+            date = "2026-08-01",
+            type = "holiday",
+            description = "gone soon",
+            channels_json = "[\"app\",\"email\"]"
+        }), HttpStatusCode.Created);
+        var eventId = ev.GetProperty("id").GetGuid();
+
+        var del = await principal.DeleteAsync($"/v1/calendar/{eventId}");
+        del.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var list = await Data(await principal.GetAsync("/v1/calendar"), HttpStatusCode.OK);
+        foreach (var item in list.EnumerateArray())
+            item.GetProperty("id").GetGuid().Should().NotBe(eventId);
+    }
+
+    [Fact]
     public async Task Teacher_gets_403_on_post()
     {
         await using var app = App();
@@ -91,14 +116,40 @@ public class CalendarTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task StudentOrParent_gets_403_on_get_and_post()
+    public async Task Unauthenticated_get_returns_401()
+    {
+        await using var app = App();
+        var anon = app.CreateClient();
+        var res = await anon.GetAsync("/v1/calendar");
+        res.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task School_admin_and_platform_owner_can_list()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admin = Client(app, tenantId, Policies.SchoolAdmin);
+        (await admin.GetAsync("/v1/calendar")).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var platform = app.CreateClient();
+        platform.DefaultRequestHeaders.Authorization =
+            new("Bearer", jwt.IssueAccess(Guid.NewGuid(), tenantId, ["owner"], isPlatform: true));
+        (await platform.GetAsync("/v1/calendar")).StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task StudentOrParent_can_list_but_gets_403_on_post()
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
         var student = Client(app, tenantId, Policies.StudentOrParent);
 
         var getRes = await student.GetAsync("/v1/calendar");
-        getRes.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        getRes.StatusCode.Should().Be(HttpStatusCode.OK);
 
         var postRes = await student.PostAsJsonAsync("/v1/calendar", new
         {

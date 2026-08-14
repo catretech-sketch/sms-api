@@ -11,10 +11,14 @@ namespace Sms.Infrastructure.DAO;
 public sealed class UserProvisioningDao(IDbConnectionFactory factory) : BaseRepository(factory), IUserProvisioningDao
 {
     public async Task<Guid> CreateUserAsync(Guid tenantId, string? email, string? phone, bool isPlatform,
-        string[] roles, CancellationToken ct = default)
+        string[] roles, CancellationToken ct = default, string? studentId = null, bool mustSetPassword = false)
     {
         var id = await QuerySingleProcAsync<Guid>("dbo.User_Create",
-            new { TenantId = tenantId, Email = email, Phone = phone, IsPlatform = isPlatform }, ct);
+            new
+            {
+                TenantId = tenantId, Email = email, Phone = phone, IsPlatform = isPlatform,
+                StudentId = studentId, MustSetPassword = mustSetPassword,
+            }, ct);
         foreach (var role in roles)
             await ExecuteProcAsync("dbo.UserRole_Add", new { UserId = id, Role = role }, ct);
         return id;

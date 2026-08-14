@@ -26,6 +26,11 @@ public class AttendanceRollCallTests
     {
         AttendanceRollCall.DayKey(new DateTime(2026, 8, 12)).Should().Be("Wed");
         AttendanceRollCall.DayKey(new DateTime(2026, 8, 15)).Should().Be("Sat");
+        // UTC midnight must not flip the calendar weekday.
+        AttendanceRollCall.DayKey(DateTime.SpecifyKind(new DateTime(2026, 8, 13), DateTimeKind.Utc))
+            .Should().Be("Thu");
+        AttendanceRollCall.NormalizeDayKey("Thursday").Should().Be("Thu");
+        AttendanceRollCall.SameDay("Monday", "Mon").Should().BeTrue();
     }
 
     [Fact]

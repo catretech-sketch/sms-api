@@ -9,7 +9,20 @@ public static class AttendanceRollCall
         string? StartTime = null, string? EndTime = null, string? TeacherName = null);
 
     public static string DayKey(DateTime date) =>
-        date.ToString("ddd", CultureInfo.InvariantCulture);
+        // Calendar day only — ignore time/Kind so UTC midnight never shifts the weekday.
+        DateOnly.FromDateTime(date).ToString("ddd", CultureInfo.InvariantCulture);
+
+    /// <summary>Normalize stored Day values (Mon / Monday / mon) to invariant 3-letter keys.</summary>
+    public static string NormalizeDayKey(string? day)
+    {
+        if (string.IsNullOrWhiteSpace(day)) return "";
+        var t = day.Trim();
+        if (t.Length > 3) t = t[..3];
+        return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(t.ToLowerInvariant());
+    }
+
+    public static bool SameDay(string? storedDay, string dayKey) =>
+        string.Equals(NormalizeDayKey(storedDay), NormalizeDayKey(dayKey), StringComparison.Ordinal);
 
     public static bool IsNonTeaching(string? subject)
     {
@@ -28,7 +41,7 @@ public static class AttendanceRollCall
     public static SlotInput? Resolve(IEnumerable<SlotInput> slots, DateTime date)
     {
         var day = DayKey(date);
-        return FirstTeachingSlot(slots.Where(s => s.Day == day));
+        return FirstTeachingSlot(slots.Where(s => SameDay(s.Day, day)));
     }
 
     public static bool CanMark(

@@ -31,6 +31,21 @@ public sealed class ExamRepository(IDbConnectionFactory factory) : BaseRepositor
     public Task<IReadOnlyList<ExamResponse>> ListExamsAsync(CancellationToken ct = default) =>
         QueryInlineAsync<ExamResponse>($"SELECT {ExamCols} FROM dbo.Exams ORDER BY FromDate DESC", null, ct);
 
+    public Task<IReadOnlyList<Guid>> ListExamClassIdsAsync(Guid examId, CancellationToken ct = default) =>
+        QueryProcAsync<Guid>("dbo.ExamClass_List", new { ExamId = examId }, ct);
+
+    public Task<IReadOnlyList<Guid>> ReplaceExamClassIdsAsync(
+        Guid tenantId, Guid examId, IReadOnlyList<Guid> classIds, CancellationToken ct = default)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(classIds);
+        return QueryProcAsync<Guid>("dbo.ExamClass_Replace", new
+        {
+            TenantId = tenantId,
+            ExamId = examId,
+            ClassIdsJson = json,
+        }, ct);
+    }
+
     // Exam papers
     public Task<ExamPaperResponse?> CreateExamPaperAsync(Guid tenantId, CreateExamPaperRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<ExamPaperResponse>("dbo.ExamPaper_Create", new
@@ -67,6 +82,17 @@ public sealed class ExamRepository(IDbConnectionFactory factory) : BaseRepositor
         QueryInlineAsync<GradeResponse>(
             $"SELECT {GradeCols} FROM dbo.Grades WHERE ExamPaperId = @examPaperId ORDER BY StudentName",
             new { examPaperId }, ct);
+
+    public Task<IReadOnlyList<GradeResponse>> ListGradesForStudentAsync(Guid studentId, CancellationToken ct = default) =>
+        QueryInlineAsync<GradeResponse>(@"
+SELECT g.Id, g.TenantId, g.StudentId, g.StudentName, g.ExamPaperId, g.Marks, g.MaxMarks, g.Grade, g.Gpa, g.Pass, g.[Date],
+       p.SubjectId, p.Subject, p.Name AS PaperName, CAST(ISNULL(e.Published, 0) AS bit) AS ExamPublished
+FROM dbo.Grades g
+LEFT JOIN dbo.ExamPapers p ON p.Id = g.ExamPaperId
+LEFT JOIN dbo.Exams e ON e.Id = p.ExamId
+WHERE g.StudentId = @studentId
+ORDER BY g.[Date] DESC, p.Subject",
+            new { studentId }, ct);
 
     // Exam attendance — admin roll-call for one paper, distinct from Grades (marks/scores).
     public Task BulkUpsertExamAttendanceAsync(Guid tenantId, Guid examPaperId, Guid? markedBy,

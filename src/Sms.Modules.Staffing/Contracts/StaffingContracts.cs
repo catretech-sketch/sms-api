@@ -27,7 +27,8 @@ public sealed record CreateTeacherRequest(
 public sealed record UpdateTeacherRequest(
     string? Name, string? Department, string? Designation, IReadOnlyList<string>? Subjects,
     string? ClassTeacher, string? Phone, string? Email, string? Status,
-    string? PhotoUrl = null, bool SetPhoto = false);
+    string? PhotoUrl = null, bool SetPhoto = false,
+    string? Gender = null, int? Exp = null, string? EmployeeCode = null);
 
 // ---- Staff ----
 public sealed record StaffResponse(
@@ -43,7 +44,8 @@ public sealed record CreateStaffRequest(
 /// written through to the linked Users row by StaffingService — see UpdateTeacherRequest.</summary>
 public sealed record UpdateStaffRequest(
     string? Name, string? Role, string? Category, string? Department, string? Phone, string? Shift,
-    string? Route, string? Status, string? PhotoUrl = null, bool SetPhoto = false, string? Email = null);
+    string? Route, string? Status, string? PhotoUrl = null, bool SetPhoto = false, string? Email = null,
+    string? Gender = null, string? EmployeeCode = null);
 
 public static class StaffingMappers
 {

@@ -215,14 +215,15 @@ public class TimetableTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task StudentOrParent_gets_403_on_get_and_post()
+    public async Task StudentOrParent_cannot_post_but_get_is_not_forbidden()
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
         var student = Client(app, tenantId, Policies.StudentOrParent);
 
         var getRes = await student.GetAsync("/v1/timetable");
-        getRes.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        getRes.StatusCode.Should().NotBe(HttpStatusCode.Forbidden,
+            "students read their class timetable; unlinked accounts get 401/404 from roster lookup");
 
         var postRes = await student.PostAsJsonAsync("/v1/timetable", new
         {
@@ -301,5 +302,74 @@ public class TimetableTests(SqlServerFixture fx)
 
         var del = await principalB.DeleteAsync($"/v1/timetable/{slotId}");
         del.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Principal_can_replace_class_slots_in_one_request()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var principal = Client(app, tenantId, Policies.Principal);
+        var classId = Guid.NewGuid();
+        var otherClassId = Guid.NewGuid();
+
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Classes (Id, TenantId, Name, StudentCount) VALUES (@classId, @tenantId, 'IX-A', 0)",
+                new { classId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Classes (Id, TenantId, Name, StudentCount) VALUES (@otherClassId, @tenantId, 'IX-B', 0)",
+                new { otherClassId, tenantId });
+        }
+
+        // Seed one stale slot for IX-A and one for IX-B (must survive replace of IX-A only).
+        await Data(await principal.PostAsJsonAsync("/v1/timetable", new
+        {
+            day = "Mon", period = 1, subject = "Old Math",
+            class_id = classId, class_name = "IX-A"
+        }), HttpStatusCode.Created);
+        var keep = await Data(await principal.PostAsJsonAsync("/v1/timetable", new
+        {
+            day = "Mon", period = 1, subject = "Keep Me",
+            class_id = otherClassId, class_name = "IX-B"
+        }), HttpStatusCode.Created);
+        var keepId = keep.GetProperty("id").GetGuid();
+
+        var replace = await principal.PutAsJsonAsync("/v1/timetable/replace", new
+        {
+            class_ids = new[] { classId },
+            slots = new[]
+            {
+                new
+                {
+                    day = "Mon", period = 1, subject = "Mathematics",
+                    class_id = classId, class_name = "IX-A", room = (string?)null,
+                    start_time = (string?)null, end_time = (string?)null, teacher_id = (Guid?)null
+                },
+                new
+                {
+                    day = "Tue", period = 2, subject = "Science",
+                    class_id = classId, class_name = "IX-A", room = (string?)null,
+                    start_time = (string?)null, end_time = (string?)null, teacher_id = (Guid?)null
+                },
+            }
+        });
+        replace.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var notices = await Data(await principal.GetAsync("/v1/notifications"), HttpStatusCode.OK);
+        notices.EnumerateArray()
+            .Any(n => n.GetProperty("title").GetString() == "Timetable updated")
+            .Should().BeTrue("publishing a timetable must write an in-app notice");
+
+        var list = await Data(await principal.GetAsync("/v1/timetable"), HttpStatusCode.OK);
+        var forA = list.EnumerateArray()
+            .Where(e => e.TryGetProperty("class_id", out var cid) && cid.GetGuid() == classId)
+            .ToList();
+        forA.Should().HaveCount(2);
+        forA.Select(e => e.GetProperty("subject").GetString()).Should().BeEquivalentTo("Mathematics", "Science");
+        list.EnumerateArray().Any(e => e.GetProperty("id").GetGuid() == keepId).Should().BeTrue();
     }
 }

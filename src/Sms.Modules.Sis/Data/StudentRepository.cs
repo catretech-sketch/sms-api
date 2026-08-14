@@ -7,33 +7,41 @@ public sealed class StudentRepository(IDbConnectionFactory factory) : BaseReposi
 {
     private const string Cols =
         "Id, TenantId, AdmissionNo, Name, Gender, Grade, Section, ClassLabel, Roll, GuardianName, " +
-        "GuardianPhone, AttendancePct, FeeStatus, FeeDue, Status, House, AvatarHue, Dob, Email, Address, PhotoUrl";
+        "GuardianPhone, GuardianEmail, AttendancePct, FeeStatus, FeeDue, Status, House, AvatarHue, Dob, Email, Address, PhotoUrl";
 
+    /// <summary>
+    /// Official AttendancePct from PeriodAttendanceRecords only:
+    /// (present + late) / marked periods × 100. NULL when unmarked (not 0%).
+    /// Legacy daily AttendanceRecords are excluded.
+    /// </summary>
     private const string ColsWithLivePct = @"
 s.Id, s.TenantId, s.AdmissionNo, s.Name, s.Gender, s.Grade, s.Section, s.ClassLabel, s.Roll,
-s.GuardianName, s.GuardianPhone,
-CAST(CASE WHEN att.TotalDays > 0 THEN 100.0 * att.PresentDays / att.TotalDays ELSE 0 END AS decimal(5,2)) AS AttendancePct,
+s.GuardianName, s.GuardianPhone, s.GuardianEmail,
+CAST(CASE WHEN att.Marked > 0
+          THEN ROUND(100.0 * att.Positive / att.Marked, 2)
+          ELSE NULL END AS decimal(5,2)) AS AttendancePct,
 s.FeeStatus, s.FeeDue, s.Status, s.House, s.AvatarHue, s.Dob, s.Email, s.Address, s.PhotoUrl
 FROM dbo.Students s
 OUTER APPLY (
-    SELECT COUNT(*) AS TotalDays,
-           SUM(CASE WHEN ar.Status IN ('present','late') THEN 1 ELSE 0 END) AS PresentDays
-    FROM dbo.AttendanceRecords ar
-    WHERE ar.StudentId = s.Id
+    SELECT COUNT(*) AS Marked,
+           SUM(CASE WHEN par.Status IN (N'present', N'late') THEN 1 ELSE 0 END) AS Positive
+    FROM dbo.PeriodAttendanceRecords par
+    WHERE par.StudentId = s.Id
 ) att";
 
     public Task<StudentResponse?> CreateAsync(Guid tenantId, CreateStudentRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<StudentResponse>("dbo.Student_Create", new
         {
             TenantId = tenantId, r.AdmissionNo, r.Name, r.Gender, r.Grade, r.Section, r.Roll,
-            r.GuardianName, r.GuardianPhone, r.House, r.AvatarHue, r.Dob, r.Email, r.Address
+            r.GuardianName, r.GuardianPhone, r.GuardianEmail, r.House, r.AvatarHue, r.Dob, r.Email, r.Address
         }, ct);
 
     public Task<StudentResponse?> UpdateAsync(Guid id, UpdateStudentRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<StudentResponse>("dbo.Student_Update", new
         {
-            Id = id, r.Name, r.Grade, r.Section, r.Roll, r.GuardianName, r.GuardianPhone,
-            r.House, r.FeeStatus, r.FeeDue, r.Status, r.PhotoUrl, r.SetPhoto
+            Id = id, r.Name, r.Grade, r.Section, r.Roll, r.GuardianName, r.GuardianPhone, r.GuardianEmail,
+            r.House, r.FeeStatus, r.FeeDue, r.Status, r.PhotoUrl, r.SetPhoto,
+            r.Gender, r.Dob, r.Email, r.Address
         }, ct);
 
     public async Task<StudentResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
@@ -47,6 +55,11 @@ OUTER APPLY (
             $"SELECT {ColsWithLivePct} WHERE LOWER(LTRIM(RTRIM(s.AdmissionNo))) = LOWER(LTRIM(RTRIM(@admissionNo)))",
             new { admissionNo = admissionNo.Trim() }, ct)).FirstOrDefault();
     }
+
+    public async Task SetGuardianEmailAsync(Guid id, string email, CancellationToken ct = default) =>
+        await ExecuteInlineAsync(
+            "UPDATE dbo.Students SET GuardianEmail = @email WHERE Id = @id",
+            new { id, email }, ct);
 
     public Task<IReadOnlyList<StudentResponse>> ListAsync(
         string? q, string? grade, string? status, string? fee, CancellationToken ct = default) =>

@@ -1,14 +1,24 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Sms.Application.Services.Auth;
+using Sms.Application.Services.Comms;
+using Sms.Modules.Comms;
 using Sms.Modules.Tenancy.Contracts;
 
 namespace Sms.Api.Controllers;
 
 [Route("v1/me")]
 [Authorize]
-public sealed class MeSchoolsController(IMeSchoolsService schools) : ApiControllerBase
+public sealed class MeSchoolsController(IMeSchoolsService schools, IUserSettingsService settings) : ApiControllerBase
 {
+    [HttpGet("settings")]
+    public async Task<IActionResult> GetSettings(CancellationToken ct) =>
+        FromResult(await settings.GetAsync(ct));
+
+    [HttpPatch("settings")]
+    public async Task<IActionResult> UpdateSettings([FromBody] UpdateUserAppSettingsRequest req, CancellationToken ct) =>
+        FromResult(await settings.UpdateAsync(req, ct));
+
     [HttpGet("schools")]
     public async Task<IActionResult> List(CancellationToken ct) =>
         CursorOk(await schools.ListAsync(ct));

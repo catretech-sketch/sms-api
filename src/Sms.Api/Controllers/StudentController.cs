@@ -17,6 +17,10 @@ public sealed class StudentController(ISisService sis, IAcademicsService academi
         CancellationToken ct) =>
         FromCursorResult(await sis.ListStudentsAsync(q, grade, status, fee, ct));
 
+    [HttpGet("students/me")]
+    public async Task<IActionResult> Me(CancellationToken ct) =>
+        FromResult(await sis.GetMyStudentAsync(ct));
+
     [HttpGet("students/{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken ct) =>
         FromResult(await sis.GetStudentAsync(id, ct));
@@ -40,4 +44,20 @@ public sealed class StudentController(ISisService sis, IAcademicsService academi
         Guid studentId, [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken ct) =>
         FromResult(await academics.ListAttendanceForStudentAsync(
             studentId, from ?? DateTime.UtcNow.AddDays(-90), to ?? DateTime.UtcNow, User, ct));
+
+    [HttpGet("students/{studentId:guid}/attendance/periods")]
+    public async Task<IActionResult> ListPeriodAttendance(
+        Guid studentId, [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken ct) =>
+        FromResult(await academics.ListPeriodAttendanceForStudentAsync(
+            studentId, from ?? DateTime.UtcNow.AddDays(-90), to ?? DateTime.UtcNow, User, ct));
+
+    /// <summary>
+    /// Official period-based attendance aggregate for the student (CRM / Teacher / Student / Parent).
+    /// Percentage = (present + late) / marked periods × 100; null when unmarked.
+    /// </summary>
+    [HttpGet("students/{studentId:guid}/attendance/summary")]
+    public async Task<IActionResult> GetPeriodAttendanceSummary(
+        Guid studentId, [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken ct) =>
+        FromResult(await academics.GetPeriodAttendanceSummaryForStudentAsync(
+            studentId, from ?? DateTime.UtcNow.AddDays(-365), to ?? DateTime.UtcNow, User, ct));
 }

@@ -50,7 +50,7 @@ public sealed class TeacherRepository(IDbConnectionFactory factory) : BaseReposi
         {
             Id = id, r.Name, r.Department, r.Designation,
             SubjectsCsv = r.Subjects is null ? null : string.Join(',', r.Subjects),
-            r.ClassTeacher, r.Phone, r.Email, r.Status
+            r.ClassTeacher, r.Phone, r.Email, r.Status, r.Gender, r.Exp, r.EmployeeCode
         }, ct);
         return null;
     }
@@ -168,7 +168,8 @@ public sealed class StaffRepository(IDbConnectionFactory factory) : BaseReposito
     {
         await ExecuteProcAsync("dbo.Staff_Update", new
         {
-            Id = id, r.Name, r.Role, r.Category, r.Department, r.Phone, r.Shift, r.Route, r.Status, r.Email
+            Id = id, r.Name, r.Role, r.Category, r.Department, r.Phone, r.Shift, r.Route, r.Status, r.Email,
+            r.Gender, r.EmployeeCode
         }, ct);
         return null;
     }
