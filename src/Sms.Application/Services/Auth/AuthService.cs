@@ -22,7 +22,7 @@ public interface IAuthService
     /// (or a magic login link, when method is "link").</summary>
     Task<ApiResult<object>> SendInviteSetupAsync(
         string identifier, string schoolName, string? roleLabel = null, TimeSpan? validFor = null,
-        string method = "code", string? customMessage = null, string? role = null, CancellationToken ct = default);
+        string method = "code", string? customMessage = null, CancellationToken ct = default, string? requestedRole = null);
     Task<ApiResult> ResetPasswordAsync(ResetPasswordRequest req, CancellationToken ct = default);
     Task<ApiResult> SetPasswordAsync(SetPasswordRequest req, CancellationToken ct = default);
     Task<ApiResult> UpdatePhotoAsync(UpdatePhotoRequest req, CancellationToken ct = default);
@@ -99,7 +99,7 @@ public sealed class AuthService(
     }
 
     public Task<ApiResult<object>> RequestOtpAsync(OtpRequest req, CancellationToken ct = default) =>
-        SendOtpToRegisteredAsync(req.Identifier, ct);
+        SendOtpToRegisteredAsync(req.Identifier, null, ct);
 
     public async Task<ApiResult<TokenResponse>> VerifyOtpAsync(OtpVerifyRequest req, CancellationToken ct = default)
     {
@@ -123,7 +123,7 @@ public sealed class AuthService(
         /* First-time / invite users (no password yet): welcome email with school name + OTP.
            Existing users: keep the generic verification-code mail. */
         tenant.Set(null, null, isPlatform: true);
-        var user = await FindUserByIdentifierAsync(req.Identifier, ct, role: req.Role);
+        var user = await FindUserByIdentifierAsync(req.Identifier, ct);
         if (user is not null && string.IsNullOrEmpty(user.PasswordHash))
         {
             var schoolName = "your school";
@@ -135,25 +135,28 @@ public sealed class AuthService(
                 var roles = await users.GetRolesAsync(user.Id, ct);
                 roleLabel = RoleLabel(roles.FirstOrDefault());
             }
-            return await SendInviteSetupAsync(req.Identifier, schoolName, roleLabel, TimeSpan.FromHours(24), role: req.Role, ct: ct);
+            return await SendInviteSetupAsync(req.Identifier, schoolName, roleLabel, TimeSpan.FromHours(24), ct: ct, requestedRole: req.Role);
         }
-        return await SendOtpToRegisteredAsync(req.Identifier, ct, req.Role);
+        return await SendOtpToRegisteredAsync(req.Identifier, req.Role, ct);
     }
 
     public async Task<ApiResult<object>> SendInviteSetupAsync(
         string identifier, string schoolName, string? roleLabel = null, TimeSpan? validFor = null,
-        string method = "code", string? customMessage = null, string? role = null, CancellationToken ct = default)
+        string method = "code", string? customMessage = null, CancellationToken ct = default, string? requestedRole = null)
     {
         if (string.IsNullOrWhiteSpace(identifier))
             return ApiResult<object>.Fail(new Error("invalid_request", "email or phone required"), 422);
 
         tenant.Set(null, null, isPlatform: true);
         var id = identifier.Trim();
-        var user = await FindUserByIdentifierAsync(id, ct, role: role);
+        var user = await FindUserByIdentifierAsync(id, ct);
         if (user is null)
             return ApiResult<object>.Fail(NotRegisteredError(id), 404);
 
-        var delivery = await ResolveOtpDeliveryAsync(user, id, ct, role);
+        // Deliver to student email first; if missing/invalid, fall back to linked parent —
+        // unless the caller explicitly asked for the parent (role=parent), which targets the
+        // guardian contact directly. Never treat an admission ID as a deliverable address.
+        var delivery = await ResolveOtpDeliveryAsync(user, id, requestedRole, ct);
         if (delivery is null)
             return ApiResult<object>.Fail(
                 new Error("no_delivery_channel",
@@ -437,15 +440,18 @@ public sealed class AuthService(
         return ApiResult<TokenResponse>.Ok(new TokenResponse(access, refresh));
     }
 
-    private async Task<ApiResult<object>> SendOtpToRegisteredAsync(string identifier, CancellationToken ct, string? role = null)
+    private async Task<ApiResult<object>> SendOtpToRegisteredAsync(string identifier, string? role, CancellationToken ct)
     {
         tenant.Set(null, null, isPlatform: true);
-        var user = await FindUserByIdentifierAsync(identifier, ct, role: role);
+        var user = await FindUserByIdentifierAsync(identifier, ct);
 
         if (user is null)
             return ApiResult<object>.Fail(NotRegisteredError(identifier), 404);
 
-        var delivery = await ResolveOtpDeliveryAsync(user, identifier, ct, role);
+        // Student email first (up to 2 delivery attempts). Missing/invalid email or
+        // repeated send failure → linked parent/caregiver contact. role="parent" targets
+        // the guardian contact directly instead.
+        var delivery = await ResolveOtpDeliveryAsync(user, identifier, role, ct);
         if (delivery is null)
             return ApiResult<object>.Fail(
                 new Error("no_delivery_channel",
@@ -506,15 +512,15 @@ public sealed class AuthService(
     }
 
     /// <summary>
-    /// Student tab: roster/student email first, then parent fallback.
-    /// Parent tab: parent/guardian mailbox (never the student's school email).
+    /// OTP delivery for admission-ID / student flows:
+    /// 1) student-role account email (never the parent row that shares StudentId)
+    /// 2) student phone
+    /// 3) linked parent/caregiver email or phone
+    /// Non-admission lookups still use the resolved account's own contact.
     /// </summary>
     private async Task<(string Target, string Channel, string Recipient)?> ResolveOtpDeliveryAsync(
-        UserRecord user, string identifier, CancellationToken ct, string? role = null)
+        UserRecord user, string identifier, string? role, CancellationToken ct)
     {
-        if (await WantsParentDeliveryAsync(user, role, ct))
-            return await ResolveParentOtpDeliveryAsync(user, identifier, ct);
-
         var admissionId = !string.IsNullOrWhiteSpace(user.StudentId)
             ? user.StudentId!
             : IdentifierClassifier.Classify(identifier) == IdentifierKind.AdmissionId
@@ -523,11 +529,30 @@ public sealed class AuthService(
 
         if (admissionId is not null)
         {
-            // Admin student form writes Students.Email. The Users login row can still
-            // hold a parent/creator email — roster email is the student destination.
-            var rosterEmail = await users.GetRosterEmailByAdmissionIdAsync(admissionId, ct);
-            if (IsUsableEmail(rosterEmail))
-                return (rosterEmail!.Trim(), "email", "self");
+            // role=parent asks for the guardian contact directly — never deliver a
+            // parent's reset code to the student's own address. Everything else
+            // (role=student or unspecified) keeps the student-first behavior below.
+            var wantsParent = string.Equals(role, "parent", StringComparison.OrdinalIgnoreCase);
+
+            if (wantsParent)
+            {
+                // Direct delivery to the identified parent — "self" (the requester's own
+                // contact), distinct from the "parent" tag used below when a *student*
+                // lookup falls back to notifying their linked parent instead.
+                var roster = await users.GetRosterByAdmissionIdAsync(admissionId, ct);
+                if (IsUsableEmail(roster?.GuardianEmail))
+                    return (roster!.GuardianEmail!.Trim(), "email", "self");
+                if (!string.IsNullOrWhiteSpace(roster?.GuardianPhone))
+                    return (roster!.GuardianPhone!.Trim(), "sms", "self");
+            }
+            else
+            {
+                // Admin student form writes Students.Email. The Users login row can still
+                // hold a parent/creator email — roster email is the student destination.
+                var rosterEmail = await users.GetRosterEmailByAdmissionIdAsync(admissionId, ct);
+                if (IsUsableEmail(rosterEmail))
+                    return (rosterEmail!.Trim(), "email", "self");
+            }
 
             var peers = await users.ListByAdmissionIdAsync(admissionId, ct);
             UserRecord? student = null;
@@ -542,6 +567,8 @@ public sealed class AuthService(
                     student ??= peer;
             }
 
+            // If roles are missing on older rows, treat the looked-up user as student
+            // only when it is not a parent; otherwise keep searching peers.
             if (student is null)
             {
                 var lookedUpRoles = await users.GetRolesAsync(user.Id, ct);
@@ -549,16 +576,21 @@ public sealed class AuthService(
                     student = user;
             }
 
-            if (student is not null && IsUsableEmail(student.Email))
-                return (student.Email!.Trim(), "email", "self");
-            if (student is not null && !string.IsNullOrWhiteSpace(student.Phone))
-                return (student.Phone.Trim(), "sms", "self");
+            if (!wantsParent)
+            {
+                if (student is not null && IsUsableEmail(student.Email))
+                    return (student.Email!.Trim(), "email", "self");
+                if (student is not null && !string.IsNullOrWhiteSpace(student.Phone))
+                    return (student.Phone.Trim(), "sms", "self");
+            }
 
             if (parent is not null && IsUsableEmail(parent.Email))
                 return (parent.Email!.Trim(), "email", "parent");
             if (parent is not null && !string.IsNullOrWhiteSpace(parent.Phone))
                 return (parent.Phone.Trim(), "sms", "parent");
 
+            // Last resort: any other peer with contact (exclude the student — even when
+            // targeting the parent, never fall back to the student's own address).
             foreach (var peer in peers.Where(p => student is null || p.Id != student.Id))
             {
                 if (IsUsableEmail(peer.Email))
@@ -576,55 +608,6 @@ public sealed class AuthService(
             return (user.Phone.Trim(), "sms", "self");
         return null;
     }
-
-    private async Task<(string Target, string Channel, string Recipient)?> ResolveParentOtpDeliveryAsync(
-        UserRecord user, string identifier, CancellationToken ct)
-    {
-        if (IdentifierClassifier.Classify(identifier) == IdentifierKind.Email && IsUsableEmail(identifier))
-            return (identifier.Trim(), "email", "self");
-
-        if (IsUsableEmail(user.Email))
-            return (user.Email!.Trim(), "email", "self");
-        if (!string.IsNullOrWhiteSpace(user.Phone)
-            && IdentifierClassifier.Classify(identifier) == IdentifierKind.Phone)
-            return (user.Phone.Trim(), "sms", "self");
-
-        var admissionId = !string.IsNullOrWhiteSpace(user.StudentId)
-            ? user.StudentId!
-            : IdentifierClassifier.Classify(identifier) == IdentifierKind.AdmissionId
-                ? identifier.Trim()
-                : null;
-        if (admissionId is not null)
-        {
-            var roster = await users.GetRosterByAdmissionIdAsync(admissionId, ct);
-            if (IsUsableEmail(roster?.GuardianEmail))
-                return (roster!.GuardianEmail!.Trim(), "email", "self");
-
-            var parent = await FindParentDeliveryAsync(user, identifier, ct);
-            if (parent is not null)
-                return (parent.Value.Target, parent.Value.Channel, "self");
-        }
-
-        if (!string.IsNullOrWhiteSpace(user.Phone))
-            return (user.Phone.Trim(), "sms", "self");
-        return null;
-    }
-
-    private async Task<bool> WantsParentDeliveryAsync(UserRecord user, string? role, CancellationToken ct)
-    {
-        if (IsParentRoleHint(role)) return true;
-        if (IsStudentRoleHint(role)) return false;
-        var roles = await users.GetRolesAsync(user.Id, ct);
-        return IsParentRole(roles);
-    }
-
-    private static bool IsParentRoleHint(string? role) =>
-        !string.IsNullOrWhiteSpace(role) && role.Contains("parent", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsStudentRoleHint(string? role) =>
-        !string.IsNullOrWhiteSpace(role)
-        && (role.Equals("student", StringComparison.OrdinalIgnoreCase)
-            || role.EndsWith(".student", StringComparison.OrdinalIgnoreCase));
 
     private async Task<(string Target, string Channel, string Recipient)?> FindParentDeliveryAsync(
         UserRecord user, string identifier, CancellationToken ct)
@@ -711,30 +694,12 @@ public sealed class AuthService(
     }
 
     private async Task<UserRecord?> FindUserByIdentifierAsync(
-        string identifier, CancellationToken ct, bool forceAdmission = false, string? role = null)
+        string identifier, CancellationToken ct, bool forceAdmission = false)
     {
         var trimmed = identifier.Trim();
         var kind = forceAdmission ? IdentifierKind.AdmissionId : IdentifierClassifier.Classify(trimmed);
         var candidates = await ListByIdentifierAsync(trimmed, ct, forceAdmission);
         var asAdmission = forceAdmission || kind == IdentifierKind.AdmissionId;
-
-        if (IsParentRoleHint(role))
-        {
-            var parent = await PickParentAsync(candidates, ct);
-            if (parent is not null) return parent;
-            if (kind == IdentifierKind.Email)
-            {
-                var viaGuardian = await TryResolveParentByGuardianEmailAsync(trimmed, ct);
-                if (viaGuardian is not null) return viaGuardian;
-            }
-            if (asAdmission)
-            {
-                try { return await users.EnsureParentLoginAsync(trimmed, ct); }
-                catch { return null; }
-            }
-            if (candidates.Count == 0) return null;
-            return await PickParentAsync(candidates, ct);
-        }
 
         if (asAdmission)
         {
@@ -751,8 +716,6 @@ public sealed class AuthService(
         }
 
         if (candidates.Count == 0) return null;
-        if (IsStudentRoleHint(role))
-            return await PickStudentAsync(candidates, ct) ?? PickBest(candidates);
         return PickBest(candidates);
     }
 
@@ -760,27 +723,8 @@ public sealed class AuthService(
     /// Roster students imported before login provisioning have a Students row but no Users row.
     /// dbo.Student_EnsureLogin fetches the roster and creates the student login when missing.
     /// </summary>
-    private async Task<UserRecord?> EnsureStudentUserFromRosterAsync(string admissionId, CancellationToken ct)
-    {
-        try
-        {
-            return await users.EnsureStudentLoginAsync(admissionId, ct);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    private async Task<UserRecord?> PickParentAsync(IReadOnlyList<UserRecord> candidates, CancellationToken ct)
-    {
-        foreach (var c in PickBestOrder(candidates))
-        {
-            var roles = await users.GetRolesAsync(c.Id, ct);
-            if (IsParentRole(roles)) return c;
-        }
-        return null;
-    }
+    private Task<UserRecord?> EnsureStudentUserFromRosterAsync(string admissionId, CancellationToken ct) =>
+        users.EnsureStudentLoginAsync(admissionId, ct);
 
     private async Task<UserRecord?> PickStudentAsync(IReadOnlyList<UserRecord> candidates, CancellationToken ct)
     {
@@ -815,6 +759,9 @@ public sealed class AuthService(
                 // Admin stores email on Students; Users.Email may still be empty or a parent copy.
                 var viaRoster = await TryResolveStudentByRosterEmailAsync(trimmed, ct);
                 if (viaRoster is not null) return [viaRoster];
+                // Not a student's own address — check whether it's a guardian email on file
+                // and lazily provision/find that parent's login (no admission ID or role
+                // hint required; the plain guardian email is enough to resolve it).
                 var viaParent = await TryResolveParentByGuardianEmailAsync(trimmed, ct);
                 return viaParent is null ? Array.Empty<UserRecord>() : [viaParent];
             }
@@ -838,14 +785,7 @@ public sealed class AuthService(
         var roster = await users.GetRosterByEmailAsync(email, ct);
         if (roster is null || string.IsNullOrWhiteSpace(roster.AdmissionNo)) return null;
 
-        try
-        {
-            await users.EnsureStudentLoginAsync(roster.AdmissionNo, ct);
-        }
-        catch
-        {
-            return null;
-        }
+        await users.EnsureStudentLoginAsync(roster.AdmissionNo, ct);
         var candidates = await users.ListByAdmissionIdAsync(roster.AdmissionNo, ct);
         var student = await PickStudentAsync(candidates, ct);
         if (student is null) return null;
@@ -853,31 +793,21 @@ public sealed class AuthService(
         var normalized = email.Trim();
         if (!string.Equals(student.Email?.Trim(), normalized, StringComparison.OrdinalIgnoreCase))
         {
-            try
-            {
-                await users.SetEmailAsync(student.Id, normalized, ct);
-                student = await users.GetByIdAsync(student.Id, ct) ?? student;
-            }
-            catch
-            {
-                /* Unique email vs a parent/staff login — still return the student row. */
-            }
+            await users.SetEmailAsync(student.Id, normalized, ct);
+            student = await users.GetByIdAsync(student.Id, ct) ?? student;
         }
         return student;
     }
 
+    /// <summary>
+    /// Find (or lazily provision) the parent login for a guardian email on file, when the
+    /// identifier does not match any Users row or student roster email directly.
+    /// </summary>
     private async Task<UserRecord?> TryResolveParentByGuardianEmailAsync(string email, CancellationToken ct)
     {
         var roster = await users.GetRosterByGuardianEmailAsync(email, ct);
         if (roster is null || string.IsNullOrWhiteSpace(roster.AdmissionNo)) return null;
-        try
-        {
-            return await users.EnsureParentLoginAsync(roster.AdmissionNo, ct);
-        }
-        catch
-        {
-            return null;
-        }
+        return await users.EnsureParentLoginAsync(roster.AdmissionNo, ct);
     }
 
     private static Error NotRegisteredError(string identifier)
