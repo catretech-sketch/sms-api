@@ -75,6 +75,25 @@ public sealed class PeriodAttendanceQueryRepository(IDbConnectionFactory factory
             new CommandDefinition(command.Sql, command.Parameters, cancellationToken: ct));
         return row.ToContract();
     }
+
+    public async Task<IReadOnlyList<PeriodAttendanceAuditRow>> GetAuditAsync(
+        Guid recordId,
+        CancellationToken ct = default)
+    {
+        await using var conn = await Factory.OpenAsync(ct);
+        var rows = await conn.QueryAsync<PeriodAttendanceAuditRow>(
+            new CommandDefinition(
+                """
+                SELECT Id, RecordId, ClassId, StudentId, [Date], Period, Subject,
+                       FromStatus, ToStatus, ActorId, ActorName, ActorRole, At
+                FROM dbo.PeriodAttendanceAudit
+                WHERE RecordId = @RecordId
+                ORDER BY At DESC
+                """,
+                new { RecordId = recordId },
+                cancellationToken: ct));
+        return rows.AsList();
+    }
 }
 
 public sealed record PeriodAttendanceClassDayRow(
@@ -459,6 +478,7 @@ public static class PeriodAttendanceQuerySql
         INNER JOIN dbo.Students s ON s.Id = par.StudentId
         INNER JOIN dbo.Classes c ON c.Id = par.ClassId
         LEFT JOIN dbo.Users u ON u.Id = par.MarkedBy
+        LEFT JOIN dbo.Users uu ON uu.Id = par.UpdatedBy
         LEFT JOIN dbo.TimetableSlots ts
           ON ts.ClassId = par.ClassId
          AND ts.Period = par.Period
@@ -483,6 +503,7 @@ public static class PeriodAttendanceQuerySql
           AND (@MarkedByRole IS NULL
                OR REPLACE(LOWER(par.MarkedByRole), N'school.', N'') = LOWER(@MarkedByRole))
           AND (@Status IS NULL OR par.Status = @Status)
+          AND (@GeoFenceStatus IS NULL OR COALESCE(par.GeoFenceStatus, N'not_required') = @GeoFenceStatus)
           AND (@Q IS NULL OR s.Name LIKE N'%' + @Q + N'%' OR s.AdmissionNo LIKE N'%' + @Q + N'%')
         """;
 
@@ -509,7 +530,13 @@ public static class PeriodAttendanceQuerySql
                u.Name AS MarkedByName,
                REPLACE(LOWER(par.MarkedByRole), N'school.', N'') AS MarkedByRole,
                COALESCE(par.UpdatedAt, par.CreatedAt) AS MarkedAt,
-               CAST(N'not_required' AS nvarchar(32)) AS GeoFenceStatus
+               COALESCE(par.GeoFenceStatus, N'not_required') AS GeoFenceStatus,
+               par.GeoDistanceMeters,
+               par.GeoCapturedAt,
+               par.UpdatedBy,
+               uu.Name AS UpdatedByName,
+               REPLACE(LOWER(par.UpdatedByRole), N'school.', N'') AS UpdatedByRole,
+               par.UpdatedAt
         """ + "\n" + FromAndJoins + "\n" + Filters + "\n" + """
         ORDER BY par.[Date] DESC, c.Name, par.Period, s.Name
         OFFSET @Offset ROWS FETCH NEXT @PageSize ROWS ONLY;
@@ -532,6 +559,7 @@ public static class PeriodAttendanceQuerySql
         parameters.Add("MarkedBy", q.MarkedBy);
         parameters.Add("MarkedByRole", Clean(q.MarkedByRole));
         parameters.Add("Status", Clean(q.Status));
+        parameters.Add("GeoFenceStatus", Clean(q.GeoFenceStatus));
         parameters.Add("Q", Clean(q.Q));
         parameters.Add("Offset", (page - 1L) * pageSize);
         parameters.Add("PageSize", pageSize);

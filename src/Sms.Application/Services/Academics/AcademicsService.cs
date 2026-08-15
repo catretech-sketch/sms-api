@@ -466,6 +466,7 @@ public sealed class AcademicsService(
         string? q,
         int page = 1,
         int pageSize = 25,
+        string? geoFenceStatus = null,
         CancellationToken ct = default)
     {
         var scope = await AuthorizeAttendanceQueryAsync(caller, ct);
@@ -490,10 +491,24 @@ public sealed class AcademicsService(
             q,
             page,
             pageSize,
-            scope.AuthorizedTeacherId);
+            scope.AuthorizedTeacherId,
+            geoFenceStatus);
 
         return ApiResult<PeriodAttendanceAdvancedPage>.Ok(
             await periodAttendanceQuery.SearchAsync(query, ct));
+    }
+
+    public async Task<ApiResult<IReadOnlyList<PeriodAttendanceAuditRow>>> GetPeriodAttendanceAuditAsync(
+        Guid recordId,
+        ClaimsPrincipal caller,
+        CancellationToken ct = default)
+    {
+        var scope = await AuthorizeAttendanceQueryAsync(caller, ct);
+        if (scope.Error is { } authorizationError)
+            return ApiResult<IReadOnlyList<PeriodAttendanceAuditRow>>.Fail(authorizationError, 403);
+
+        return ApiResult<IReadOnlyList<PeriodAttendanceAuditRow>>.Ok(
+            await periodAttendanceQuery.GetAuditAsync(recordId, ct));
     }
 
     public async Task<ApiResult<AdvClassDaySummary>> GetPeriodAttendanceClassDaySummaryAsync(

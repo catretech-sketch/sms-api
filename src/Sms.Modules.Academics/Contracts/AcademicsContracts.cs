@@ -156,7 +156,13 @@ public sealed record PeriodAttendanceAdvancedRow(
     string? MarkedByName,
     string? MarkedByRole,
     DateTime? MarkedAt,
-    string GeoFenceStatus);
+    string GeoFenceStatus,
+    int? GeoDistanceMeters,
+    DateTime? GeoCapturedAt,
+    Guid? UpdatedBy,
+    string? UpdatedByName,
+    string? UpdatedByRole,
+    DateTime? UpdatedAt);
 
 public sealed record PeriodAttendanceAdvancedPage(
     IReadOnlyList<PeriodAttendanceAdvancedRow> Items,
@@ -179,7 +185,23 @@ public sealed record PeriodAttendanceAdvancedQuery(
     string? Q,
     int Page,
     int PageSize,
-    Guid? AuthorizedTeacherId = null);
+    Guid? AuthorizedTeacherId = null,
+    string? GeoFenceStatus = null);
+
+public sealed record PeriodAttendanceAuditRow(
+    Guid Id,
+    Guid RecordId,
+    Guid ClassId,
+    Guid StudentId,
+    DateTime Date,
+    int Period,
+    string Subject,
+    string? FromStatus,
+    string ToStatus,
+    Guid? ActorId,
+    string? ActorName,
+    string? ActorRole,
+    DateTime At);
 
 public sealed record AdvClassDaySummary(
     int TotalStudents, int Present, int Absent, int Late, int Leave, int NotMarked,

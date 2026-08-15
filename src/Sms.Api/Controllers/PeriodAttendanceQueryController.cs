@@ -25,6 +25,7 @@ public sealed class PeriodAttendanceQueryController(IAcademicsService academics)
         [FromQuery] string? q,
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 25,
+        [FromQuery] string? geoFenceStatus = null,
         CancellationToken ct = default) =>
         FromResult(await academics.ListPeriodAttendanceAdvancedAsync(
             User,
@@ -43,7 +44,12 @@ public sealed class PeriodAttendanceQueryController(IAcademicsService academics)
             q,
             page,
             pageSize,
+            geoFenceStatus,
             ct));
+
+    [HttpGet("period-records/{id:guid}/audit")]
+    public async Task<IActionResult> GetAudit(Guid id, CancellationToken ct = default) =>
+        FromResult(await academics.GetPeriodAttendanceAuditAsync(id, User, ct));
 
     [HttpGet("period-records/summary/class")]
     public async Task<IActionResult> GetClassDaySummary(

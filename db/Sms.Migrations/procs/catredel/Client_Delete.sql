@@ -45,6 +45,7 @@ BEGIN
 
         /* Empty operational leftovers (no people, but wizard may have created shells) */
         DELETE FROM dbo.AttendanceRecords WHERE TenantId = @Id;
+        DELETE FROM dbo.PeriodAttendanceAudit WHERE TenantId = @Id;
         DELETE FROM dbo.PeriodAttendanceRecords WHERE TenantId = @Id;
         DELETE FROM dbo.ExamPapers WHERE TenantId = @Id;
         DELETE FROM dbo.Exams WHERE TenantId = @Id;

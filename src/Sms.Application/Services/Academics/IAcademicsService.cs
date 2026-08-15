@@ -58,6 +58,11 @@ public interface IAcademicsService
         string? q,
         int page = 1,
         int pageSize = 25,
+        string? geoFenceStatus = null,
+        CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<PeriodAttendanceAuditRow>>> GetPeriodAttendanceAuditAsync(
+        Guid recordId,
+        ClaimsPrincipal caller,
         CancellationToken ct = default);
     Task<ApiResult<AdvClassDaySummary>> GetPeriodAttendanceClassDaySummaryAsync(
         ClaimsPrincipal caller,

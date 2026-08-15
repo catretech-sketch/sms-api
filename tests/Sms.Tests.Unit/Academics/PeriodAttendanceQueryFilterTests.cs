@@ -132,6 +132,43 @@ public class PeriodAttendanceQueryFilterTests
         Assert.Equal(typeof(Task<PeriodAttendanceAdvancedPage>), method!.ReturnType);
     }
 
+    [Fact]
+    public void GeoFenceStatus_filter_and_projection_default_unset_rows_to_not_required()
+    {
+        var query = CreateQuery(1, 25) with { GeoFenceStatus = "outside" };
+
+        var command = PeriodAttendanceQuerySql.Build(query);
+
+        Assert.Contains(
+            "(@GeoFenceStatus IS NULL OR COALESCE(par.GeoFenceStatus, N'not_required') = @GeoFenceStatus)",
+            command.Sql);
+        Assert.Contains("COALESCE(par.GeoFenceStatus, N'not_required') AS GeoFenceStatus", command.Sql);
+        Assert.Equal("outside", command.Parameters.Get<string?>("GeoFenceStatus"));
+    }
+
+    [Fact]
+    public void Projection_includes_geo_and_updated_by_columns()
+    {
+        var command = PeriodAttendanceQuerySql.Build(CreateQuery(1, 25));
+
+        Assert.Contains("par.GeoDistanceMeters", command.Sql);
+        Assert.Contains("par.GeoCapturedAt", command.Sql);
+        Assert.Contains("par.UpdatedBy,", command.Sql);
+        Assert.Contains("uu.Name AS UpdatedByName", command.Sql);
+        Assert.Contains("par.UpdatedByRole", command.Sql);
+    }
+
+    [Fact]
+    public void Repository_exposes_get_audit_async_for_a_record()
+    {
+        var method = typeof(PeriodAttendanceQueryRepository).GetMethod(
+            nameof(PeriodAttendanceQueryRepository.GetAuditAsync),
+            [typeof(Guid), typeof(CancellationToken)]);
+
+        Assert.NotNull(method);
+        Assert.Equal(typeof(Task<IReadOnlyList<PeriodAttendanceAuditRow>>), method!.ReturnType);
+    }
+
     private static PeriodAttendanceAdvancedQuery CreateQuery(int page, int pageSize) =>
         new(
             new DateOnly(2026, 8, 1),
