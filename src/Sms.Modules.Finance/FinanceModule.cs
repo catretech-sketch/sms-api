@@ -466,7 +466,8 @@ public sealed record UpsertFeeStructureRequest(
     DateOnly? EffectiveTo,
     string? Status,
     string? Description,
-    JsonElement? Amounts);
+    JsonElement? Amounts,
+    string? AmountsJson = null);
 
 public sealed class FeeStructureRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {

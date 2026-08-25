@@ -1,10 +1,22 @@
 namespace Sms.Modules.Academics.Contracts;
 
 // ---- Exam (term) ----
+// ClassIds is a trailing init-only property with a secondary constructor, not a primary-
+// constructor parameter: Dapper materializes via a constructor matching the exact column
+// count of whatever query ran, and the inline SELECT/stored procs only ever return the
+// original 11 columns (ClassIds is populated separately via ListExamClassIdsAsync).
 public sealed record ExamResponse(
     Guid Id, Guid TenantId, string Name, string? Type, string? Grades, DateTime? FromDate, DateTime? ToDate,
-    int SubjectCount, string Status, decimal MarksEnteredPct, bool Published,
-    IReadOnlyList<Guid>? ClassIds = null);
+    int SubjectCount, string Status, decimal MarksEnteredPct, bool Published)
+{
+    public IReadOnlyList<Guid>? ClassIds { get; init; }
+
+    public ExamResponse(
+        Guid Id, Guid TenantId, string Name, string? Type, string? Grades, DateTime? FromDate, DateTime? ToDate,
+        int SubjectCount, string Status, decimal MarksEnteredPct, bool Published, IReadOnlyList<Guid>? ClassIds)
+        : this(Id, TenantId, Name, Type, Grades, FromDate, ToDate, SubjectCount, Status, MarksEnteredPct, Published) =>
+        this.ClassIds = ClassIds;
+}
 public sealed record CreateExamRequest(
     string Name, string? Type, string? Grades, DateTime? FromDate, DateTime? ToDate, int SubjectCount,
     IReadOnlyList<Guid>? ClassIds = null);

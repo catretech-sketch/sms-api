@@ -15,6 +15,14 @@ public interface ISisService
     Task<ApiResult<StudentResponse>> GetStudentAsync(Guid id, CancellationToken ct = default);
     /// <summary>Roster row for the authenticated user (Users.StudentId = admission number, not Users.Id).</summary>
     Task<ApiResult<StudentResponse>> GetMyStudentAsync(CancellationToken ct = default);
+    /// <summary>
+    /// Students linked to the authenticated parent: every roster row whose
+    /// GuardianEmail matches the parent Users.Email, plus the admission stored
+    /// on Users.StudentId. Empty list when nothing is linked.
+    /// </summary>
+    Task<ApiResult<IReadOnlyList<StudentResponse>>> ListMyChildrenAsync(CancellationToken ct = default);
+    /// <summary>True when the caller is the student themself or a parent linked to this roster row.</summary>
+    Task<bool> IsLinkedToCallerAsync(Guid studentId, CancellationToken ct = default);
     Task<ApiResult<StudentResponse>> CreateStudentAsync(CreateStudentRequest req, CancellationToken ct = default);
     Task<ApiResult<StudentResponse>> UpdateStudentAsync(Guid id, UpdateStudentRequest req, CancellationToken ct = default);
     Task<ApiResult<CursorPage<StudentResponse>>> ListClassStudentsAsync(
@@ -61,6 +69,27 @@ public sealed class SisService(
         return student is null
             ? ApiResult<StudentResponse>.Fail(new Error("not_found", "student roster not found"), 404)
             : ApiResult<StudentResponse>.Ok(student);
+    }
+
+    public async Task<ApiResult<IReadOnlyList<StudentResponse>>> ListMyChildrenAsync(CancellationToken ct = default)
+    {
+        if (tenant.UserId is not { } uid)
+            return ApiResult<IReadOnlyList<StudentResponse>>.Fail(new Error("unauthorized", "unauthorized"), 401);
+
+        var user = await auth.GetByIdAsync(uid, ct);
+        if (user is null)
+            return ApiResult<IReadOnlyList<StudentResponse>>.Fail(new Error("unauthorized", "unauthorized"), 401);
+
+        var children = await repo.ListLinkedToParentAsync(user.Email, user.StudentId, ct);
+        return ApiResult<IReadOnlyList<StudentResponse>>.Ok(children);
+    }
+
+    public async Task<bool> IsLinkedToCallerAsync(Guid studentId, CancellationToken ct = default)
+    {
+        var mine = await GetMyStudentAsync(ct);
+        if (mine.IsSuccess && mine.Data!.Id == studentId) return true;
+        var kids = await ListMyChildrenAsync(ct);
+        return kids.IsSuccess && kids.Data!.Any(c => c.Id == studentId);
     }
 
     public async Task<ApiResult<StudentResponse>> CreateStudentAsync(CreateStudentRequest req, CancellationToken ct = default)

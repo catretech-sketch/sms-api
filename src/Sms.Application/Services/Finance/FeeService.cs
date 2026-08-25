@@ -1,6 +1,8 @@
 using System.Text.Json;
 using Sms.Application.Common;
 using Sms.Modules.Finance;
+using Sms.Modules.Sis.Contracts;
+using Sms.Modules.Sis.Data;
 using Sms.Shared.Kernel.Payments;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
@@ -22,6 +24,8 @@ public interface IFeeService
 
     Task<ApiResult<FeeStructureResponse>> GetStructureAsync(CancellationToken ct = default);
     Task<ApiResult<FeeStructureResponse>> UpsertStructureAsync(UpsertFeeStructureRequest req, CancellationToken ct = default);
+    Task<ApiResult<GenerateFeeInvoicesResponse>> GenerateInvoicesAsync(
+        GenerateFeeInvoicesRequest req, CancellationToken ct = default);
     Task<ApiResult<FeeReportSummaryResponse>> GetReportSummaryAsync(CancellationToken ct = default);
 }
 
@@ -30,6 +34,7 @@ public sealed class FeeService(
     FeeInvoiceRepository invoices,
     FeeHeadRepository heads,
     FeeStructureRepository structures,
+    StudentRepository roster,
     IPaymentGateway gateway,
     ITenantContext tenant) : IFeeService
 {
@@ -191,9 +196,67 @@ public sealed class FeeService(
         if (status is not ("active" or "inactive"))
             return ApiResult<FeeStructureResponse>.Fail(new Error("validation_error", "Status must be active or inactive"), 400);
 
-        var amountsJson = SerializeAmounts(req.Amounts);
+        var amountsJson = SerializeAmounts(req.Amounts, req.AmountsJson);
         var saved = await structures.UpsertAsync(tid, req with { Status = status }, amountsJson, ct);
         return ApiResult<FeeStructureResponse>.Ok(ToResponse(saved!));
+    }
+
+    public async Task<ApiResult<GenerateFeeInvoicesResponse>> GenerateInvoicesAsync(
+        GenerateFeeInvoicesRequest req, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<GenerateFeeInvoicesResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
+
+        var year = req.AcademicYear?.Trim();
+        var term = req.Term?.Trim();
+        if (string.IsNullOrWhiteSpace(year) || string.IsNullOrWhiteSpace(term))
+            return ApiResult<GenerateFeeInvoicesResponse>.Fail(
+                new Error("validation_error", "academic_year and term are required"), 400);
+
+        var classes = NormKeys(req.Classes);
+        var grades = NormKeys(req.Grades);
+        if (classes.Count == 0 && grades.Count == 0)
+            return ApiResult<GenerateFeeInvoicesResponse>.Fail(
+                new Error("validation_error", "Select at least one class or grade"), 400);
+
+        var structure = await structures.GetAsync(ct);
+        if (structure is null)
+            return ApiResult<GenerateFeeInvoicesResponse>.Fail(
+                new Error("not_found", "No fee structure saved"), 404);
+
+        JsonElement amounts;
+        try
+        {
+            amounts = string.IsNullOrWhiteSpace(structure.AmountsJson)
+                ? JsonDocument.Parse("{}").RootElement.Clone()
+                : JsonDocument.Parse(structure.AmountsJson).RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            amounts = JsonDocument.Parse("{}").RootElement.Clone();
+        }
+
+        var students = await roster.ListAsync(null, null, null, null, ct);
+        var period = $"{year} {term}";
+        var created = 0;
+        foreach (var student in students)
+        {
+            var label = ClassKey(student);
+            var grade = (student.Grade ?? "").Trim();
+            var matched = classes.Count > 0
+                ? classes.Contains(label)
+                : grades.Contains(grade);
+            if (!matched) continue;
+
+            var amount = AmountFor(amounts, label, grade);
+            if (amount <= 0) continue;
+
+            var row = await invoices.CreateAsync(
+                tid, new CreateFeeInvoiceRequest(student.Id, period, req.DueDate, amount), ct);
+            if (row is not null) created++;
+        }
+
+        return ApiResult<GenerateFeeInvoicesResponse>.Ok(new GenerateFeeInvoicesResponse(created));
     }
 
     public async Task<ApiResult<FeeReportSummaryResponse>> GetReportSummaryAsync(CancellationToken ct = default)
@@ -332,13 +395,69 @@ public sealed class FeeService(
             amounts);
     }
 
-    private static string SerializeAmounts(JsonElement? amounts)
+    private static string SerializeAmounts(JsonElement? amounts, string? amountsJson)
     {
+        if (!string.IsNullOrWhiteSpace(amountsJson))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(amountsJson);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                    return doc.RootElement.GetRawText();
+            }
+            catch (JsonException)
+            {
+                /* fall through to Amounts */
+            }
+        }
         if (amounts is null || amounts.Value.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
             return "{}";
         if (amounts.Value.ValueKind != JsonValueKind.Object)
             return "{}";
         return amounts.Value.GetRawText();
+    }
+
+    private static HashSet<string> NormKeys(IReadOnlyList<string>? values) =>
+        (values ?? [])
+            .Select(v => v.Trim())
+            .Where(v => v.Length > 0)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private static string ClassKey(StudentResponse student)
+    {
+        if (!string.IsNullOrWhiteSpace(student.ClassLabel))
+            return student.ClassLabel.Trim();
+        var grade = (student.Grade ?? "").Trim();
+        var section = (student.Section ?? "").Trim();
+        return string.IsNullOrEmpty(section) ? grade : $"{grade}-{section}";
+    }
+
+    private static decimal AmountFor(JsonElement amounts, string classLabel, string grade)
+    {
+        if (amounts.ValueKind != JsonValueKind.Object) return 0;
+        if (TrySumHeads(amounts, classLabel, out var byClass) && byClass > 0) return byClass;
+        if (!string.IsNullOrWhiteSpace(grade) && TrySumHeads(amounts, grade, out var byGrade))
+            return byGrade;
+        return 0;
+    }
+
+    private static bool TrySumHeads(JsonElement amounts, string key, out decimal total)
+    {
+        total = 0;
+        foreach (var prop in amounts.EnumerateObject())
+        {
+            if (!string.Equals(prop.Name, key, StringComparison.OrdinalIgnoreCase)) continue;
+            if (prop.Value.ValueKind == JsonValueKind.Number && prop.Value.TryGetDecimal(out total))
+                return true;
+            if (prop.Value.ValueKind != JsonValueKind.Object) return false;
+            foreach (var head in prop.Value.EnumerateObject())
+            {
+                if (head.Value.ValueKind == JsonValueKind.Number && head.Value.TryGetDecimal(out var n))
+                    total += n;
+            }
+            return true;
+        }
+        return false;
     }
 
     private static string DefaultAcademicYear(DateTime? utc = null)

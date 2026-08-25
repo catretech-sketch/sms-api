@@ -55,7 +55,7 @@ public class AuthFlowTests(SqlServerFixture fx)
         var hasher = new PasswordHasher();
         var ctx = new TenantContext(); ctx.Set(null, Guid.NewGuid(), true);
         var factory = new SqlConnectionFactory(fx.ConnectionString, ctx);
-        var phone = $"+9198{Guid.NewGuid():N}".Substring(0, 13);
+        var phone = $"+9198{Random.Shared.Next(10_000_000, 99_999_999)}";
         await using (var c = await factory.OpenAsync())
             await c.ExecuteAsync(
                 "INSERT dbo.Users (Id, Phone, PasswordHash, IsPlatform) VALUES (NEWID(),@p,@h,1)",

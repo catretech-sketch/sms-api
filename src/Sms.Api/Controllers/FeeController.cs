@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Sms.Application.Services.Finance;
+using Sms.Application.Services.Sis;
 using Sms.Modules.Finance;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Http;
@@ -10,11 +11,13 @@ namespace Sms.Api.Controllers;
 
 [Route("v1")]
 [Authorize]
-public sealed class FeeController(IFeeService fees) : ApiControllerBase
+public sealed class FeeController(IFeeService fees, ISisService sis) : ApiControllerBase
 {
     [HttpGet("fees/payments")]
     public async Task<IActionResult> ListPayments([FromQuery(Name = "student_id")] Guid? studentId, CancellationToken ct)
     {
+        if (studentId is { } sid && !RoleChecks.IsStaff(User) && !await sis.IsLinkedToCallerAsync(sid, ct))
+            return ForbiddenResult("not your linked student");
         var result = await fees.ListPaymentsAsync(studentId, ct);
         if (result.Error is { } error)
             return StatusCode(result.StatusCode, ErrorEnvelope.From(error));
@@ -28,6 +31,8 @@ public sealed class FeeController(IFeeService fees) : ApiControllerBase
     [HttpGet("fees/invoices")]
     public async Task<IActionResult> ListInvoices([FromQuery(Name = "student_id")] Guid? studentId, CancellationToken ct)
     {
+        if (studentId is { } sid && !RoleChecks.IsStaff(User) && !await sis.IsLinkedToCallerAsync(sid, ct))
+            return ForbiddenResult("not your linked student");
         var result = await fees.ListInvoicesAsync(studentId, ct);
         if (result.Error is { } error)
             return StatusCode(result.StatusCode, ErrorEnvelope.From(error));
@@ -74,6 +79,11 @@ public sealed class FeeController(IFeeService fees) : ApiControllerBase
     [Authorize(Policy = Policies.Principal)]
     public async Task<IActionResult> UpsertStructure([FromBody] UpsertFeeStructureRequest req, CancellationToken ct) =>
         FromResult(await fees.UpsertStructureAsync(req, ct));
+
+    [HttpPost("fees/invoices/generate")]
+    [Authorize(Policy = Policies.Principal)]
+    public async Task<IActionResult> GenerateInvoices([FromBody] GenerateFeeInvoicesRequest req, CancellationToken ct) =>
+        FromResult(await fees.GenerateInvoicesAsync(req, ct));
 
     [HttpGet("fees/reports/summary")]
     public async Task<IActionResult> ReportSummary(CancellationToken ct) =>
