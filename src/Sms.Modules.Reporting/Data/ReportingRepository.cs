@@ -11,14 +11,8 @@ public sealed class ReportingRepository(IDbConnectionFactory factory) : BaseRepo
 SELECT
   (SELECT COUNT(*) FROM dbo.Students)                                            AS TotalStudents,
   (SELECT COUNT(*) FROM dbo.Classes)                                             AS TotalClasses,
-  (SELECT COUNT(*) FROM (
-     SELECT par.StudentId
-     FROM dbo.PeriodAttendanceRecords par
-     WHERE par.[Date] = @today
-     GROUP BY par.StudentId
-     HAVING SUM(CASE WHEN par.Status IN (N'present', N'late') THEN 1 ELSE 0 END) * 1.0
-          / NULLIF(COUNT(*), 0) >= 0.5
-   ) present_today)                                                               AS AttendanceToday,
+  (SELECT COUNT(*) FROM dbo.AttendanceRecords
+     WHERE [Date] = @today AND Status IN (N'present', N'late'))                   AS AttendanceToday,
   (SELECT COUNT(*) FROM dbo.Homework
      WHERE Status = 'todo' AND (DueDate IS NULL OR DueDate >= @today))           AS PendingAssignments,
   (SELECT COUNT(*) FROM dbo.ExamPapers
@@ -171,25 +165,24 @@ ORDER BY s.Name", null, ct);
         return teachers.Concat(support).OrderBy(s => s.Name).ToList();
     }
 
-    /// School-wide student attendance for dashboard KPIs — period marks only
-    /// (present + late) / all marked periods for the day. Unmarked periods excluded.
-    /// PresentTotal = positive period marks; StudentTotal = marked period count (wire names kept for clients).
+    /// School-wide student attendance for principal KPIs: daily roll-call
+    /// (present + late) / SUM(Classes.StudentCount). Unmarked classes still count in the denominator.
     private async Task<(int PresentTotal, int StudentTotal)> ResolveStudentTotalsAsync(
         DateTime d, CancellationToken ct)
     {
         var rows = await QueryInlineAsync<StudentTotalsRow>(@"
 SELECT
-  ISNULL(SUM(CASE WHEN Status IN (N'present', N'late') THEN 1 ELSE 0 END), 0) AS PresentTotal,
-  COUNT(*) AS StudentTotal
-FROM dbo.PeriodAttendanceRecords
-WHERE [Date] = @d",
+  ISNULL((SELECT COUNT(*) FROM dbo.AttendanceRecords
+          WHERE [Date] = @d AND Status IN (N'present', N'late')), 0) AS PresentTotal,
+  ISNULL((SELECT SUM(StudentCount) FROM dbo.Classes), 0) AS StudentTotal",
             new { d }, ct);
 
         var row = rows.Count > 0 ? rows[0] : new StudentTotalsRow(0, 0);
         return (row.PresentTotal, row.StudentTotal);
     }
 
-    private sealed record StudentTotalsRow(int StudentTotal, int PresentTotal);
+    // Parameter order must match SELECT column order for Dapper constructor mapping.
+    private sealed record StudentTotalsRow(int PresentTotal, int StudentTotal);
 
     public async Task<PrincipalOverviewResponse> GetPrincipalOverviewAsync(
         DateOnly day, TimeSpan utcOffset, CancellationToken ct = default)
@@ -201,7 +194,7 @@ WHERE [Date] = @d",
 
         var (presentTotal, studentTotal) = await ResolveStudentTotalsAsync(d, ct);
         var studentsPct = studentTotal > 0
-            ? Math.Round(100m * presentTotal / studentTotal, 2, MidpointRounding.AwayFromZero)
+            ? Math.Round(100m * presentTotal / studentTotal, 1, MidpointRounding.AwayFromZero)
             : 0m;
 
         var pendingRows = await QueryInlineAsync<int>(
@@ -220,32 +213,30 @@ WHERE [Date] = @d",
         var classes = await QueryInlineAsync<PrincipalClassAttendance>(@"
 SELECT c.Id AS ClassId, c.Name AS ClassName,
        ISNULL(a.Present, 0) AS Present,
-       ISNULL(a.Marked, 0) AS Total,
+       ISNULL(c.StudentCount, 0) AS Total,
        CAST(CASE
-         WHEN ISNULL(a.Marked, 0) > 0
-         THEN ROUND(100.0 * ISNULL(a.Present, 0) / a.Marked, 2)
-         ELSE 0 END AS decimal(5,2)) AS Pct
+         WHEN ISNULL(c.StudentCount, 0) > 0
+         THEN ROUND(100.0 * ISNULL(a.Present, 0) / c.StudentCount, 1)
+         ELSE 0 END AS decimal(5,1)) AS Pct
 FROM dbo.Classes c
 OUTER APPLY (
-  SELECT
-    SUM(CASE WHEN par.Status IN (N'present', N'late') THEN 1 ELSE 0 END) AS Present,
-    COUNT(*) AS Marked
-  FROM dbo.PeriodAttendanceRecords par
-  WHERE par.ClassId = c.Id AND par.[Date] = @d
+  SELECT COUNT(*) AS Present
+  FROM dbo.AttendanceRecords ar
+  WHERE ar.ClassId = c.Id AND ar.[Date] = @d AND ar.Status IN (N'present', N'late')
 ) a
 ORDER BY c.Name", new { d }, ct);
 
         var (presentTotal, studentTotal) = await ResolveStudentTotalsAsync(d, ct);
         decimal overall = studentTotal > 0
-            ? Math.Round(100m * presentTotal / studentTotal, 2, MidpointRounding.AwayFromZero)
+            ? Math.Round(100m * presentTotal / studentTotal, 1, MidpointRounding.AwayFromZero)
             : 0m;
         var staff = await LoadStaffAsync(startUtc, endUtc, ct);
         return new PrincipalAttendanceResponse(d, presentTotal, studentTotal, overall, classes, staff);
     }
 
-    private static string Initials(string name)
+    private static string Initials(string? name)
     {
-        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var parts = (name ?? "").Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 0) return "";
         return parts.Length == 1 ? parts[0][..1].ToUpperInvariant()
             : (parts[0][..1] + parts[^1][..1]).ToUpperInvariant();

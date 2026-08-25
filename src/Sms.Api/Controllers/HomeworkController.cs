@@ -61,6 +61,7 @@ public sealed class HomeworkController(IAcademicsService academics, ISisService 
                     return ApiResult<Guid?>.Ok(mine.Data!.Id);
                 return ApiResult<Guid?>.Ok(sid);
             }
+            return ApiResult<Guid?>.Ok(sid);
         }
 
         if (mine.IsSuccess)

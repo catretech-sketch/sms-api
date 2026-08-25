@@ -46,7 +46,7 @@ public class DashboardStatsTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
-        var teacher = Client(app, tenantId, Policies.Teacher);
+        var teacher = Client(app, tenantId, Policies.Teacher, Policies.Principal);
 
         // Seed 3 students
         var s1 = (await Data(await teacher.PostAsJsonAsync("/v1/students", new

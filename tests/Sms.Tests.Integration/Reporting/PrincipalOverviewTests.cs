@@ -39,8 +39,9 @@ public class PrincipalOverviewTests(SqlServerFixture fx)
 
     private static async Task<JsonElement> Data(HttpResponseMessage res, HttpStatusCode expected)
     {
-        res.StatusCode.Should().Be(expected);
-        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var body = await res.Content.ReadAsStringAsync();
+        res.StatusCode.Should().Be(expected, because: body);
+        using var doc = JsonDocument.Parse(body);
         return doc.RootElement.GetProperty("data").Clone();
     }
 
