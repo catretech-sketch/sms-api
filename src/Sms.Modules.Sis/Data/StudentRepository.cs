@@ -41,7 +41,7 @@ OUTER APPLY (
         {
             Id = id, r.Name, r.Grade, r.Section, r.Roll, r.GuardianName, r.GuardianPhone, r.GuardianEmail,
             r.House, r.FeeStatus, r.FeeDue, r.Status, r.PhotoUrl, r.SetPhoto,
-            r.Gender, r.Dob, r.Email, r.Address
+            r.Gender, r.Dob, r.Email, r.Address, r.AvatarHue
         }, ct);
 
     public async Task<StudentResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
@@ -56,27 +56,32 @@ OUTER APPLY (
             new { admissionNo = admissionNo.Trim() }, ct)).FirstOrDefault();
     }
 
-    /// Roster rows a parent can see: ParentStudentLinks for this user, plus
-    /// matching guardian email and/or Users.StudentId admission (legacy). Deduped by Id.
+    /// Roster rows a parent can see: ParentStudentLinks for this user and tenant only.
     public Task<IReadOnlyList<StudentResponse>> ListLinkedToParentAsync(
-        Guid parentUserId, string? guardianEmail, string? admissionNo, CancellationToken ct = default)
-    {
-        var email = string.IsNullOrWhiteSpace(guardianEmail) ? null : guardianEmail.Trim();
-        var adm = string.IsNullOrWhiteSpace(admissionNo) ? null : admissionNo.Trim();
-
-        return QueryInlineAsync<StudentResponse>(
-            $"SELECT {ColsWithLivePct} WHERE (" +
-            "EXISTS (SELECT 1 FROM dbo.ParentStudentLinks l WHERE l.ParentUserId = @parentUserId AND l.StudentId = s.Id) " +
-            "OR (@email IS NOT NULL AND LOWER(LTRIM(RTRIM(s.GuardianEmail))) = LOWER(LTRIM(RTRIM(@email)))) " +
-            "OR (@adm IS NOT NULL AND LOWER(LTRIM(RTRIM(s.AdmissionNo))) = LOWER(LTRIM(RTRIM(@adm))))" +
+        Guid parentUserId, Guid tenantId, CancellationToken ct = default) =>
+        QueryInlineAsync<StudentResponse>(
+            $"SELECT {ColsWithLivePct} WHERE s.TenantId = @tenantId AND EXISTS (" +
+            "SELECT 1 FROM dbo.ParentStudentLinks l " +
+            "WHERE l.ParentUserId = @parentUserId AND l.StudentId = s.Id AND l.TenantId = @tenantId" +
             ") ORDER BY s.Name, s.Id",
-            new { parentUserId, email, adm }, ct);
-    }
+            new { parentUserId, tenantId }, ct);
 
     public async Task SetGuardianEmailAsync(Guid id, string email, CancellationToken ct = default) =>
         await ExecuteInlineAsync(
             "UPDATE dbo.Students SET GuardianEmail = @email WHERE Id = @id",
             new { id, email }, ct);
+
+    public async Task SetGuardianContactAsync(
+        Guid id, string? email, string? phone, string? name, CancellationToken ct = default) =>
+        await ExecuteInlineAsync(
+            """
+            UPDATE dbo.Students SET
+                GuardianEmail = COALESCE(@email, GuardianEmail),
+                GuardianPhone = COALESCE(@phone, GuardianPhone),
+                GuardianName  = COALESCE(@name, GuardianName)
+            WHERE Id = @id
+            """,
+            new { id, email, phone, name }, ct);
 
     public Task<IReadOnlyList<StudentResponse>> ListAsync(
         string? q, string? grade, string? status, string? fee, CancellationToken ct = default) =>

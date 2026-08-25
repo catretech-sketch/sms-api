@@ -16,8 +16,8 @@ public sealed class FeeController(IFeeService fees, ISisService sis) : ApiContro
     [HttpGet("fees/payments")]
     public async Task<IActionResult> ListPayments([FromQuery(Name = "student_id")] Guid? studentId, CancellationToken ct)
     {
-        if (studentId is { } sid && !RoleChecks.IsStaff(User) && !await sis.IsLinkedToCallerAsync(sid, ct))
-            return ForbiddenResult("not your linked student");
+        if (await DenyUnscopedOrUnlinkedAsync(studentId, ct) is { } denied)
+            return denied;
         var result = await fees.ListPaymentsAsync(studentId, ct);
         if (result.Error is { } error)
             return StatusCode(result.StatusCode, ErrorEnvelope.From(error));
@@ -25,14 +25,18 @@ public sealed class FeeController(IFeeService fees, ISisService sis) : ApiContro
     }
 
     [HttpPost("fees/payments")]
-    public async Task<IActionResult> CreatePayment([FromBody] CreateFeePaymentRequest req, CancellationToken ct) =>
-        FromResult(await fees.CreatePaymentAsync(req, ct));
+    public async Task<IActionResult> CreatePayment([FromBody] CreateFeePaymentRequest req, CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await fees.CreatePaymentAsync(req, ct));
+    }
 
     [HttpGet("fees/invoices")]
     public async Task<IActionResult> ListInvoices([FromQuery(Name = "student_id")] Guid? studentId, CancellationToken ct)
     {
-        if (studentId is { } sid && !RoleChecks.IsStaff(User) && !await sis.IsLinkedToCallerAsync(sid, ct))
-            return ForbiddenResult("not your linked student");
+        if (await DenyUnscopedOrUnlinkedAsync(studentId, ct) is { } denied)
+            return denied;
         var result = await fees.ListInvoicesAsync(studentId, ct);
         if (result.Error is { } error)
             return StatusCode(result.StatusCode, ErrorEnvelope.From(error));
@@ -40,12 +44,23 @@ public sealed class FeeController(IFeeService fees, ISisService sis) : ApiContro
     }
 
     [HttpPost("fees/invoices")]
-    public async Task<IActionResult> CreateInvoice([FromBody] CreateFeeInvoiceRequest req, CancellationToken ct) =>
-        FromResult(await fees.CreateInvoiceAsync(req, ct));
+    public async Task<IActionResult> CreateInvoice([FromBody] CreateFeeInvoiceRequest req, CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await fees.CreateInvoiceAsync(req, ct));
+    }
 
     [HttpPost("fees/invoices/{id:guid}/pay")]
-    public async Task<IActionResult> PayInvoice(Guid id, [FromBody] PayFeeInvoiceRequest? req, CancellationToken ct) =>
-        FromResult(await fees.PayInvoiceAsync(id, req, ct));
+    public async Task<IActionResult> PayInvoice(Guid id, [FromBody] PayFeeInvoiceRequest? req, CancellationToken ct)
+    {
+        var inv = await fees.GetInvoiceAsync(id, ct);
+        if (inv is null)
+            return NotFoundResult();
+        if (!RoleChecks.IsStaff(User) && !await sis.IsLinkedToCallerAsync(inv.StudentId, ct))
+            return ForbiddenResult("not your linked student");
+        return FromResult(await fees.PayInvoiceAsync(id, req, ct));
+    }
 
     [HttpGet("fees/heads")]
     public async Task<IActionResult> ListHeads(CancellationToken ct)
@@ -86,6 +101,20 @@ public sealed class FeeController(IFeeService fees, ISisService sis) : ApiContro
         FromResult(await fees.GenerateInvoicesAsync(req, ct));
 
     [HttpGet("fees/reports/summary")]
-    public async Task<IActionResult> ReportSummary(CancellationToken ct) =>
-        FromResult(await fees.GetReportSummaryAsync(ct));
+    public async Task<IActionResult> ReportSummary(CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await fees.GetReportSummaryAsync(ct));
+    }
+
+    private async Task<IActionResult?> DenyUnscopedOrUnlinkedAsync(Guid? studentId, CancellationToken ct)
+    {
+        if (RoleChecks.IsStaff(User)) return null;
+        if (studentId is not { } sid)
+            return ForbiddenResult("student_id is required");
+        if (!await sis.IsLinkedToCallerAsync(sid, ct))
+            return ForbiddenResult("not your linked student");
+        return null;
+    }
 }

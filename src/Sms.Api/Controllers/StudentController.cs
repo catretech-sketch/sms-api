@@ -26,12 +26,20 @@ public sealed class StudentController(ISisService sis, IAcademicsService academi
         FromResult(await sis.GetStudentAsync(id, ct));
 
     [HttpPost("students")]
-    public async Task<IActionResult> Create([FromBody] CreateStudentRequest req, CancellationToken ct) =>
-        FromResult(await sis.CreateStudentAsync(req, ct));
+    public async Task<IActionResult> Create([FromBody] CreateStudentRequest req, CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await sis.CreateStudentAsync(req, ct));
+    }
 
     [HttpPatch("students/{id:guid}")]
-    public async Task<IActionResult> Update(Guid id, [FromBody] UpdateStudentRequest req, CancellationToken ct) =>
-        FromResult(await sis.UpdateStudentAsync(id, req, ct));
+    public async Task<IActionResult> Update(Guid id, [FromBody] UpdateStudentRequest req, CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await sis.UpdateStudentAsync(id, req, ct));
+    }
 
     [HttpGet("classes/{classId:guid}/students")]
     [Authorize(Policy = AuthorizationPolicies.TeacherApp)]

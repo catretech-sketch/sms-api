@@ -35,6 +35,10 @@ public sealed record AnnouncementResponse(
 {
     /// Set after create — how many emails were queued (not a DB column).
     public int Reach { get; init; }
+    public IReadOnlyList<string>? Emails { get; init; }
+    public IReadOnlyList<string>? Phones { get; init; }
+    public string? AttachmentFileName { get; init; }
+    public string? AttachmentContentType { get; init; }
 }
 public sealed record CreateAnnouncementRequest(
     string Title,
@@ -73,14 +77,24 @@ public sealed class CommsRepository(IDbConnectionFactory factory) : BaseReposito
     private const string ComplaintCols = "Id, TenantId, Subject, [From], Category, Priority, Status, Age, Assignee, Body";
     private const string NotificationCols = "Id, TenantId, Icon, Tone, Title, Body, [Time], Unread";
 
-    public Task<IReadOnlyList<ComplaintResponse>> ListComplaintsAsync(string? status, CancellationToken ct = default) =>
+    public Task<IReadOnlyList<ComplaintResponse>> ListComplaintsAsync(
+        string? status, Guid? createdByUserId, CancellationToken ct = default) =>
         QueryInlineAsync<ComplaintResponse>(
-            $"SELECT {ComplaintCols} FROM dbo.Complaints WHERE (@status IS NULL OR Status = @status) ORDER BY Priority",
-            new { status }, ct);
+            $"SELECT {ComplaintCols} FROM dbo.Complaints WHERE (@status IS NULL OR Status = @status) " +
+            "AND (@createdByUserId IS NULL OR CreatedByUserId = @createdByUserId) ORDER BY Priority",
+            new { status, createdByUserId }, ct);
 
-    public Task<ComplaintResponse?> CreateComplaintAsync(Guid tenantId, CreateComplaintRequest r, CancellationToken ct = default) =>
-        QuerySingleProcAsync<ComplaintResponse>("dbo.Complaint_Create",
+    public async Task<ComplaintResponse?> CreateComplaintAsync(
+        Guid tenantId, CreateComplaintRequest r, Guid? createdByUserId, CancellationToken ct = default)
+    {
+        var created = await QuerySingleProcAsync<ComplaintResponse>("dbo.Complaint_Create",
             new { TenantId = tenantId, r.Subject, r.From, r.Category, r.Priority, r.Body }, ct);
+        if (created is null || createdByUserId is null) return created;
+        await ExecuteInlineAsync(
+            "UPDATE dbo.Complaints SET CreatedByUserId = @createdByUserId WHERE Id = @id",
+            new { id = created.Id, createdByUserId }, ct);
+        return created;
+    }
 
     public async Task<ComplaintResponse?> GetComplaintAsync(Guid id, CancellationToken ct = default) =>
         (await QueryInlineAsync<ComplaintResponse>($"SELECT {ComplaintCols} FROM dbo.Complaints WHERE Id = @id", new { id }, ct))
@@ -329,6 +343,19 @@ ORDER BY a.[Date] DESC", new { audience }, ct);
         Guid tenantId, CreateAnnouncementRequest r, Guid? creatorUserId, string? role, CancellationToken ct = default) =>
         QuerySingleProcAsync<AnnouncementResponse>("dbo.Announcement_Create",
             new { TenantId = tenantId, r.Title, r.Body, From = role, Role = role, CreatorUserId = creatorUserId, r.Type, r.Audience }, ct);
+
+    public Task<int> SaveAnnouncementDeliveryAsync(
+        Guid id, string recipientsJson, string? attachmentFileName, string? attachmentContentType,
+        CancellationToken ct = default) =>
+        ExecuteInlineAsync(
+            """
+            UPDATE dbo.Announcements SET
+                RecipientsJson = @recipientsJson,
+                AttachmentFileName = @attachmentFileName,
+                AttachmentContentType = @attachmentContentType
+            WHERE Id = @id
+            """,
+            new { id, recipientsJson, attachmentFileName, attachmentContentType }, ct);
 }
 
 public static class CommsModule

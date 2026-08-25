@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Sms.Application.Services.Comms;
 using Sms.Modules.Comms;
+using Sms.Shared.Kernel.Authz;
 
 namespace Sms.Api.Controllers;
 
@@ -18,6 +19,10 @@ public sealed class NotificationController(INotificationService notifications) :
         FromResult(await notifications.MarkReadAsync(ct));
 
     [HttpPost("notifications")]
-    public async Task<IActionResult> Create([FromBody] CreateNotificationRequest req, CancellationToken ct) =>
-        FromResult(await notifications.CreateAsync(req, ct));
+    public async Task<IActionResult> Create([FromBody] CreateNotificationRequest req, CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await notifications.CreateAsync(req, ct));
+    }
 }

@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Dapper;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
@@ -201,5 +202,108 @@ public class FeesTests(SqlServerFixture fx)
         var list = await Data(await client.GetAsync($"/v1/fees/payments?student_id={studentId}"), HttpStatusCode.OK);
         list.EnumerateArray().Select(e => e.GetProperty("id").GetGuid())
             .Should().Contain(created.GetProperty("id").GetGuid());
+    }
+
+    [Fact]
+    public async Task Fee_invoice_generate_skips_duplicate_student_period()
+    {
+        await using var app = App();
+        var tenant = Guid.NewGuid();
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenant, ["school.principal"], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        await Data(await client.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "ADM-FEE-DUP-1",
+            name = "Dup Kid",
+            grade = "X",
+            section = "A",
+            roll = 2,
+        }), HttpStatusCode.Created);
+
+        await Data(await client.PutAsJsonAsync("/v1/fees/structure", new
+        {
+            name = "AY fees",
+            academic_year = "2025-26",
+            currency = "INR",
+            effective_from = "2025-04-01",
+            status = "active",
+            amounts_json = """{"X-A":{"tuition":1000},"X":{"tuition":1000}}""",
+        }), HttpStatusCode.OK);
+
+        var body = new
+        {
+            academic_year = "2025-26",
+            term = "Term 1",
+            classes = new[] { "X-A" },
+        };
+        var first = await Data(await client.PostAsJsonAsync("/v1/fees/invoices/generate", body), HttpStatusCode.OK);
+        first.GetProperty("created").GetInt32().Should().BeGreaterThan(0);
+        var second = await Data(await client.PostAsJsonAsync("/v1/fees/invoices/generate", body), HttpStatusCode.OK);
+        second.GetProperty("created").GetInt32().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Fee_invoice_pay_persists_invoice_id_on_payment()
+    {
+        await using var app = App();
+        var tenant = Guid.NewGuid();
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenant, ["school.principal"], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var student = await Data(await client.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "ADM-PAY-LNK-1",
+            name = "Link Kid",
+            grade = "I",
+            section = "A",
+            roll = 1,
+        }), HttpStatusCode.Created);
+        var studentId = student.GetProperty("id").GetGuid();
+
+        var inv = await Data(await client.PostAsJsonAsync("/v1/fees/invoices", new
+        {
+            student_id = studentId,
+            period = "2025-26 Term Link",
+            amount = 5000,
+        }), HttpStatusCode.Created);
+        var invoiceId = inv.GetProperty("id").GetGuid();
+
+        var paid = await Data(await client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", new
+        {
+            amount = 5000,
+            mode = "UPI",
+            cls = "I-A",
+            head_id = "tuition",
+            head_name = "Tuition",
+        }), HttpStatusCode.OK);
+        var paymentId = paid.GetProperty("id").GetGuid();
+        paid.GetProperty("invoice_id").GetGuid().Should().Be(invoiceId);
+        paid.GetProperty("head_id").GetString().Should().Be("tuition");
+        paid.GetProperty("method").GetString().Should().Be("UPI");
+        paid.GetProperty("class_label").GetString().Should().Be("I-A");
+        paid.GetProperty("fee_type").GetString().Should().Be("Tuition");
+
+        var listed = await Data(await client.GetAsync($"/v1/fees/payments?student_id={studentId}"), HttpStatusCode.OK);
+        listed.EnumerateArray().First(e => e.GetProperty("id").GetGuid() == paymentId)
+            .GetProperty("invoice_id").GetGuid().Should().Be(invoiceId);
+
+        await using var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenant", new { tenant });
+        var row = await conn.QuerySingleAsync<(Guid InvoiceId, string HeadId, string Method)>(
+            "SELECT InvoiceId, HeadId, Method FROM dbo.FeePayments WHERE Id = @paymentId",
+            new { paymentId });
+        row.InvoiceId.Should().Be(invoiceId);
+        row.HeadId.Should().Be("tuition");
+        row.Method.Should().Be("UPI");
     }
 }

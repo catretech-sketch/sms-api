@@ -1,10 +1,10 @@
-using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Sms.Application.Common;
 using Sms.Application.Services.Academics;
 using Sms.Application.Services.Sis;
 using Sms.Modules.Academics.Contracts;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Results;
 
 namespace Sms.Api.Controllers;
@@ -24,66 +24,81 @@ public sealed class HomeworkController(IAcademicsService academics, ISisService 
     }
 
     [HttpGet("homework/{id:guid}")]
-    public async Task<IActionResult> Get(Guid id, CancellationToken ct) =>
-        FromResult(await academics.GetHomeworkAsync(id, ct));
+    public async Task<IActionResult> Get(Guid id, CancellationToken ct)
+    {
+        var result = await academics.GetHomeworkAsync(id, ct);
+        if (result.Error is not null)
+            return FromResult(result);
+        if (!RoleChecks.IsStaff(User) && !await sis.IsLinkedToCallerAsync(result.Data!.StudentId, ct))
+            return ForbiddenResult("not your linked student");
+        return FromResult(result);
+    }
 
     [HttpPost("homework")]
-    public async Task<IActionResult> Create([FromBody] CreateHomeworkRequest req, CancellationToken ct) =>
-        FromResult(await academics.CreateHomeworkAsync(req, ct));
+    public async Task<IActionResult> Create([FromBody] CreateHomeworkRequest req, CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await academics.CreateHomeworkAsync(req, ct));
+    }
 
     [HttpPatch("homework/{id:guid}")]
     public async Task<IActionResult> SetStatus(
-        Guid id, [FromBody] SetHomeworkStatusRequest req, CancellationToken ct) =>
-        FromResult(await academics.SetHomeworkStatusAsync(id, req, ct));
+        Guid id, [FromBody] SetHomeworkStatusRequest req, CancellationToken ct)
+    {
+        if (await DenyHomeworkIfUnlinkedAsync(id, ct) is { } denied)
+            return denied;
+        return FromResult(await academics.SetHomeworkStatusAsync(id, req, ct));
+    }
 
     [HttpPost("homework/{id:guid}/submit")]
-    public async Task<IActionResult> Submit(Guid id, CancellationToken ct) =>
-        FromResult(await academics.SubmitHomeworkAsync(id, ct));
+    public async Task<IActionResult> Submit(Guid id, CancellationToken ct)
+    {
+        if (await DenyHomeworkIfUnlinkedAsync(id, ct) is { } denied)
+            return denied;
+        return FromResult(await academics.SubmitHomeworkAsync(id, ct));
+    }
 
     /// <summary>
-    /// Login Users.Id is not the SIS Students.Id. Student/parent callers are always
-    /// scoped to the roster row linked by Users.StudentId (admission number).
-    /// Teachers/admins may pass a real SIS id or omit it to list all.
+    /// Staff may pass a SIS id or omit it to list all. Students/parents may only
+    /// resolve a roster row they are linked to (ParentStudentLinks or self).
     /// </summary>
     private async Task<ApiResult<Guid?>> ResolveStudentIdAsync(Guid? requested, CancellationToken ct)
     {
-        var mine = await sis.GetMyStudentAsync(ct);
-        var staff = IsStaff(User);
+        if (RoleChecks.IsStaff(User))
+            return ApiResult<Guid?>.Ok(requested);
 
         if (requested is { } sid)
         {
-            var existing = await sis.GetStudentAsync(sid, ct);
-            if (existing.IsSuccess)
-            {
-                if (staff || (mine.IsSuccess && mine.Data!.Id == sid))
-                    return ApiResult<Guid?>.Ok(sid);
-                if (mine.IsSuccess)
-                    return ApiResult<Guid?>.Ok(mine.Data!.Id);
+            if (await sis.IsLinkedToCallerAsync(sid, ct))
                 return ApiResult<Guid?>.Ok(sid);
-            }
-            return ApiResult<Guid?>.Ok(sid);
+            return ApiResult<Guid?>.Fail(
+                new Error("forbidden", "not your linked student"), 403);
         }
 
+        var mine = await sis.GetMyStudentAsync(ct);
         if (mine.IsSuccess)
             return ApiResult<Guid?>.Ok(mine.Data!.Id);
 
-        if (staff)
-            return ApiResult<Guid?>.Ok(requested);
+        var kids = await sis.ListMyChildrenAsync(ct);
+        if (kids.IsSuccess && kids.Data is { Count: 1 })
+            return ApiResult<Guid?>.Ok(kids.Data[0].Id);
+        if (kids.IsSuccess && kids.Data is { Count: > 1 })
+            return ApiResult<Guid?>.Fail(new Error("student_id_required", "student_id is required"), 400);
 
         return mine.Error is { } err
             ? ApiResult<Guid?>.Fail(err, mine.StatusCode)
             : ApiResult<Guid?>.Fail(new Error("not_found", "no linked student record"), 404);
     }
 
-    private static bool IsStaff(ClaimsPrincipal user)
+    private async Task<IActionResult?> DenyHomeworkIfUnlinkedAsync(Guid homeworkId, CancellationToken ct)
     {
-        foreach (var claim in user.FindAll("role"))
-        {
-            var role = claim.Value.ToLowerInvariant();
-            if (role.Contains("admin") || role.Contains("teacher") || role.Contains("principal")
-                || role.Contains("owner") || role is "staff" || role.Contains("platform"))
-                return true;
-        }
-        return false;
+        if (RoleChecks.IsStaff(User)) return null;
+        var hw = await academics.GetHomeworkAsync(homeworkId, ct);
+        if (hw.Error is not null)
+            return FromResult(hw);
+        if (!await sis.IsLinkedToCallerAsync(hw.Data!.StudentId, ct))
+            return ForbiddenResult("not your linked student");
+        return null;
     }
 }

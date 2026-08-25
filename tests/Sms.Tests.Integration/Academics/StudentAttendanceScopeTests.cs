@@ -56,7 +56,7 @@ public class StudentAttendanceScopeTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task Unlinked_parent_can_read_tenant_student_attendance()
+    public async Task Unlinked_parent_cannot_read_tenant_student_attendance()
     {
         await using var app = App();
         var seed = await SeedAsync();
@@ -75,7 +75,7 @@ public class StudentAttendanceScopeTests(SqlServerFixture fx)
         var client = Client(app, unlinkedParent, seed.TenantId, "parent");
         var response = await client.GetAsync(
             $"/v1/students/{seed.OtherStudentId}/attendance{AttendanceDateQuery}");
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
     [Fact]
@@ -130,7 +130,10 @@ INSERT dbo.Students (Id, TenantId, AdmissionNo, Name, Status) VALUES
     (@linkedStudentId, @tenantId, @admissionNo, N'Linked Student', N'active'),
     (@otherStudentId, @tenantId, N'SCOPE/STU/0002', N'Other Student', N'active');
 INSERT dbo.AttendanceRecords (Id, TenantId, ClassId, StudentId, [Date], Status)
-VALUES (NEWID(), @tenantId, @classId, @linkedStudentId, '2026-08-12', N'present');",
+VALUES (NEWID(), @tenantId, @classId, @linkedStudentId, '2026-08-12', N'present');
+IF OBJECT_ID(N'dbo.ParentStudentLinks', N'U') IS NOT NULL
+    INSERT dbo.ParentStudentLinks (ParentUserId, StudentId, TenantId)
+    VALUES (@userId, @linkedStudentId, @tenantId);",
             new
             {
                 tenantId,

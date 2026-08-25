@@ -16,8 +16,8 @@ public interface ISisService
     /// <summary>Roster row for the authenticated user (Users.StudentId = admission number, not Users.Id).</summary>
     Task<ApiResult<StudentResponse>> GetMyStudentAsync(CancellationToken ct = default);
     /// <summary>
-    /// Students linked to the authenticated parent via ParentStudentLinks,
-    /// matching GuardianEmail, or Users.StudentId admission. Empty list when nothing is linked.
+    /// Students linked to the authenticated parent via ParentStudentLinks only.
+    /// Empty list when nothing is linked.
     /// </summary>
     Task<ApiResult<IReadOnlyList<StudentResponse>>> ListMyChildrenAsync(CancellationToken ct = default);
     /// <summary>True when the caller is the student themself or a parent linked to this roster row.</summary>
@@ -28,6 +28,10 @@ public interface ISisService
         Guid classId, int? limit, string? cursor, CancellationToken ct = default);
     /// <summary>Persist guardian email from enrolment extras and provision the parent login.</summary>
     Task SyncGuardianEmailAsync(Guid studentId, string? guardianEmail, CancellationToken ct = default);
+    /// <summary>Persist guardian email/phone/name from enrolment extras and provision the parent login.</summary>
+    Task SyncGuardianContactAsync(
+        Guid studentId, string? guardianEmail, string? guardianPhone, string? guardianName,
+        CancellationToken ct = default);
 }
 
 public sealed class SisService(
@@ -74,12 +78,14 @@ public sealed class SisService(
     {
         if (tenant.UserId is not { } uid)
             return ApiResult<IReadOnlyList<StudentResponse>>.Fail(new Error("unauthorized", "unauthorized"), 401);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<IReadOnlyList<StudentResponse>>.Fail(new Error("unauthorized", "unauthorized"), 401);
 
         var user = await auth.GetByIdAsync(uid, ct);
         if (user is null)
             return ApiResult<IReadOnlyList<StudentResponse>>.Fail(new Error("unauthorized", "unauthorized"), 401);
 
-        var children = await repo.ListLinkedToParentAsync(uid, user.Email, user.StudentId, ct);
+        var children = await repo.ListLinkedToParentAsync(uid, tid, ct);
         return ApiResult<IReadOnlyList<StudentResponse>>.Ok(children);
     }
 
@@ -134,16 +140,29 @@ public sealed class SisService(
         return ApiResult<StudentResponse>.Ok(updated);
     }
 
-    public async Task SyncGuardianEmailAsync(Guid studentId, string? guardianEmail, CancellationToken ct = default)
+    public async Task SyncGuardianEmailAsync(Guid studentId, string? guardianEmail, CancellationToken ct = default) =>
+        await SyncGuardianContactAsync(studentId, guardianEmail, null, null, ct);
+
+    public async Task SyncGuardianContactAsync(
+        Guid studentId, string? guardianEmail, string? guardianPhone, string? guardianName,
+        CancellationToken ct = default)
     {
-        var email = guardianEmail?.Trim();
-        if (string.IsNullOrWhiteSpace(email) || !email.Contains('@')) return;
+        var email = UsableEmail(guardianEmail);
+        var phone = string.IsNullOrWhiteSpace(guardianPhone) ? null : guardianPhone.Trim();
+        var name = string.IsNullOrWhiteSpace(guardianName) ? null : guardianName.Trim();
+        if (email is null && phone is null && name is null) return;
         var student = await repo.GetAsync(studentId, ct);
         if (student is null) return;
-        await repo.SetGuardianEmailAsync(studentId, email, ct);
+        await repo.SetGuardianContactAsync(studentId, email, phone, name, ct);
         student = await repo.GetAsync(studentId, ct);
         if (student is not null)
             await TrySyncParentLoginAsync(student, ct);
+    }
+
+    private static string? UsableEmail(string? value)
+    {
+        var email = value?.Trim();
+        return string.IsNullOrWhiteSpace(email) || !email.Contains('@') ? null : email;
     }
 
     private async Task TrySyncParentLoginAsync(StudentResponse student, CancellationToken ct)

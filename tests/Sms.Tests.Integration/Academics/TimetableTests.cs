@@ -159,6 +159,7 @@ public class TimetableTests(SqlServerFixture fx)
             day = "Wed", period = 4, subject = "Science", teacher_id = slotTeacherId
         }), HttpStatusCode.Created);
         var slotId = slot.GetProperty("id").GetGuid();
+        slot.GetProperty("teacher_id").GetGuid().Should().Be(slotTeacherId);
 
         var list = await Data(await principal.GetAsync("/v1/timetable"), HttpStatusCode.OK);
         var item = list.EnumerateArray().First(e => e.GetProperty("id").GetGuid() == slotId);

@@ -70,26 +70,11 @@ public sealed class AcademicsService(
         }
     }
 
-    private static bool IsParent(ClaimsPrincipal caller) =>
-        caller.FindAll("role")
-            .Select(c => c.Value.Trim().ToLowerInvariant())
-            .Any(r => r.Contains("parent") || r.Contains("guardian"));
-
     private async Task<ApiResult<T>?> DenyIfNotOwnStudentAsync<T>(
         Guid studentId, ClaimsPrincipal caller, CancellationToken ct)
     {
         if (!IsStudentOrParent(caller)) return null;
-        var me = await sis.GetMyStudentAsync(ct);
-        if (me.IsSuccess)
-        {
-            return me.Data!.Id == studentId
-                ? null
-                : ApiResult<T>.Fail(
-                    new Error("not_own_student", "students and parents can only read their linked student's attendance"),
-                    403);
-        }
-        // Parent accounts are often not linked via Users.StudentId; allow tenant roster (RLS).
-        if (IsParent(caller)) return null;
+        if (await sis.IsLinkedToCallerAsync(studentId, ct)) return null;
         return ApiResult<T>.Fail(
             new Error("not_own_student", "students and parents can only read their linked student's attendance"),
             403);
@@ -643,7 +628,8 @@ public sealed class AcademicsService(
         var periodId = req.PeriodId ?? slot.Id;
         await periodAttendance.BulkUpsertAsync(
             tid, classId, req.Date, req.Period, subj, periodId, subjectId,
-            tenant.UserId, role, req.Records, ct);
+            tenant.UserId, role, req.Records, ct,
+            req.GeoFenceStatus, req.GeoDistanceMeters, req.GeoCapturedAt);
         return ApiResult.NoContent();
     }
 
@@ -1140,32 +1126,60 @@ public sealed class AcademicsService(
         var json = string.IsNullOrWhiteSpace(req.ExtrasJson) ? "{}" : req.ExtrasJson;
         var saved = (await personExtras.UpsertAsync(tid, kind, personId, json, ct))!;
         if (kind == "student")
-            await sis.SyncGuardianEmailAsync(personId, GuardianEmailFromExtras(json), ct);
+        {
+            var mapped = GuardianContactFromExtras(json);
+            await sis.SyncGuardianContactAsync(personId, mapped.Email, mapped.Phone, mapped.Name, ct);
+        }
         return ApiResult<PersonExtrasResponse>.Ok(saved);
     }
 
-    private static string? GuardianEmailFromExtras(string json)
+    private static (string? Email, string? Phone, string? Name) GuardianContactFromExtras(string json)
     {
         try
         {
             using var doc = System.Text.Json.JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "{}" : json);
-            return FirstParentEmail(doc.RootElement, "father")
-                ?? FirstParentEmail(doc.RootElement, "mother");
+            var root = doc.RootElement;
+            var email = FirstParentField(root, "email")
+                ?? RootString(root, "guardianEmail")
+                ?? RootString(root, "guardian_email");
+            var phone = FirstParentField(root, "phone")
+                ?? RootString(root, "guardianPhone")
+                ?? RootString(root, "guardian_phone");
+            var name = FirstParentField(root, "name")
+                ?? RootString(root, "guardianName")
+                ?? RootString(root, "guardian_name");
+            return (email, phone, name);
         }
         catch (System.Text.Json.JsonException)
         {
-            return null;
+            return (null, null, null);
         }
     }
 
-    private static string? FirstParentEmail(System.Text.Json.JsonElement root, string parent)
+    private static string? RootString(System.Text.Json.JsonElement root, string name)
     {
         if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
-        if (!root.TryGetProperty(parent, out var node) || node.ValueKind != System.Text.Json.JsonValueKind.Object)
-            return null;
-        if (!node.TryGetProperty("email", out var email)) return null;
-        var v = email.GetString()?.Trim();
-        return string.IsNullOrWhiteSpace(v) || v.IndexOf('@') <= 0 ? null : v;
+        if (!root.TryGetProperty(name, out var node)) return null;
+        var v = node.GetString()?.Trim();
+        return string.IsNullOrWhiteSpace(v) ? null : v;
+    }
+
+    private static string? FirstParentField(System.Text.Json.JsonElement root, string field)
+    {
+        foreach (var parent in new[] { "father", "mother", "guardian" })
+        {
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+            if (!root.TryGetProperty(parent, out var node) || node.ValueKind != System.Text.Json.JsonValueKind.Object)
+                continue;
+            if (!node.TryGetProperty(field, out var value)) continue;
+            var v = value.GetString()?.Trim();
+            if (!string.IsNullOrWhiteSpace(v))
+            {
+                if (field == "email" && v.IndexOf('@') <= 0) continue;
+                return v;
+            }
+        }
+        return null;
     }
 
     public async Task<ApiResult<IReadOnlyList<LibraryBookResponse>>> ListLibraryBooksAsync(CancellationToken ct = default)

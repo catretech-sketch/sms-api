@@ -15,6 +15,7 @@ public interface IFeeService
     Task<ApiResult<FeePaymentResponse>> CreatePaymentAsync(CreateFeePaymentRequest req, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<FeeInvoiceResponse>>> ListInvoicesAsync(Guid? studentId, CancellationToken ct = default);
     Task<ApiResult<FeeInvoiceResponse>> CreateInvoiceAsync(CreateFeeInvoiceRequest req, CancellationToken ct = default);
+    Task<FeeInvoiceResponse?> GetInvoiceAsync(Guid id, CancellationToken ct = default);
     Task<ApiResult<FeePaymentResponse>> PayInvoiceAsync(Guid id, PayFeeInvoiceRequest? req, CancellationToken ct = default);
 
     Task<ApiResult<IReadOnlyList<FeeHeadResponse>>> ListHeadsAsync(CancellationToken ct = default);
@@ -45,7 +46,13 @@ public sealed class FeeService(
     {
         if (tenant.TenantId is not { } tid)
             return ApiResult<FeePaymentResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
-        return ApiResult<FeePaymentResponse>.Ok((await payments.CreateAsync(tid, req, ct))!, 201);
+        var mapped = req with
+        {
+            ClassLabel = FirstNonEmpty(req.ClassLabel, req.Cls),
+            FeeType = FirstNonEmpty(req.FeeType, req.HeadName, "academic") ?? "academic",
+            Method = FirstNonEmpty(req.Method, req.Mode),
+        };
+        return ApiResult<FeePaymentResponse>.Ok((await payments.CreateAsync(tid, mapped, ct))!, 201);
     }
 
     public async Task<ApiResult<IReadOnlyList<FeeInvoiceResponse>>> ListInvoicesAsync(Guid? studentId, CancellationToken ct = default) =>
@@ -57,6 +64,9 @@ public sealed class FeeService(
             return ApiResult<FeeInvoiceResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
         return ApiResult<FeeInvoiceResponse>.Ok((await invoices.CreateAsync(tid, req, ct))!, 201);
     }
+
+    public Task<FeeInvoiceResponse?> GetInvoiceAsync(Guid id, CancellationToken ct = default) =>
+        invoices.GetAsync(id, ct);
 
     public async Task<ApiResult<FeePaymentResponse>> PayInvoiceAsync(
         Guid id, PayFeeInvoiceRequest? req, CancellationToken ct = default)
@@ -101,14 +111,17 @@ public sealed class FeeService(
         var studentName = FirstNonEmpty(req?.StudentName, inv.StudentName);
         var feeType = FirstNonEmpty(req?.FeeType, req?.HeadName, "academic") ?? "academic";
 
-        var payment = await payments.CreateAsync(tid, new CreateFeePaymentRequest(
-            inv.StudentId, studentName, classLabel, feeType, amount, method, paymentRef), ct);
+        var payment = await invoices.RecordInvoicePaymentAsync(
+            tid,
+            id,
+            new CreateFeePaymentRequest(
+                inv.StudentId, studentName, classLabel, feeType, amount, method, paymentRef,
+                InvoiceId: id, HeadId: req?.HeadId),
+            amount,
+            method,
+            ct);
         if (payment is null)
-            return ApiResult<FeePaymentResponse>.Fail(new Error("internal_error", "payment not recorded"), 500);
-
-        var updated = await invoices.ApplyPaymentAsync(id, amount, method, ct);
-        if (updated is null)
-            return ApiResult<FeePaymentResponse>.Fail(new Error("internal_error", "invoice not updated"), 500);
+            return ApiResult<FeePaymentResponse>.Fail(new Error("conflict", "invoice already paid"), 409);
 
         return ApiResult<FeePaymentResponse>.Ok(payment);
     }
@@ -250,6 +263,8 @@ public sealed class FeeService(
 
             var amount = AmountFor(amounts, label, grade);
             if (amount <= 0) continue;
+            if (await invoices.ExistsForStudentPeriodAsync(student.Id, period, ct))
+                continue;
 
             var row = await invoices.CreateAsync(
                 tid, new CreateFeeInvoiceRequest(student.Id, period, req.DueDate, amount), ct);
@@ -340,7 +355,7 @@ public sealed class FeeService(
         {
             var p = todayPayments[0];
             latest = new FeeReportLatestPayment(
-                p.Id, p.StudentId, p.StudentName, p.ClassLabel, p.Amount, p.Method, p.Ref, p.Date);
+                p.Id, p.StudentId, p.StudentName, p.ClassLabel, p.Amount, p.Method, p.Ref, p.Date, p.HeadId);
         }
 
         return ApiResult<FeeReportSummaryResponse>.Ok(new FeeReportSummaryResponse(

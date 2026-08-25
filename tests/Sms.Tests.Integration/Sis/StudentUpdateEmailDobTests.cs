@@ -127,4 +127,32 @@ public class StudentUpdateEmailDobTests(SqlServerFixture fx)
         getDoc.RootElement.GetProperty("data").GetProperty("guardian_email").GetString()
             .Should().Be("Vaibhavv@yopmail.com");
     }
+
+    [Fact]
+    public async Task Updating_a_student_persists_avatar_hue()
+    {
+        var tenantId = Guid.NewGuid();
+        var studentId = Guid.NewGuid();
+        await SeedStudentAsync(fx, tenantId, studentId);
+
+        await using var app = AppWithDb(fx);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", TeacherToken(tenantId));
+
+        var patch = await client.PatchAsJsonAsync($"/v1/students/{studentId}", new { avatar_hue = 210 });
+        patch.StatusCode.Should().Be(HttpStatusCode.OK);
+        using (var doc = JsonDocument.Parse(await patch.Content.ReadAsStringAsync()))
+            doc.RootElement.GetProperty("data").GetProperty("avatar_hue").GetInt32().Should().Be(210);
+
+        var get = await client.GetAsync($"/v1/students/{studentId}");
+        using var getDoc = JsonDocument.Parse(await get.Content.ReadAsStringAsync());
+        getDoc.RootElement.GetProperty("data").GetProperty("avatar_hue").GetInt32().Should().Be(210);
+
+        await using var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+        var stored = await conn.ExecuteScalarAsync<int>(
+            "SELECT AvatarHue FROM dbo.Students WHERE Id = @studentId", new { studentId });
+        stored.Should().Be(210);
+    }
 }

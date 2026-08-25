@@ -104,7 +104,10 @@ public sealed record BulkPeriodAttendanceRequest(
     string Subject,
     Guid? SubjectId,
     Guid? PeriodId,
-    IReadOnlyList<AttendanceUpsertRow> Records);
+    IReadOnlyList<AttendanceUpsertRow> Records,
+    string? GeoFenceStatus = null,
+    int? GeoDistanceMeters = null,
+    DateTime? GeoCapturedAt = null);
 
 public sealed record ClassDayTimetableSlotResponse(
     Guid Id,

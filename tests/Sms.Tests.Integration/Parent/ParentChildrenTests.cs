@@ -347,4 +347,84 @@ public class ParentChildrenTests(SqlServerFixture fx)
         });
         links.Should().Be(1);
     }
+
+    [Fact]
+    public async Task My_children_does_not_return_a_guardian_email_match_without_a_ParentStudentLinks_row()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admin = Admin(app, tenantId);
+        var parentEmail = $"dad{Guid.NewGuid():N}@home.test";
+
+        var created = await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = $"ADM-NL-{Guid.NewGuid():N}"[..20],
+            name = "Unlinked Email Kid",
+            grade = "IV",
+            section = "B",
+            roll = 1,
+            guardian_email = parentEmail,
+        }), HttpStatusCode.Created);
+
+        var parentId = await ParentUserId(parentEmail, tenantId);
+        var studentId = created.GetProperty("id").GetGuid();
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                "DELETE FROM dbo.ParentStudentLinks WHERE ParentUserId = @parentId AND StudentId = @studentId",
+                new { parentId, studentId });
+        });
+
+        var kids = await Data(
+            await AsUser(app, tenantId, parentId, Policies.StudentOrParent)
+                .GetAsync("/v1/parents/me/children"),
+            HttpStatusCode.OK);
+
+        kids.GetArrayLength().Should().Be(0);
+    }
+
+    [Fact]
+    public async Task My_children_does_not_return_an_admission_match_without_a_ParentStudentLinks_row()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admin = Admin(app, tenantId);
+        var guardianEmail = $"g{Guid.NewGuid():N}@home.test";
+        var admission = $"ADM-AD-{Guid.NewGuid():N}"[..20];
+
+        await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = admission,
+            name = "Admission Only Kid",
+            grade = "I",
+            section = "A",
+            roll = 1,
+            guardian_email = guardianEmail,
+        }), HttpStatusCode.Created);
+
+        var orphanParentId = Guid.NewGuid();
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.Users (Id, TenantId, Email, Phone, IsPlatform, Status, StudentId, MustSetPassword, Name)
+                VALUES (@orphanParentId, @tenantId, @email, NULL, 0, N'active', @admission, 1, N'Admission Parent');
+                INSERT dbo.UserRoles (UserId, Role) VALUES (@orphanParentId, N'student.parent');
+                """,
+                new
+                {
+                    orphanParentId,
+                    tenantId,
+                    email = $"adm{Guid.NewGuid():N}@home.test",
+                    admission,
+                });
+        });
+
+        var kids = await Data(
+            await AsUser(app, tenantId, orphanParentId, Policies.StudentOrParent)
+                .GetAsync("/v1/parents/me/children"),
+            HttpStatusCode.OK);
+
+        kids.GetArrayLength().Should().Be(0);
+    }
 }

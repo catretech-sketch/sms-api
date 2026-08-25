@@ -2,8 +2,10 @@ using FluentMigrator;
 
 namespace Sms.Migrations;
 
-[Migration(140, "ParentStudentLinks: multi-child parent roster with tenant RLS and backfill")]
-public sealed class M0140_ParentStudentLinks : Migration
+/// Version 141: local Sms already applied 140 as LeaveRequests.Note, so ParentStudentLinks
+/// must not reuse 140 or MigrateUp will skip the table.
+[Migration(141, "ParentStudentLinks: multi-child parent roster with tenant RLS and backfill")]
+public sealed class M0141_ParentStudentLinks : Migration
 {
     public override void Up()
     {
@@ -35,6 +37,7 @@ WITH (STATE = ON)');
 END
 """);
 
+        // Bypass RLS so historical Users/Students rows are visible during backfill.
         Execute.Sql("""
 EXEC sp_set_session_context @key=N'IsPlatform', @value=1;
 

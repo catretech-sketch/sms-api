@@ -1,5 +1,7 @@
+using System.Data;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Dapper;
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Shared.Kernel.Data;
 
@@ -7,25 +9,41 @@ namespace Sms.Modules.Finance;
 
 public sealed record FeePaymentResponse(
     Guid Id, Guid TenantId, Guid StudentId, string? StudentName, string? ClassLabel, string FeeType,
-    decimal Amount, string? Method, string? Ref, DateTime Date);
+    decimal Amount, string? Method, string? Ref, DateTime Date,
+    Guid? InvoiceId = null, string? HeadId = null);
 
 public sealed record CreateFeePaymentRequest(
-    Guid StudentId, string? StudentName, string? ClassLabel, string? FeeType, decimal Amount, string? Method, string? Ref);
+    Guid StudentId, string? StudentName, string? ClassLabel, string? FeeType, decimal Amount, string? Method, string? Ref,
+    Guid? InvoiceId = null, string? HeadId = null, string? HeadName = null, string? Mode = null, string? Cls = null);
 
 public sealed class FeeRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
-    private const string Cols = "Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date]";
+    private const string Cols =
+        "Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId";
 
     public Task<FeePaymentResponse?> CreateAsync(Guid tenantId, CreateFeePaymentRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<FeePaymentResponse>("dbo.FeePayment_Create", new
         {
-            TenantId = tenantId, r.StudentId, r.StudentName, r.ClassLabel, r.FeeType, r.Amount, r.Method, r.Ref
+            TenantId = tenantId,
+            r.StudentId,
+            StudentName = r.StudentName,
+            ClassLabel = string.IsNullOrWhiteSpace(r.ClassLabel) ? r.Cls : r.ClassLabel,
+            FeeType = string.IsNullOrWhiteSpace(r.FeeType) ? r.HeadName : r.FeeType,
+            r.Amount,
+            Method = string.IsNullOrWhiteSpace(r.Method) ? r.Mode : r.Method,
+            r.Ref,
+            r.InvoiceId,
+            r.HeadId,
         }, ct);
 
     public Task<IReadOnlyList<FeePaymentResponse>> ListAsync(Guid? studentId, CancellationToken ct = default) =>
         QueryInlineAsync<FeePaymentResponse>(
             $"SELECT {Cols} FROM dbo.FeePayments WHERE (@studentId IS NULL OR StudentId = @studentId) ORDER BY [Date] DESC",
             new { studentId }, ct);
+
+    public async Task<FeePaymentResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
+        (await QueryInlineAsync<FeePaymentResponse>(
+            $"SELECT {Cols} FROM dbo.FeePayments WHERE Id = @id", new { id }, ct)).FirstOrDefault();
 }
 
 // ---- Fee invoices (student/parent bills) ----
@@ -176,6 +194,96 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
         return await GetAsync(id, ct);
     }
 
+    public async Task<FeePaymentResponse?> RecordInvoicePaymentAsync(
+        Guid tenantId, Guid invoiceId, CreateFeePaymentRequest req, decimal amount, string method,
+        CancellationToken ct = default)
+    {
+        await EnsurePaidAmountColumnAsync(ct);
+        await using var conn = await Factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        try
+        {
+            var inv = await conn.QuerySingleOrDefaultAsync<InvoiceLockRow>(
+                new CommandDefinition(
+                    """
+                    SELECT Id, StudentId, Amount, Status, ISNULL(PaidAmount, 0) AS PaidAmount
+                    FROM dbo.FeeInvoices WITH (UPDLOCK, HOLDLOCK)
+                    WHERE Id = @invoiceId
+                    """,
+                    new { invoiceId }, tx, cancellationToken: ct));
+            if (inv is null)
+            {
+                await tx.RollbackAsync(ct);
+                return null;
+            }
+
+            var remaining = Math.Max(0, inv.Amount - inv.PaidAmount);
+            if (remaining <= 0 || string.Equals(inv.Status, "paid", StringComparison.OrdinalIgnoreCase))
+            {
+                await tx.RollbackAsync(ct);
+                return null;
+            }
+
+            var payId = Guid.NewGuid();
+            var classLabel = string.IsNullOrWhiteSpace(req.ClassLabel) ? req.Cls : req.ClassLabel;
+            var feeType = string.IsNullOrWhiteSpace(req.FeeType)
+                ? (string.IsNullOrWhiteSpace(req.HeadName) ? "academic" : req.HeadName)
+                : req.FeeType;
+            await conn.ExecuteAsync(new CommandDefinition(
+                """
+                INSERT dbo.FeePayments (Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId)
+                VALUES (@payId, @tenantId, @StudentId, @StudentName, @classLabel, @feeType, @amount, @method, @Ref, CAST(SYSUTCDATETIME() AS date), @invoiceId, @HeadId)
+                """,
+                new
+                {
+                    payId,
+                    tenantId,
+                    inv.StudentId,
+                    req.StudentName,
+                    classLabel,
+                    feeType,
+                    amount,
+                    method,
+                    req.Ref,
+                    invoiceId,
+                    req.HeadId,
+                }, tx, cancellationToken: ct));
+
+            await conn.ExecuteAsync(new CommandDefinition(
+                """
+                UPDATE dbo.FeeInvoices
+                SET
+                    PaidAmount = ISNULL(PaidAmount, 0) + @amount,
+                    Method = @method,
+                    Status = CASE
+                        WHEN ISNULL(PaidAmount, 0) + @amount >= Amount THEN N'paid'
+                        ELSE N'partial'
+                    END,
+                    PaidOn = CASE
+                        WHEN ISNULL(PaidAmount, 0) + @amount >= Amount THEN CAST(SYSUTCDATETIME() AS date)
+                        ELSE PaidOn
+                    END
+                WHERE Id = @invoiceId
+                  AND Status <> N'paid'
+                """,
+                new { invoiceId, amount, method }, tx, cancellationToken: ct));
+
+            var payment = await conn.QuerySingleOrDefaultAsync<FeePaymentResponse>(new CommandDefinition(
+                """
+                SELECT Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId
+                FROM dbo.FeePayments WHERE Id = @payId
+                """,
+                new { payId }, tx, cancellationToken: ct));
+            await tx.CommitAsync(ct);
+            return payment;
+        }
+        catch
+        {
+            await tx.RollbackAsync(ct);
+            throw;
+        }
+    }
+
     public async Task<FeeInvoiceResponse?> GetAsync(Guid id, CancellationToken ct = default)
     {
         await EnsurePaidAmountColumnAsync(ct);
@@ -213,6 +321,15 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
         var json = System.Text.Json.JsonSerializer.Serialize(tenantIds);
         return QueryProcAsync<FeeTenantSummaryRow>("dbo.Fee_SummaryByTenants",
             new { TenantIds = json, From = from.ToDateTime(TimeOnly.MinValue), To = to.ToDateTime(TimeOnly.MinValue) }, ct);
+    }
+
+    private sealed class InvoiceLockRow
+    {
+        public Guid Id { get; set; }
+        public Guid StudentId { get; set; }
+        public decimal Amount { get; set; }
+        public string Status { get; set; } = "due";
+        public decimal PaidAmount { get; set; }
     }
 
     private sealed record FeeInvoiceCore(

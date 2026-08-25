@@ -54,6 +54,18 @@ public sealed class AnnouncementService(
         if (created is null)
             return ApiResult<AnnouncementResponse>.Fail(new Error("internal_error", "failed to create announcement"), 500);
 
+        var recipientsJson = System.Text.Json.JsonSerializer.Serialize(new
+        {
+            emails = req.Emails,
+            phones = req.Phones,
+            channels = req.Channels,
+            school_name = req.SchoolName,
+            event_date = req.EventDate,
+            event_kind = req.EventKind,
+        });
+        await repo.SaveAnnouncementDeliveryAsync(
+            created.Id, recipientsJson, req.AttachmentFileName, req.AttachmentContentType, ct);
+
         var schoolName = req.SchoolName?.Trim();
         if (string.IsNullOrWhiteSpace(schoolName))
         {
@@ -198,7 +210,14 @@ public sealed class AnnouncementService(
             logger.LogError(ex, "Announcement {Id} saved but channel dispatch failed", created.Id);
         }
 
-        return ApiResult<AnnouncementResponse>.Ok(created with { Reach = emailed + smsed + app }, 201);
+        return ApiResult<AnnouncementResponse>.Ok(created with
+        {
+            Reach = emailed + smsed + app,
+            Emails = req.Emails,
+            Phones = req.Phones,
+            AttachmentFileName = req.AttachmentFileName,
+            AttachmentContentType = req.AttachmentContentType,
+        }, 201);
     }
 
     private static string StripCalendarPrefix(string title) =>

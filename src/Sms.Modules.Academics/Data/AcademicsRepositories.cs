@@ -285,7 +285,8 @@ public sealed class PeriodAttendanceRepository(IDbConnectionFactory factory) : B
     public Task BulkUpsertAsync(
         Guid tenantId, Guid classId, DateTime date, int period, string subject,
         Guid? periodId, Guid? subjectId, Guid? markedBy, string? markedByRole,
-        IReadOnlyList<AttendanceUpsertRow> rows, CancellationToken ct = default)
+        IReadOnlyList<AttendanceUpsertRow> rows, CancellationToken ct = default,
+        string? geoFenceStatus = null, int? geoDistanceMeters = null, DateTime? geoCapturedAt = null)
     {
         var table = new DataTable();
         table.Columns.Add("StudentId", typeof(Guid));
@@ -302,6 +303,9 @@ public sealed class PeriodAttendanceRepository(IDbConnectionFactory factory) : B
         p.Add("@SubjectId", subjectId);
         p.Add("@MarkedBy", markedBy);
         p.Add("@MarkedByRole", markedByRole);
+        p.Add("@GeoFenceStatus", geoFenceStatus);
+        p.Add("@GeoDistanceMeters", geoDistanceMeters);
+        p.Add("@GeoCapturedAt", geoCapturedAt);
         p.Add("@Rows", table.AsTableValuedParameter("dbo.PeriodAttendanceTvp"));
         return ExecuteProcAsync("dbo.PeriodAttendance_BulkUpsert", p, ct);
     }

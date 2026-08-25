@@ -5,8 +5,8 @@ using Sms.Shared.Kernel.Authz;
 
 namespace Sms.Api.Controllers;
 
-/// Parent app roster. Children come from the logged-in account
-/// (guardian email + Users.StudentId admission), never from a client-supplied id.
+/// Parent app roster. Children come from ParentStudentLinks for the
+/// authenticated parent and tenant — never from a client-supplied id.
 [Route("v1/parents")]
 [Authorize(Policy = Policies.StudentOrParent)]
 public sealed class ParentController(ISisService sis) : ApiControllerBase

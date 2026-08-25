@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Sms.Application.Services.Academics;
 using Sms.Modules.Academics.Contracts;
+using Sms.Shared.Kernel.Authz;
 
 namespace Sms.Api.Controllers;
 
@@ -18,12 +19,20 @@ public sealed class ClassController(IAcademicsService academics) : ApiController
         FromResult(await academics.GetClassAsync(id, ct));
 
     [HttpPost("classes")]
-    public async Task<IActionResult> Create([FromBody] CreateClassRequest req, CancellationToken ct) =>
-        FromResult(await academics.CreateClassAsync(req, ct));
+    public async Task<IActionResult> Create([FromBody] CreateClassRequest req, CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await academics.CreateClassAsync(req, ct));
+    }
 
     [HttpPatch("classes/{id:guid}")]
-    public async Task<IActionResult> Update(Guid id, [FromBody] UpdateClassRequest req, CancellationToken ct) =>
-        FromResult(await academics.UpdateClassAsync(id, req, ct));
+    public async Task<IActionResult> Update(Guid id, [FromBody] UpdateClassRequest req, CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await academics.UpdateClassAsync(id, req, ct));
+    }
 
     [HttpGet("classes/{id:guid}/subjects")]
     public async Task<IActionResult> ListSubjects(Guid id, CancellationToken ct) =>
@@ -33,6 +42,8 @@ public sealed class ClassController(IAcademicsService academics) : ApiController
     public async Task<IActionResult> ReplaceSubjects(
         Guid id, [FromBody] ReplaceClassSubjectsRequest req, CancellationToken ct)
     {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
         if (req is null || req.Subjects is null)
             return BadRequestResult("subjects is required");
         return FromResult(await academics.ReplaceClassSubjectsAsync(id, req.Subjects, ct));
@@ -58,8 +69,12 @@ public sealed class ClassController(IAcademicsService academics) : ApiController
 
     [HttpPost("classes/{classId:guid}/attendance")]
     public async Task<IActionResult> BulkUpsertAttendance(
-        Guid classId, [FromBody] BulkAttendanceRequest req, CancellationToken ct) =>
-        FromResult(await academics.BulkUpsertAttendanceAsync(classId, req, User, ct));
+        Guid classId, [FromBody] BulkAttendanceRequest req, CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await academics.BulkUpsertAttendanceAsync(classId, req, User, ct));
+    }
 
     [HttpGet("classes/{classId:guid}/timetable/day")]
     public async Task<IActionResult> ListClassDayTimetable(
@@ -77,8 +92,12 @@ public sealed class ClassController(IAcademicsService academics) : ApiController
 
     [HttpPost("classes/{classId:guid}/attendance/periods")]
     public async Task<IActionResult> BulkUpsertPeriodAttendance(
-        Guid classId, [FromBody] BulkPeriodAttendanceRequest req, CancellationToken ct) =>
-        FromResult(await academics.BulkUpsertPeriodAttendanceAsync(classId, req, User, ct));
+        Guid classId, [FromBody] BulkPeriodAttendanceRequest req, CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await academics.BulkUpsertPeriodAttendanceAsync(classId, req, User, ct));
+    }
 
     /// <summary>
     /// Official period-based attendance aggregate for a class over a date range.

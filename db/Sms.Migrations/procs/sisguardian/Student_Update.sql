@@ -3,7 +3,7 @@ CREATE OR ALTER PROCEDURE dbo.Student_Update
     @GuardianName nvarchar(200), @GuardianPhone nvarchar(40), @GuardianEmail nvarchar(256), @House nvarchar(40),
     @FeeStatus nvarchar(20), @FeeDue decimal(18,2), @Status nvarchar(20), @PhotoUrl nvarchar(max) = NULL,
     @SetPhoto bit = 0, @Gender nvarchar(1) = NULL, @Dob datetime2 = NULL, @Email nvarchar(256) = NULL,
-    @Address nvarchar(500) = NULL
+    @Address nvarchar(500) = NULL, @AvatarHue int = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -24,7 +24,8 @@ BEGIN
         Gender = ISNULL(@Gender, Gender),
         Dob = ISNULL(@Dob, Dob),
         Email = ISNULL(@Email, Email),
-        Address = ISNULL(@Address, Address)
+        Address = ISNULL(@Address, Address),
+        AvatarHue = ISNULL(@AvatarHue, AvatarHue)
     WHERE Id = @Id;
 
     DECLARE @TenantId uniqueidentifier =

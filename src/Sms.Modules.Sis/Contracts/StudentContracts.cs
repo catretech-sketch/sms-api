@@ -20,4 +20,5 @@ public sealed record UpdateStudentRequest(
     string? GuardianEmail,
     string? House, string? FeeStatus, decimal? FeeDue, string? Status,
     string? PhotoUrl = null, bool SetPhoto = false,
-    string? Gender = null, DateTime? Dob = null, string? Email = null, string? Address = null);
+    string? Gender = null, DateTime? Dob = null, string? Email = null, string? Address = null,
+    int? AvatarHue = null);
