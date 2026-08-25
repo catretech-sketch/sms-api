@@ -16,9 +16,8 @@ public interface ISisService
     /// <summary>Roster row for the authenticated user (Users.StudentId = admission number, not Users.Id).</summary>
     Task<ApiResult<StudentResponse>> GetMyStudentAsync(CancellationToken ct = default);
     /// <summary>
-    /// Students linked to the authenticated parent: every roster row whose
-    /// GuardianEmail matches the parent Users.Email, plus the admission stored
-    /// on Users.StudentId. Empty list when nothing is linked.
+    /// Students linked to the authenticated parent via ParentStudentLinks,
+    /// matching GuardianEmail, or Users.StudentId admission. Empty list when nothing is linked.
     /// </summary>
     Task<ApiResult<IReadOnlyList<StudentResponse>>> ListMyChildrenAsync(CancellationToken ct = default);
     /// <summary>True when the caller is the student themself or a parent linked to this roster row.</summary>
@@ -80,7 +79,7 @@ public sealed class SisService(
         if (user is null)
             return ApiResult<IReadOnlyList<StudentResponse>>.Fail(new Error("unauthorized", "unauthorized"), 401);
 
-        var children = await repo.ListLinkedToParentAsync(user.Email, user.StudentId, ct);
+        var children = await repo.ListLinkedToParentAsync(uid, user.Email, user.StudentId, ct);
         return ApiResult<IReadOnlyList<StudentResponse>>.Ok(children);
     }
 

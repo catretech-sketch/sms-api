@@ -56,22 +56,21 @@ OUTER APPLY (
             new { admissionNo = admissionNo.Trim() }, ct)).FirstOrDefault();
     }
 
-    /// Roster rows a parent can see: matching guardian email and/or the
-    /// admission number stored on the parent Users.StudentId. Deduped by Id.
+    /// Roster rows a parent can see: ParentStudentLinks for this user, plus
+    /// matching guardian email and/or Users.StudentId admission (legacy). Deduped by Id.
     public Task<IReadOnlyList<StudentResponse>> ListLinkedToParentAsync(
-        string? guardianEmail, string? admissionNo, CancellationToken ct = default)
+        Guid parentUserId, string? guardianEmail, string? admissionNo, CancellationToken ct = default)
     {
         var email = string.IsNullOrWhiteSpace(guardianEmail) ? null : guardianEmail.Trim();
         var adm = string.IsNullOrWhiteSpace(admissionNo) ? null : admissionNo.Trim();
-        if (email is null && adm is null)
-            return Task.FromResult<IReadOnlyList<StudentResponse>>([]);
 
         return QueryInlineAsync<StudentResponse>(
             $"SELECT {ColsWithLivePct} WHERE (" +
-            "(@email IS NOT NULL AND LOWER(LTRIM(RTRIM(s.GuardianEmail))) = LOWER(LTRIM(RTRIM(@email)))) " +
+            "EXISTS (SELECT 1 FROM dbo.ParentStudentLinks l WHERE l.ParentUserId = @parentUserId AND l.StudentId = s.Id) " +
+            "OR (@email IS NOT NULL AND LOWER(LTRIM(RTRIM(s.GuardianEmail))) = LOWER(LTRIM(RTRIM(@email)))) " +
             "OR (@adm IS NOT NULL AND LOWER(LTRIM(RTRIM(s.AdmissionNo))) = LOWER(LTRIM(RTRIM(@adm))))" +
             ") ORDER BY s.Name, s.Id",
-            new { email, adm }, ct);
+            new { parentUserId, email, adm }, ct);
     }
 
     public async Task SetGuardianEmailAsync(Guid id, string email, CancellationToken ct = default) =>

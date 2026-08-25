@@ -158,6 +158,35 @@ BEGIN
             INSERT dbo.UserRoles (UserId, Role) VALUES (@UserId, N'student.parent');
     END;
 
+    -- Multi-child roster. Idempotent; login must not fail if the row already exists.
+    IF OBJECT_ID(N'dbo.ParentStudentLinks', N'U') IS NOT NULL
+    BEGIN
+        DECLARE @StudentGuid uniqueidentifier;
+        SELECT @StudentGuid = s.Id
+        FROM dbo.Students s
+        WHERE s.TenantId = @TenantId
+          AND LOWER(LTRIM(RTRIM(s.AdmissionNo))) = LOWER(LTRIM(RTRIM(@AdmissionNo)));
+
+        IF @StudentGuid IS NOT NULL
+        BEGIN
+            BEGIN TRY
+                IF NOT EXISTS (
+                    SELECT 1 FROM dbo.ParentStudentLinks
+                    WHERE ParentUserId = @UserId AND StudentId = @StudentGuid
+                )
+                    INSERT dbo.ParentStudentLinks (ParentUserId, StudentId, TenantId)
+                    VALUES (@UserId, @StudentGuid, @TenantId);
+            END TRY
+            BEGIN CATCH
+                IF ERROR_NUMBER() NOT IN (2601, 2627)
+                BEGIN
+                    ROLLBACK TRAN;
+                    THROW;
+                END;
+            END CATCH;
+        END;
+    END;
+
     COMMIT TRAN;
 
     SELECT TOP 1 u.Id, u.TenantId, u.Email, u.StudentId, u.Phone,
