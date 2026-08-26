@@ -1,4 +1,7 @@
+using Sms.Application.Services.Comms;
+using Sms.Application.Services.Realtime;
 using Sms.Modules.Comms;
+using Sms.Modules.Sis.Data;
 
 namespace Sms.Application.Services.Academics;
 
@@ -7,7 +10,11 @@ namespace Sms.Application.Services.Academics;
 /// Uses the tenant-scoped <c>Notifications</c> feed — student, parent, teacher, and school CRM apps
 /// all read <c>GET /v1/notifications</c>. Exam-term publish from admin is handled separately.
 /// </summary>
-public sealed class AcademicsCommsNotifier(CommsRepository comms)
+public sealed class AcademicsCommsNotifier(
+    CommsRepository comms,
+    IAnnouncementService announcements,
+    StudentRepository students,
+    ILiveBroadcaster live)
 {
     public async Task NotifyHomeworkAssignedAsync(
         Guid tenantId,
@@ -28,6 +35,8 @@ public sealed class AcademicsCommsNotifier(CommsRepository comms)
             Tone: "brand",
             Title: $"Homework: {trimmed}",
             Body: body), ct);
+        await live.PublishAsync(tenantId, LiveEventTypes.Homework, ct: ct);
+        await live.PublishAsync(tenantId, LiveEventTypes.Notification, ct: ct);
     }
 
     public async Task NotifyClassTestScheduledAsync(
@@ -35,6 +44,7 @@ public sealed class AcademicsCommsNotifier(CommsRepository comms)
         string? title,
         string? subject,
         DateTime? date,
+        Guid? classId = null,
         CancellationToken ct = default)
     {
         var name = (title ?? "").Trim();
@@ -43,14 +53,39 @@ public sealed class AcademicsCommsNotifier(CommsRepository comms)
         var subj = string.IsNullOrWhiteSpace(subject) ? null : subject.Trim();
         var when = date is { } d ? d.ToString("yyyy-MM-dd") : null;
         var body = subj is null
-            ? when ?? "Scheduled in CRM"
+            ? when ?? "Scheduled"
             : when is null ? subj : $"{subj} · {when}";
 
-        await comms.CreateNotificationAsync(tenantId, new CreateNotificationRequest(
-            Icon: "document-text",
-            Tone: "brand",
-            Title: $"Class test: {name}",
-            Body: body), ct);
+        var rosterEmails = new List<string>();
+        if (classId is { } cid)
+        {
+            string? cursor = null;
+            do
+            {
+                var (rows, next) = await students.ListByClassPagedAsync(cid, 200, cursor, ct);
+                foreach (var s in rows)
+                {
+                    AddEmail(rosterEmails, s.GuardianEmail);
+                    AddEmail(rosterEmails, s.Email);
+                }
+                cursor = next;
+            } while (cursor is not null);
+        }
+
+        var audience = classId is null ? "parents" : "parent";
+        await announcements.CreateAsync(new CreateAnnouncementRequest(
+            $"Class test: {name}",
+            body,
+            "class_test",
+            audience,
+            rosterEmails.Count > 0 ? rosterEmails : null,
+            null,
+            ["email", "app"],
+            null,
+            when,
+            "Class test"), null, "teacher", ct);
+
+        await live.PublishAsync(tenantId, LiveEventTypes.Exams, ct: ct);
     }
 
     public async Task NotifyTimetablePublishedAsync(
@@ -68,5 +103,14 @@ public sealed class AcademicsCommsNotifier(CommsRepository comms)
             Tone: "brand",
             Title: "Timetable updated",
             Body: $"{clsLabel} · {slotLabel} with bell times — open Schedule to refresh."), ct);
+        await live.PublishAsync(tenantId, LiveEventTypes.Timetable, ct: ct);
+        await live.PublishAsync(tenantId, LiveEventTypes.Notification, ct: ct);
+    }
+
+    private static void AddEmail(List<string> list, string? email)
+    {
+        var v = (email ?? "").Trim();
+        if (v.Contains('@') && v.Length > 3 && !list.Contains(v, StringComparer.OrdinalIgnoreCase))
+            list.Add(v);
     }
 }

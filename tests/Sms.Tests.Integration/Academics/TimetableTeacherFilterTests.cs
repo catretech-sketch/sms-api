@@ -101,4 +101,34 @@ public class TimetableTeacherFilterTests(SqlServerFixture fx)
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         doc.RootElement.GetProperty("data").GetArrayLength().Should().BeGreaterThanOrEqualTo(2);
     }
+
+    [Fact]
+    public async Task Admin_sees_the_whole_tenant_grid_unfiltered()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.TimetableSlots (TenantId, [Day], Period, Subject, ClassName) VALUES (@tenantId, 'Mon', 1, 'Math', 'IV-B')",
+                new { tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.TimetableSlots (TenantId, [Day], Period, Subject, ClassName) VALUES (@tenantId, 'Tue', 2, 'Hindi', 'V-A')",
+                new { tenantId });
+        }
+
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, new[] { Policies.SchoolAdmin }, isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var res = await client.GetAsync("/v1/timetable");
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("data").GetArrayLength().Should().BeGreaterThanOrEqualTo(2);
+    }
 }

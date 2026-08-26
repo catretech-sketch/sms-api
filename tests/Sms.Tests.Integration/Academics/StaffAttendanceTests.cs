@@ -147,6 +147,45 @@ public class StaffAttendanceTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Range_list_returns_all_people_in_from_to()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = TenantClient(app, tenantId);
+        var a = Guid.NewGuid();
+        var b = Guid.NewGuid();
+
+        (await client.PostAsJsonAsync("/v1/staff-attendance", new
+        {
+            person_type = "teacher",
+            date = "2026-08-01",
+            records = new[] { new { person_id = a, status = "present" } }
+        })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        (await client.PostAsJsonAsync("/v1/staff-attendance", new
+        {
+            person_type = "teacher",
+            date = "2026-08-20",
+            records = new[] { new { person_id = b, status = "half_day" } }
+        })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        (await client.PostAsJsonAsync("/v1/staff-attendance", new
+        {
+            person_type = "teacher",
+            date = "2026-07-01",
+            records = new[] { new { person_id = a, status = "absent" } }
+        })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var range = await Data(
+            await client.GetAsync("/v1/staff-attendance?person_type=teacher&from=2026-08-01&to=2026-08-31"),
+            HttpStatusCode.OK);
+        range.GetArrayLength().Should().Be(2);
+        FindStatus(range, a).Should().Be("present");
+        FindStatus(range, b).Should().Be("half_day");
+    }
+
+    [Fact]
     public async Task Invalid_person_type_returns_400()
     {
         await using var app = App();
@@ -159,5 +198,60 @@ public class StaffAttendanceTests(SqlServerFixture fx)
             records = new[] { new { person_id = Guid.NewGuid(), status = "present" } }
         });
         res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Admin_can_mark_half_day_and_it_round_trips()
+    {
+        await using var app = App();
+        var client = TenantClient(app, Guid.NewGuid());
+        var personId = Guid.NewGuid();
+
+        (await client.PostAsJsonAsync("/v1/staff-attendance", new
+        {
+            person_type = "teacher",
+            date = "2026-08-26",
+            records = new[] { new { person_id = personId, status = "half_day" } }
+        })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var list = await Data(
+            await client.GetAsync("/v1/staff-attendance?person_type=teacher&date=2026-08-26"),
+            HttpStatusCode.OK);
+        FindStatus(list, personId).Should().Be("half_day");
+    }
+
+    [Fact]
+    public async Task Unknown_status_is_rejected()
+    {
+        await using var app = App();
+        var client = TenantClient(app, Guid.NewGuid());
+
+        var res = await client.PostAsJsonAsync("/v1/staff-attendance", new
+        {
+            person_type = "teacher",
+            date = "2026-08-26",
+            records = new[] { new { person_id = Guid.NewGuid(), status = "check_in" } }
+        });
+        res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+    }
+
+    [Fact]
+    public async Task Teacher_cannot_mark_staff_attendance()
+    {
+        await using var app = App();
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), Guid.NewGuid(), ["school.teacher"], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var res = await client.PostAsJsonAsync("/v1/staff-attendance", new
+        {
+            person_type = "teacher",
+            date = "2026-08-26",
+            records = new[] { new { person_id = Guid.NewGuid(), status = "present" } }
+        });
+        res.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 }

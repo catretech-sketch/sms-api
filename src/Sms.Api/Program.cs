@@ -40,6 +40,8 @@ app.UseMiddleware<BillingStateMiddleware>();
 app.UseAuthorization();
 
 app.MapControllers();
+app.MapHub<Sms.Api.Hubs.LiveHub>("/hubs/live");
+app.MapHub<Sms.Api.Hubs.TransportFleetHub>("/hubs/transport-fleet");
 app.MapHealthChecks("/health/ready", new HealthCheckOptions
 {
     Predicate = r => r.Tags.Contains("ready"),

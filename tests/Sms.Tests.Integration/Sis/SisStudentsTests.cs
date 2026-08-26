@@ -68,6 +68,31 @@ public class SisStudentsTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Create_assigns_roll_az_by_name_and_ignores_client_roll()
+    {
+        await using var app = App();
+        var client = TenantClient(app, Guid.NewGuid());
+
+        var zoya = await Data(await client.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "ADM-Z", name = "Zoya Khan", gender = "F",
+            grade = "IV", section = "B", roll = 0
+        }), HttpStatusCode.Created);
+        zoya.GetProperty("roll").GetInt32().Should().Be(1);
+
+        var asha = await Data(await client.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "ADM-A", name = "Asha Kumar", gender = "F",
+            grade = "IV", section = "B", roll = 99
+        }), HttpStatusCode.Created);
+        asha.GetProperty("roll").GetInt32().Should().Be(1);
+
+        var zoyaId = zoya.GetProperty("id").GetGuid();
+        (await Data(await client.GetAsync($"/v1/students/{zoyaId}"), HttpStatusCode.OK))
+            .GetProperty("roll").GetInt32().Should().Be(2);
+    }
+
+    [Fact]
     public async Task Students_are_isolated_across_tenants_by_rls()
     {
         await using var app = App();

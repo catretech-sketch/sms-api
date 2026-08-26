@@ -101,7 +101,8 @@ public class PrincipalOverviewTests(SqlServerFixture fx)
                 new { classId, tenantId });
         });
 
-        var today = DateTime.UtcNow.Date.ToString("yyyy-MM-dd");
+        var todayDt = DateTime.UtcNow.Date;
+        var today = todayDt.ToString("yyyy-MM-dd");
         (await principal.PostAsJsonAsync($"/v1/classes/{classId}/attendance", new
         {
             date = today,
@@ -113,6 +114,22 @@ public class PrincipalOverviewTests(SqlServerFixture fx)
                 new { student_id = s4, status = "absent" }
             }
         })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        await Seed(fx.ConnectionString, tenantId, async conn =>
+        {
+            foreach (var row in new (Guid StudentId, string Status)[]
+            {
+                (s1, "present"), (s2, "late"), (s3, "present"), (s4, "absent"),
+            })
+            {
+                await conn.ExecuteAsync(@"
+INSERT dbo.PeriodAttendanceRecords
+  (Id, TenantId, ClassId, StudentId, [Date], Period, Subject, Status, CreatedAt, UpdatedAt)
+VALUES
+  (NEWID(), @tenantId, @classId, @studentId, @date, 1, N'Math', @status, SYSUTCDATETIME(), SYSUTCDATETIME())",
+                    new { tenantId, classId, studentId = row.StudentId, date = todayDt, status = row.Status });
+            }
+        });
 
         // Email bridge seeding:
         // Teacher 1 (checked-in): email = t1-po@x.com

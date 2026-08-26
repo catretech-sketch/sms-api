@@ -180,4 +180,53 @@ public class AssignmentTests(SqlServerFixture fx)
         });
         postRes.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
+
+    [Fact]
+    public async Task Create_and_update_persist_period_and_long_image()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var teacher = Client(app, tenantId, Policies.Teacher);
+
+        var classRes = await Data(await teacher.PostAsJsonAsync("/v1/classes", new
+        {
+            name = "IV-B",
+            grade = "IV",
+            section = "B"
+        }), HttpStatusCode.Created);
+        var classId = classRes.GetProperty("id").GetGuid();
+
+        var image = "data:image/jpeg;base64," + new string('A', 500);
+        var created = await Data(await teacher.PostAsJsonAsync("/v1/assignments", new
+        {
+            title = "Music practice",
+            class_id = classId,
+            class_name = "IV-B",
+            subject = "Music",
+            period = 8,
+            due_date = DateTime.UtcNow.AddDays(5).ToString("yyyy-MM-dd"),
+            image_uri = image
+        }), HttpStatusCode.Created);
+
+        created.GetProperty("period").GetInt32().Should().Be(8);
+        created.GetProperty("image_uri").GetString().Should().Be(image);
+        created.GetProperty("subject").GetString().Should().Be("Music");
+        var id = created.GetProperty("id").GetGuid();
+
+        var updatedImage = "data:image/png;base64," + new string('B', 500);
+        var updated = await Data(await teacher.PatchAsJsonAsync($"/v1/assignments/{id}", new
+        {
+            title = "Music practice 2",
+            class_id = classId,
+            class_name = "IV-B",
+            subject = "Music",
+            period = 8,
+            due_date = DateTime.UtcNow.AddDays(6).ToString("yyyy-MM-dd"),
+            image_uri = updatedImage
+        }), HttpStatusCode.OK);
+
+        updated.GetProperty("title").GetString().Should().Be("Music practice 2");
+        updated.GetProperty("image_uri").GetString().Should().Be(updatedImage);
+        updated.GetProperty("period").GetInt32().Should().Be(8);
+    }
 }

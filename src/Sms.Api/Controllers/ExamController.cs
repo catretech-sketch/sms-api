@@ -18,10 +18,12 @@ public sealed class ExamController(IAcademicsService academics) : ApiControllerB
         FromResult(await academics.GetExamAsync(id, ct));
 
     [HttpPost("exams")]
+    [Authorize(Policy = Sms.Shared.Kernel.Authz.Policies.SchoolAdmin)]
     public async Task<IActionResult> Create([FromBody] CreateExamRequest req, CancellationToken ct) =>
         FromResult(await academics.CreateExamAsync(req, ct));
 
     [HttpPatch("exams/{id:guid}")]
+    [Authorize(Policy = Sms.Shared.Kernel.Authz.Policies.SchoolAdmin)]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateExamRequest req, CancellationToken ct) =>
         FromResult(await academics.UpdateExamAsync(id, req, ct));
 }

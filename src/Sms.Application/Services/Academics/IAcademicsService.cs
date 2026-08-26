@@ -105,7 +105,10 @@ public interface IAcademicsService
 
     Task<ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>> ListStaffAttendanceAsync(
         string personType, DateTime date, CancellationToken ct = default);
-    Task<ApiResult> BulkUpsertStaffAttendanceAsync(BulkStaffAttendanceRequest req, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>> ListStaffAttendanceRangeAsync(
+        string personType, DateTime from, DateTime to, CancellationToken ct = default);
+    Task<ApiResult> BulkUpsertStaffAttendanceAsync(
+        BulkStaffAttendanceRequest req, ClaimsPrincipal caller, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>> ListStaffAttendanceForPersonAsync(
         string personType, Guid personId, DateTime from, DateTime to, CancellationToken ct = default);
 
@@ -149,6 +152,8 @@ public interface IAcademicsService
         ClaimsPrincipal caller, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<TimetableSlotResponse>>> ListTimetableForStudentAsync(
         string? grade, string? section, string? classLabel, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<TimetableSlotResponse>>> ListTimetableForStudentIdAsync(
+        Guid studentId, ClaimsPrincipal caller, CancellationToken ct = default);
     Task<ApiResult<TimetableSlotResponse>> CreateTimetableSlotAsync(
         CreateTimetableSlotRequest req, CancellationToken ct = default);
     Task<ApiResult> ReplaceTimetableAsync(ReplaceTimetableRequest req, CancellationToken ct = default);
@@ -179,4 +184,6 @@ public interface IAcademicsService
     Task<ApiResult<IReadOnlyList<AssignmentResponse>>> ListAssignmentsAsync(CancellationToken ct = default);
     Task<ApiResult<AssignmentResponse>> CreateAssignmentAsync(
         CreateAssignmentRequest req, CancellationToken ct = default);
+    Task<ApiResult<AssignmentResponse>> UpdateAssignmentAsync(
+        Guid id, CreateAssignmentRequest req, CancellationToken ct = default);
 }

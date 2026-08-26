@@ -1,5 +1,6 @@
 using Sms.Application.Common;
 using Sms.Application.Interfaces.DAO;
+using Sms.Application.Services.Realtime;
 using Sms.Modules.Comms;
 using Sms.Modules.Sis.Data;
 using Sms.Modules.Staffing.Data;
@@ -29,6 +30,7 @@ public sealed class AnnouncementService(
     TeacherRepository teachers,
     StudentRepository students,
     IUserProvisioningDao users,
+    ILiveBroadcaster live,
     ILogger<AnnouncementService> logger) : IAnnouncementService
 {
     public async Task<ApiResult<IReadOnlyList<AnnouncementResponse>>> ListAsync(string? audience, CancellationToken ct = default) =>
@@ -53,6 +55,9 @@ public sealed class AnnouncementService(
         var created = await repo.CreateAnnouncementAsync(tid, normalized, creatorUserId, role, ct);
         if (created is null)
             return ApiResult<AnnouncementResponse>.Fail(new Error("internal_error", "failed to create announcement"), 500);
+
+        await live.PublishAsync(tid, LiveEventTypes.Announcement, ct: ct);
+        await live.PublishAsync(tid, LiveEventTypes.Notification, ct: ct);
 
         var recipientsJson = System.Text.Json.JsonSerializer.Serialize(new
         {

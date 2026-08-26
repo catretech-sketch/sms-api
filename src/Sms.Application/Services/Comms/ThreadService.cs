@@ -1,6 +1,7 @@
 using Sms.Application.Common;
 using Sms.Modules.Comms;
 using Sms.Shared.Kernel.Results;
+using Sms.Application.Services.Realtime;
 using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Application.Services.Comms;
@@ -13,7 +14,7 @@ public interface IThreadService
     Task<ApiResult<ChatMessageResponse>> SendMessageAsync(Guid threadId, SendMessageRequest req, CancellationToken ct = default);
 }
 
-public sealed class ThreadService(CommsRepository repo, ITenantContext tenant) : IThreadService
+public sealed class ThreadService(CommsRepository repo, ITenantContext tenant, ILiveBroadcaster live) : IThreadService
 {
     public async Task<ApiResult<IReadOnlyList<ChatThreadResponse>>> ListAsync(CancellationToken ct = default)
     {
@@ -56,8 +57,9 @@ public sealed class ThreadService(CommsRepository repo, ITenantContext tenant) :
             return ApiResult<ChatMessageResponse>.Fail(imageError, 422);
 
         var msg = await repo.AddMessageAsync(tid, threadId, uid, uid, text, imageUrl, ct);
-        return msg is null
-            ? ApiResult<ChatMessageResponse>.Fail(new Error("not_found", "resource not found"), 404)
-            : ApiResult<ChatMessageResponse>.Ok(msg, 201);
+        if (msg is null)
+            return ApiResult<ChatMessageResponse>.Fail(new Error("not_found", "resource not found"), 404);
+        await live.PublishAsync(tid, LiveEventTypes.Chat, new { thread_id = threadId }, ct);
+        return ApiResult<ChatMessageResponse>.Ok(msg, 201);
     }
 }

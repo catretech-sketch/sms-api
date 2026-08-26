@@ -2,6 +2,7 @@ using Sms.Application.Common;
 using Sms.Modules.Transport;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Results;
+using Sms.Application.Services.Realtime;
 using Sms.Shared.Kernel.Tenancy;
 using Sms.Shared.Kernel.Time;
 
@@ -37,7 +38,7 @@ public interface IBusService
 
 public sealed class BusService(
     BusRepository repo, TripRepository trips, ITenantContext tenant, ITenantFeatureSet features, IClock clock,
-    FleetSnapshotBuilder fleet, ITransportFleetBroadcaster fleetBroadcaster) : IBusService
+    FleetSnapshotBuilder fleet, ITransportFleetBroadcaster fleetBroadcaster, ILiveBroadcaster live) : IBusService
 {
     private bool GpsAllowed => FeatureGate.Allowed(tenant, features, FeatureCatalog.TransportGps);
     private bool OperationsAllowed => FeatureGate.Allowed(tenant, features, FeatureCatalog.Operations);
@@ -250,6 +251,7 @@ public sealed class BusService(
         if (trip is null)
             return ApiResult<TripResponse>.Fail(new Error("server_error", "could not start trip"), 500);
         await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
         return ApiResult<TripResponse>.Ok(trip, 201);
     }
 
@@ -264,6 +266,7 @@ public sealed class BusService(
             return ApiResult.Fail(new Error("no_active_trip", "no live trip for this bus"), 409);
         await trips.IngestPingsAsync(tid, tripId.Value, req.Pings, ct);
         await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
         return ApiResult.NoContent();
     }
 
@@ -275,7 +278,10 @@ public sealed class BusService(
             return ApiResult<TripSummaryResponse>.Fail(new Error("no_active_trip", "no live trip for this bus"), 409);
         var summary = await trips.EndAsync(tripId.Value, ct);
         if (tenant.TenantId is { } tid)
+        {
             await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
+            await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
+        }
         return ApiResult<TripSummaryResponse>.Ok(summary);
     }
 

@@ -79,6 +79,22 @@ public class StudentAttendanceScopeTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Parent_can_read_linked_child_timetable_but_not_another_students()
+    {
+        await using var app = App();
+        var seed = await SeedAsync();
+        var client = Client(app, seed.UserId, seed.TenantId, "parent");
+
+        var other = await client.GetAsync($"/v1/students/{seed.OtherStudentId}/timetable");
+        other.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        var own = await client.GetAsync($"/v1/students/{seed.LinkedStudentId}/timetable");
+        own.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await own.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("data").ValueKind.Should().Be(JsonValueKind.Array);
+    }
+
+    [Fact]
     public async Task Staff_can_read_any_students_attendance()
     {
         await using var app = App();

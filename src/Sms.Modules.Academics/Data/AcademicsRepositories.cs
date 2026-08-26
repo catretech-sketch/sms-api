@@ -250,6 +250,13 @@ public sealed class StaffAttendanceRepository(IDbConnectionFactory factory) : Ba
             "WHERE PersonType = @personType AND [Date] = @date ORDER BY PersonId",
             new { personType, date = date.Date }, ct);
 
+    public Task<IReadOnlyList<StaffAttendanceRecordResponse>> ListRangeAsync(
+        string personType, DateTime from, DateTime to, CancellationToken ct = default) =>
+        QueryInlineAsync<StaffAttendanceRecordResponse>(
+            "SELECT Id, TenantId, PersonType, PersonId, [Date], Status, MarkedBy FROM dbo.StaffAttendanceRecords " +
+            "WHERE PersonType = @personType AND [Date] BETWEEN @from AND @to ORDER BY [Date], PersonId",
+            new { personType, from = from.Date, to = to.Date }, ct);
+
     public Task<IReadOnlyList<StaffAttendanceRecordResponse>> ListForPersonAsync(
         string personType, Guid personId, DateTime from, DateTime to, CancellationToken ct = default) =>
         QueryInlineAsync<StaffAttendanceRecordResponse>(

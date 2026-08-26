@@ -1,5 +1,6 @@
 using System.Security.Claims;
 using Sms.Application.Common;
+using Sms.Application.Services.Realtime;
 using Sms.Application.Services.Sis;
 using Sms.Modules.Academics;
 using Sms.Modules.Academics.Contracts;
@@ -34,7 +35,8 @@ public sealed class AcademicsService(
     ISisService sis,
     ITenantContext tenant,
     ITenantFeatureSet features,
-    IClock clock) : IAcademicsService
+    IClock clock,
+    ILiveBroadcaster live) : IAcademicsService
 {
     private static string? NormPersonType(string? t)
     {
@@ -44,8 +46,8 @@ public sealed class AcademicsService(
 
     private static bool IsLeadership(ClaimsPrincipal caller) =>
         caller.FindAll("role")
-            .Select(c => c.Value.Split('.').LastOrDefault())
-            .Any(r => r is "principal" or "admin" or "owner");
+            .Select(c => c.Value.Split('.').LastOrDefault()?.Replace('-', '_'))
+            .Any(r => r is "principal" or "admin" or "owner" or "vice_principal");
 
     private static bool IsStudentOrParent(ClaimsPrincipal caller) =>
         caller.FindAll("role")
@@ -257,6 +259,7 @@ public sealed class AcademicsService(
         }
 
         await attendance.BulkUpsertAsync(tid, classId, req.Date, tenant.UserId, req.Records, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Attendance, ct: ct);
         return ApiResult.NoContent();
     }
 
@@ -630,6 +633,7 @@ public sealed class AcademicsService(
             tid, classId, req.Date, req.Period, subj, periodId, subjectId,
             tenant.UserId, role, req.Records, ct,
             req.GeoFenceStatus, req.GeoDistanceMeters, req.GeoCapturedAt);
+        await live.PublishAsync(tid, LiveEventTypes.Attendance, ct: ct);
         return ApiResult.NoContent();
     }
 
@@ -702,17 +706,52 @@ public sealed class AcademicsService(
             await staffAttendance.ListAsync(type, date, ct));
     }
 
+    public async Task<ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>> ListStaffAttendanceRangeAsync(
+        string personType, DateTime from, DateTime to, CancellationToken ct = default)
+    {
+        var type = NormPersonType(personType);
+        if (type is null)
+            return ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>.Fail(
+                new Error("invalid_request", "personType must be 'teacher' or 'staff'"), 400);
+        if (to.Date < from.Date)
+            return ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>.Fail(
+                new Error("invalid_request", "to must be on or after from"), 400);
+        if ((to.Date - from.Date).TotalDays > 366)
+            return ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>.Fail(
+                new Error("invalid_request", "date range cannot exceed 366 days"), 400);
+        if (type == "staff" && !FeatureGate.Allowed(tenant, features, FeatureCatalog.StaffSupport))
+            return FeatureGate.Locked<IReadOnlyList<StaffAttendanceRecordResponse>>(FeatureCatalog.StaffSupport);
+        return ApiResult<IReadOnlyList<StaffAttendanceRecordResponse>>.Ok(
+            await staffAttendance.ListRangeAsync(type, from, to, ct));
+    }
+
     public async Task<ApiResult> BulkUpsertStaffAttendanceAsync(
-        BulkStaffAttendanceRequest req, CancellationToken ct = default)
+        BulkStaffAttendanceRequest req, ClaimsPrincipal caller, CancellationToken ct = default)
     {
         if (tenant.TenantId is not { } tid)
             return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+        if (!IsLeadership(caller))
+            return ApiResult.Fail(new Error("forbidden", "only owner, admin, or principal can mark teacher/staff attendance"), 403);
         var type = NormPersonType(req.PersonType);
         if (type is null)
             return ApiResult.Fail(new Error("invalid_request", "personType must be 'teacher' or 'staff'"), 400);
         if (type == "staff" && !FeatureGate.Allowed(tenant, features, FeatureCatalog.StaffSupport))
             return FeatureGate.Locked(FeatureCatalog.StaffSupport);
-        await staffAttendance.BulkUpsertAsync(tid, type, req.Date, tenant.UserId, req.Records, ct);
+        if (req.Records is null || req.Records.Count == 0)
+            return ApiResult.Fail(new Error("invalid_request", "records are required"), 400);
+
+        var normalized = new List<StaffAttendanceUpsertRow>(req.Records.Count);
+        foreach (var row in req.Records)
+        {
+            var status = StaffAttendanceStatus.Normalize(row.Status);
+            if (status is null)
+                return ApiResult.Fail(
+                    new Error("invalid_request", "status must be present, absent, late, or half_day"), 400);
+            normalized.Add(row with { Status = status });
+        }
+
+        await staffAttendance.BulkUpsertAsync(tid, type, req.Date, tenant.UserId, normalized, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Attendance, ct: ct);
         return ApiResult.NoContent();
     }
 
@@ -810,8 +849,16 @@ public sealed class AcademicsService(
             return ApiResult<ExamPaperResponse>.Fail(new Error("internal_error", "could not create exam paper"), 500);
         try
         {
-            await academicsNotifier.NotifyClassTestScheduledAsync(
-                tid, created.Name ?? req.Name, created.Subject ?? req.Subject, created.Date ?? req.Date, ct);
+            if (created.ExamId is null)
+            {
+                await academicsNotifier.NotifyClassTestScheduledAsync(
+                    tid,
+                    created.Name ?? req.Name,
+                    created.Subject ?? req.Subject,
+                    created.Date ?? req.Date,
+                    created.ClassId ?? req.ClassId,
+                    ct);
+            }
         }
         catch
         {
@@ -955,8 +1002,10 @@ public sealed class AcademicsService(
         ClaimsPrincipal caller, CancellationToken ct = default)
     {
         var roles = caller.FindAll("role").Select(c => c.Value).ToArray();
-        var isPrincipal = roles.Any(r => r.Split('.').LastOrDefault() == "principal");
-        if (isPrincipal)
+        var roleLeaves = roles.Select(r => r.Split('.').LastOrDefault()).ToArray();
+        var isTeacherOnly = roleLeaves.Contains("teacher") &&
+            !roleLeaves.Any(r => r is "principal" or "admin" or "owner");
+        if (!isTeacherOnly)
             return ApiResult<IReadOnlyList<TimetableSlotResponse>>.Ok(await timetable.ListAsync(ct));
 
         var sub = caller.FindFirst("sub")?.Value;
@@ -975,6 +1024,20 @@ public sealed class AcademicsService(
             .Where(s => StudentClassScope.SlotBelongsToStudent(s, classIds, grade, section, classLabel))
             .ToList();
         return ApiResult<IReadOnlyList<TimetableSlotResponse>>.Ok(filtered);
+    }
+
+    public async Task<ApiResult<IReadOnlyList<TimetableSlotResponse>>> ListTimetableForStudentIdAsync(
+        Guid studentId, ClaimsPrincipal caller, CancellationToken ct = default)
+    {
+        if (await DenyIfNotOwnStudentAsync<IReadOnlyList<TimetableSlotResponse>>(studentId, caller, ct) is { } denied)
+            return denied;
+
+        var row = await sis.GetStudentAsync(studentId, ct);
+        if (row.Error is not null)
+            return ApiResult<IReadOnlyList<TimetableSlotResponse>>.Fail(row.Error, row.StatusCode);
+
+        var s = row.Data!;
+        return await ListTimetableForStudentAsync(s.Grade, s.Section, s.ClassLabel, ct);
     }
 
     public async Task<ApiResult<TimetableSlotResponse>> CreateTimetableSlotAsync(
@@ -1087,7 +1150,7 @@ public sealed class AcademicsService(
                         ? test.ClassName
                         : $"{test.Subject} · {test.ClassName}";
                 await academicsNotifier.NotifyClassTestScheduledAsync(
-                    tid, test.Title, subjectLine, test.Date, ct);
+                    tid, test.Title, subjectLine, test.Date, ct: ct);
             }
         }
         catch
@@ -1230,6 +1293,15 @@ public sealed class AcademicsService(
             /* best-effort */
         }
         return ApiResult<AssignmentResponse>.Ok(created, 201);
+    }
+
+    public async Task<ApiResult<AssignmentResponse>> UpdateAssignmentAsync(
+        Guid id, CreateAssignmentRequest req, CancellationToken ct = default)
+    {
+        var updated = await assignments.UpdateAsync(id, req, ct);
+        if (updated is null)
+            return ApiResult<AssignmentResponse>.Fail(new Error("not_found", "resource not found"), 404);
+        return ApiResult<AssignmentResponse>.Ok(updated);
     }
 
     private async Task<ClassResponse> AttachSubjectsAsync(ClassResponse row, CancellationToken ct)

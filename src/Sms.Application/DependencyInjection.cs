@@ -12,6 +12,7 @@ using Sms.Application.Services.Staffing;
 using Sms.Application.Services.Tenancy;
 using Sms.Application.Services.Transport;
 using Sms.Application.Services.Users;
+using Sms.Application.Services.Realtime;
 
 namespace Sms.Application;
 
@@ -52,6 +53,7 @@ public static class DependencyInjection
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IUserSettingsService, UserSettingsService>();
         services.AddScoped<IReportingService, ReportingService>();
+        services.AddScoped<ILiveBroadcaster, NoOpLiveBroadcaster>();
         return services;
     }
 }

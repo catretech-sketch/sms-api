@@ -54,9 +54,12 @@ public sealed class AuthService(
 
         tenant.Set(null, null, isPlatform: true);
         var forceAdmission = !string.IsNullOrWhiteSpace(req.StudentId);
-        var user = await FindUserByPasswordAsync(identifier, req.Password, ct, forceAdmission);
+        var (user, passwordMatchRoles) = await FindUserByPasswordAsync(identifier, req.Password, ct, forceAdmission, req.Role);
         if (user is null)
         {
+            if (passwordMatchRoles is not null
+                && AppLoginRole.WrongTabMessage(passwordMatchRoles, req.Role) is { } wrongTab)
+                return ApiResult<TokenResponse>.Fail(new Error("wrong_role", wrongTab), 403);
             if (await NeedsPasswordSetupAsync(identifier, ct, forceAdmission))
                 return ApiResult<TokenResponse>.Fail(new Error("password_not_set",
                     "No password yet. Use set up or reset password."), 409);
@@ -632,14 +635,9 @@ public sealed class AuthService(
         return null;
     }
 
-    private static bool IsParentRole(IReadOnlyList<string> roles) =>
-        roles.Any(r => r.Contains("parent", StringComparison.OrdinalIgnoreCase));
+    private static bool IsParentRole(IReadOnlyList<string> roles) => AppLoginRole.IsParent(roles);
 
-    private static bool IsStudentRole(IReadOnlyList<string> roles) =>
-        !IsParentRole(roles)
-        && roles.Any(r =>
-            r.Equals("student", StringComparison.OrdinalIgnoreCase)
-            || r.EndsWith(".student", StringComparison.OrdinalIgnoreCase));
+    private static bool IsStudentRole(IReadOnlyList<string> roles) => AppLoginRole.IsStudent(roles);
 
     private static bool IsUsableEmail(string? email)
     {
@@ -668,15 +666,33 @@ public sealed class AuthService(
     /// a fully-active row over a removed/inactive one when several match (so losing
     /// access to one school never blocks signing in to another with the same creds).
     /// </summary>
-    private async Task<UserRecord?> FindUserByPasswordAsync(
-        string identifier, string password, CancellationToken ct, bool forceAdmission = false)
+    private async Task<(UserRecord? User, IReadOnlyList<string>? PasswordMatchRoles)> FindUserByPasswordAsync(
+        string identifier, string password, CancellationToken ct, bool forceAdmission = false,
+        string? requestedRole = null)
     {
         var candidates = await ListByIdentifierAsync(identifier, ct, forceAdmission);
-        return candidates
-            .Where(u => u.PasswordHash is not null && hasher.Verify(password, u.PasswordHash))
+        var passwordMatched = new List<(UserRecord User, List<string> Roles)>();
+        foreach (var u in candidates)
+        {
+            if (u.PasswordHash is null || !hasher.Verify(password, u.PasswordHash)) continue;
+            var roles = (await users.GetRolesAsync(u.Id, ct)).ToList();
+            if (roles.Count == 0 && !string.IsNullOrWhiteSpace(u.StudentId))
+                roles.Add("student");
+            passwordMatched.Add((u, roles));
+        }
+
+        var matched = passwordMatched
+            .Where(x => AppLoginRole.Matches(x.Roles, requestedRole))
+            .Select(x => x.User)
+            .ToList();
+        var user = matched
             .OrderByDescending(u => u.IsPlatform)
             .ThenBy(u => AccessBlockedError(u) is null ? 0 : 1)
             .FirstOrDefault();
+        IReadOnlyList<string>? wrongTabRoles = user is null && passwordMatched.Count > 0
+            ? passwordMatched[0].Roles
+            : null;
+        return (user, wrongTabRoles);
     }
 
     private async Task<bool> NeedsPasswordSetupAsync(string identifier, CancellationToken ct, bool forceAdmission)

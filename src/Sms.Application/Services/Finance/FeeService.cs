@@ -5,6 +5,7 @@ using Sms.Modules.Sis.Contracts;
 using Sms.Modules.Sis.Data;
 using Sms.Shared.Kernel.Payments;
 using Sms.Shared.Kernel.Results;
+using Sms.Application.Services.Realtime;
 using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Application.Services.Finance;
@@ -37,7 +38,8 @@ public sealed class FeeService(
     FeeStructureRepository structures,
     StudentRepository roster,
     IPaymentGateway gateway,
-    ITenantContext tenant) : IFeeService
+    ITenantContext tenant,
+    ILiveBroadcaster live) : IFeeService
 {
     public async Task<ApiResult<IReadOnlyList<FeePaymentResponse>>> ListPaymentsAsync(Guid? studentId, CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<FeePaymentResponse>>.Ok(await payments.ListAsync(studentId, ct));
@@ -52,7 +54,9 @@ public sealed class FeeService(
             FeeType = FirstNonEmpty(req.FeeType, req.HeadName, "academic") ?? "academic",
             Method = FirstNonEmpty(req.Method, req.Mode),
         };
-        return ApiResult<FeePaymentResponse>.Ok((await payments.CreateAsync(tid, mapped, ct))!, 201);
+        var created = await payments.CreateAsync(tid, mapped, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Fees, ct: ct);
+        return ApiResult<FeePaymentResponse>.Ok(created!, 201);
     }
 
     public async Task<ApiResult<IReadOnlyList<FeeInvoiceResponse>>> ListInvoicesAsync(Guid? studentId, CancellationToken ct = default) =>
@@ -123,6 +127,7 @@ public sealed class FeeService(
         if (payment is null)
             return ApiResult<FeePaymentResponse>.Fail(new Error("conflict", "invoice already paid"), 409);
 
+        await live.PublishAsync(tid, LiveEventTypes.Fees, ct: ct);
         return ApiResult<FeePaymentResponse>.Ok(payment);
     }
 

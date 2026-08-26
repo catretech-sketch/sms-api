@@ -32,8 +32,10 @@ BEGIN
 
     INSERT dbo.Students (Id, TenantId, AdmissionNo, Name, Gender, Grade, Section, ClassLabel, Roll,
         GuardianName, GuardianPhone, GuardianEmail, House, AvatarHue, Dob, Email, Address)
-    VALUES (@Id, @TenantId, @AdmissionNo, @Name, @Gender, @Grade, @Section, @ClassLabel, ISNULL(@Roll, 0),
+    VALUES (@Id, @TenantId, @AdmissionNo, @Name, @Gender, @Grade, @Section, @ClassLabel, 0,
         @GuardianName, @GuardianPhone, @GuardianEmail, @House, ISNULL(@AvatarHue, 0), @Dob, @Email, @Address);
+
+    EXEC dbo.Student_RenumberClass @TenantId = @TenantId, @Grade = @Grade, @Section = @Section;
 
     UPDATE dbo.Tenants
     SET StudentsCount = (

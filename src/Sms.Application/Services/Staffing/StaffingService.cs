@@ -6,6 +6,7 @@ using Sms.Modules.Staffing.Data;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Http;
 using Sms.Shared.Kernel.Results;
+using Sms.Application.Services.Realtime;
 using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Application.Services.Staffing;
@@ -36,7 +37,8 @@ public sealed class StaffingService(
     LeaveRepository leave,
     IAuthDao users,
     ITenantContext tenant,
-    ITenantFeatureSet features) : IStaffingService
+    ITenantFeatureSet features,
+    ILiveBroadcaster live) : IStaffingService
 {
     private bool StaffSupportAllowed => FeatureGate.Allowed(tenant, features, FeatureCatalog.StaffSupport);
 
@@ -203,6 +205,7 @@ public sealed class StaffingService(
         }
 
         var created = (await leave.CreateAsync(tid, tenant.UserId, req, attachmentUrlsJson, ct))!;
+        await live.PublishAsync(tid, LiveEventTypes.Leave, ct: ct);
         return ApiResult<LeaveResponse>.Ok(created, 201);
     }
 
@@ -219,6 +222,8 @@ public sealed class StaffingService(
         if (await leave.GetAsync(id, ct) is null)
             return ApiResult<LeaveResponse>.Fail(new Error("not_found", "resource not found"), 404);
         var decided = (await leave.DecideAsync(id, req.Status, tenant.UserId, req.DecidedNote, ct))!;
+        if (tenant.TenantId is { } tid)
+            await live.PublishAsync(tid, LiveEventTypes.Leave, ct: ct);
         return ApiResult<LeaveResponse>.Ok(decided);
     }
 }

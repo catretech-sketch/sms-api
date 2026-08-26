@@ -118,8 +118,9 @@ public class PrincipalAttendanceTests(SqlServerFixture fx)
                 new { id = classBId, tenantId });
         });
 
-        // Roll-call for Class A only: 2 present, 1 late, 1 absent => present+late = 3
-        var today = DateTime.UtcNow.Date.ToString("yyyy-MM-dd");
+        // Legacy daily roll-call must not drive principal totals (period SoT).
+        var todayDt = DateTime.UtcNow.Date;
+        var today = todayDt.ToString("yyyy-MM-dd");
         (await principal.PostAsJsonAsync($"/v1/classes/{classAId}/attendance", new
         {
             date = today,
@@ -131,6 +132,22 @@ public class PrincipalAttendanceTests(SqlServerFixture fx)
                 new { student_id = s4, status = "absent" }
             }
         })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        await Seed(fx.ConnectionString, tenantId, async conn =>
+        {
+            foreach (var row in new (Guid StudentId, string Status)[]
+            {
+                (s1, "present"), (s2, "late"), (s3, "present"), (s4, "absent"),
+            })
+            {
+                await conn.ExecuteAsync(@"
+INSERT dbo.PeriodAttendanceRecords
+  (Id, TenantId, ClassId, StudentId, [Date], Period, Subject, Status, CreatedAt, UpdatedAt)
+VALUES
+  (NEWID(), @tenantId, @classId, @studentId, @date, 1, N'Math', @status, SYSUTCDATETIME(), SYSUTCDATETIME())",
+                    new { tenantId, classId = classAId, studentId = row.StudentId, date = todayDt, status = row.Status });
+            }
+        });
 
         // Class B is left un-marked (no roll-call posted)
 
@@ -166,11 +183,11 @@ public class PrincipalAttendanceTests(SqlServerFixture fx)
         // Call the endpoint
         var attendance = await Data(await principal.GetAsync("/v1/principal/attendance"), HttpStatusCode.OK);
 
-        // Overall totals: present=3, student_total=7, overall_pct=100*3/7=42.9
+        // Overall totals from period marks: present+late=3, marked=4, pct=75
         attendance.GetProperty("present_total").GetInt32().Should().Be(3);
-        attendance.GetProperty("student_total").GetInt32().Should().Be(7);
+        attendance.GetProperty("student_total").GetInt32().Should().Be(4);
         var overallPct = attendance.GetProperty("overall_pct").GetDecimal();
-        overallPct.Should().Be(Math.Round(100m * 3m / 7m, 1));
+        overallPct.Should().Be(75.0m);
 
         // Per-class breakdown
         var classes = attendance.GetProperty("classes");
@@ -189,11 +206,13 @@ public class PrincipalAttendanceTests(SqlServerFixture fx)
         classA!.Value.GetProperty("present").GetInt32().Should().Be(3);
         classA.Value.GetProperty("total").GetInt32().Should().Be(4);
         classA.Value.GetProperty("pct").GetDecimal().Should().Be(75.0m);
+        classA.Value.GetProperty("marked").GetInt32().Should().Be(4);
 
         classB.Should().NotBeNull("Class B should be in the response");
         classB!.Value.GetProperty("present").GetInt32().Should().Be(0);
-        classB.Value.GetProperty("total").GetInt32().Should().Be(3);
+        classB.Value.GetProperty("total").GetInt32().Should().Be(0);
         classB.Value.GetProperty("pct").GetDecimal().Should().Be(0.0m);
+        classB.Value.GetProperty("marked").GetInt32().Should().Be(0);
 
         // Staff array is present and contains our teacher
         var staff = attendance.GetProperty("staff");

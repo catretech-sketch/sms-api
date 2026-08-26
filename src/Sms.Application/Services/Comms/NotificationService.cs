@@ -1,6 +1,7 @@
 using Sms.Application.Common;
 using Sms.Modules.Comms;
 using Sms.Shared.Kernel.Results;
+using Sms.Application.Services.Realtime;
 using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Application.Services.Comms;
@@ -12,7 +13,7 @@ public interface INotificationService
     Task<ApiResult> MarkReadAsync(CancellationToken ct = default);
 }
 
-public sealed class NotificationService(CommsRepository repo, ITenantContext tenant) : INotificationService
+public sealed class NotificationService(CommsRepository repo, ITenantContext tenant, ILiveBroadcaster live) : INotificationService
 {
     public async Task<ApiResult<IReadOnlyList<NotificationResponse>>> ListAsync(CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<NotificationResponse>>.Ok(await repo.ListNotificationsAsync(tenant.UserId, ct));
@@ -21,7 +22,9 @@ public sealed class NotificationService(CommsRepository repo, ITenantContext ten
     {
         if (tenant.TenantId is not { } tid)
             return ApiResult<NotificationResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
-        return ApiResult<NotificationResponse>.Ok((await repo.CreateNotificationAsync(tid, req, ct))!, 201);
+        var created = await repo.CreateNotificationAsync(tid, req, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Notification, ct: ct);
+        return ApiResult<NotificationResponse>.Ok(created!, 201);
     }
 
     public async Task<ApiResult> MarkReadAsync(CancellationToken ct = default)

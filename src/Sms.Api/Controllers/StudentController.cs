@@ -68,4 +68,8 @@ public sealed class StudentController(ISisService sis, IAcademicsService academi
         Guid studentId, [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken ct) =>
         FromResult(await academics.GetPeriodAttendanceSummaryForStudentAsync(
             studentId, from ?? DateTime.UtcNow.AddDays(-365), to ?? DateTime.UtcNow, User, ct));
+
+    [HttpGet("students/{studentId:guid}/timetable")]
+    public async Task<IActionResult> ListTimetable(Guid studentId, CancellationToken ct) =>
+        FromResult(await academics.ListTimetableForStudentIdAsync(studentId, User, ct));
 }

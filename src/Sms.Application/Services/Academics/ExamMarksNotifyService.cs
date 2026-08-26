@@ -6,6 +6,7 @@ using Sms.Modules.Comms;
 using Sms.Modules.Sis.Data;
 using Sms.Modules.Tenancy.Data;
 using Sms.Shared.Kernel.Results;
+using Sms.Application.Services.Realtime;
 using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Application.Services.Academics;
@@ -24,7 +25,8 @@ public sealed class ExamMarksNotifyService(
     StudentRepository students,
     ClientRepository clients,
     IAnnouncementService announcements,
-    ITenantContext tenant) : IExamMarksNotifyService
+    ITenantContext tenant,
+    ILiveBroadcaster live) : IExamMarksNotifyService
 {
     public async Task<ApiResult<NotifyExamMarksResponse>> NotifyPublishedAsync(
         Guid examPaperId, CancellationToken ct = default)
@@ -94,6 +96,7 @@ public sealed class ExamMarksNotifyService(
         if (studentRes.IsSuccess && studentRes.Data is not null)
             studentReach = studentRes.Data.Reach;
 
+        await live.PublishAsync(tid, LiveEventTypes.Grades, ct: ct);
         return ApiResult<NotifyExamMarksResponse>.Ok(
             new NotifyExamMarksResponse(parentReach, studentReach, emailsSent));
     }

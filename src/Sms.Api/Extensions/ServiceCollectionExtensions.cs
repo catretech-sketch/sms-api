@@ -7,7 +7,11 @@ using Microsoft.OpenApi;
 using OpenTelemetry.Trace;
 using Serilog;
 using Sms.Api.Http;
+using Sms.Api.Hubs;
+using Sms.Api.Services;
 using Sms.Api.Swagger;
+using Sms.Application.Services.Realtime;
+using Sms.Application.Services.Transport;
 using Sms.Application;
 using Sms.Infrastructure;
 using Sms.Migrations;
@@ -123,6 +127,28 @@ public static class ServiceCollectionExtensions
                     ValidateIssuer = true, ValidateAudience = true, ValidateLifetime = true,
                     RoleClaimType = "role", NameClaimType = "sub"
                 };
+                o.Events = new JwtBearerEvents
+                {
+                    OnMessageReceived = context =>
+                    {
+                        var accessToken = context.Request.Query["access_token"];
+                        var path = context.HttpContext.Request.Path;
+                        if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
+                            context.Token = accessToken;
+                        return Task.CompletedTask;
+                    }
+                };
+                o.Events = new JwtBearerEvents
+                {
+                    OnMessageReceived = ctx =>
+                    {
+                        var accessToken = ctx.Request.Query["access_token"].ToString();
+                        if (!string.IsNullOrEmpty(accessToken)
+                            && ctx.HttpContext.Request.Path.StartsWithSegments("/hubs"))
+                            ctx.Token = accessToken;
+                        return Task.CompletedTask;
+                    }
+                };
             });
         builder.Services.AddSmsAuthorization();
         builder.Services.AddTenancyModule();
@@ -138,6 +164,14 @@ public static class ServiceCollectionExtensions
         builder.Services.AddSportsModule();
         builder.Services.AddCommsModule();
         builder.Services.AddReportingModule();
+
+        builder.Services.AddSignalR().AddJsonProtocol(o =>
+        {
+            o.PayloadSerializerOptions.PropertyNamingPolicy = new SnakeCaseNamingPolicy();
+            o.PayloadSerializerOptions.PropertyNameCaseInsensitive = true;
+        });
+        builder.Services.AddScoped<ILiveBroadcaster, SignalRLiveBroadcaster>();
+        builder.Services.AddScoped<ITransportFleetBroadcaster, TransportFleetBroadcaster>();
 
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen(c =>

@@ -7,12 +7,16 @@ CREATE OR ALTER PROCEDURE dbo.Student_Update
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    DECLARE @TenantId uniqueidentifier, @OldGrade nvarchar(20), @OldSection nvarchar(20);
+    SELECT @TenantId = TenantId, @OldGrade = Grade, @OldSection = Section
+    FROM dbo.Students WHERE Id = @Id;
+
     UPDATE dbo.Students SET
         Name = ISNULL(@Name, Name),
         Grade = ISNULL(@Grade, Grade),
         Section = ISNULL(@Section, Section),
         ClassLabel = ISNULL(@Grade, Grade) + '-' + ISNULL(@Section, Section),
-        Roll = ISNULL(@Roll, Roll),
         GuardianName = ISNULL(@GuardianName, GuardianName),
         GuardianPhone = ISNULL(@GuardianPhone, GuardianPhone),
         GuardianEmail = ISNULL(@GuardianEmail, GuardianEmail),
@@ -28,14 +32,24 @@ BEGIN
         AvatarHue = ISNULL(@AvatarHue, AvatarHue)
     WHERE Id = @Id;
 
-    DECLARE @TenantId uniqueidentifier =
-        (SELECT TOP 1 TenantId FROM dbo.Students WHERE Id = @Id);
+    UPDATE dbo.Students SET Roll = 0 WHERE Id = @Id AND Status <> N'active';
+
     IF @TenantId IS NOT NULL
+    BEGIN
+        DECLARE @NewGrade nvarchar(20), @NewSection nvarchar(20);
+        SELECT @NewGrade = Grade, @NewSection = Section FROM dbo.Students WHERE Id = @Id;
+
+        EXEC dbo.Student_RenumberClass @TenantId = @TenantId, @Grade = @OldGrade, @Section = @OldSection;
+        IF ISNULL(@NewGrade, N'') <> ISNULL(@OldGrade, N'')
+           OR ISNULL(@NewSection, N'') <> ISNULL(@OldSection, N'')
+            EXEC dbo.Student_RenumberClass @TenantId = @TenantId, @Grade = @NewGrade, @Section = @NewSection;
+
         UPDATE dbo.Tenants
         SET StudentsCount = (
             SELECT COUNT(*) FROM dbo.Students s WHERE s.TenantId = @TenantId AND s.Status = N'active'
         )
         WHERE Id = @TenantId;
+    END
 
     SELECT Id, TenantId, AdmissionNo, Name, Gender, Grade, Section, ClassLabel, Roll, GuardianName,
            GuardianPhone, GuardianEmail, AttendancePct, FeeStatus, FeeDue, Status, House, AvatarHue, Dob, Email, Address,

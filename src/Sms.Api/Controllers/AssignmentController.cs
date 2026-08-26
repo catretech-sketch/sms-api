@@ -19,4 +19,10 @@ public sealed class AssignmentController(IAcademicsService academics) : ApiContr
     [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
     public async Task<IActionResult> Create([FromBody] CreateAssignmentRequest req, CancellationToken ct) =>
         FromResult(await academics.CreateAssignmentAsync(req, ct));
+
+    [HttpPatch("assignments/{id:guid}")]
+    [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
+    public async Task<IActionResult> Update(
+        Guid id, [FromBody] CreateAssignmentRequest req, CancellationToken ct) =>
+        FromResult(await academics.UpdateAssignmentAsync(id, req, ct));
 }
