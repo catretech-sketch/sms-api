@@ -2,6 +2,7 @@ using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi;
 using OpenTelemetry.Trace;
@@ -10,6 +11,7 @@ using Sms.Api.Http;
 using Sms.Api.Hubs;
 using Sms.Api.Services;
 using Sms.Api.Swagger;
+using Sms.Application.Services.AiSearch;
 using Sms.Application.Services.Realtime;
 using Sms.Application.Services.Transport;
 using Sms.Application;
@@ -104,6 +106,10 @@ public static class ServiceCollectionExtensions
         builder.Services.AddSingleton<IRazorpayGateway, RazorpayGateway>();
         builder.Services.Configure<AiSearchOptions>(builder.Configuration.GetSection(AiSearchOptions.SectionName));
         builder.Services.AddHttpClient("claude");
+        builder.Services.AddScoped<IAiClassificationClient>(sp =>
+            new AiClassificationClient(
+                sp.GetRequiredService<IHttpClientFactory>().CreateClient("claude"),
+                sp.GetRequiredService<IOptions<AiSearchOptions>>()));
 
         builder.Services.AddScoped<ITenantContext, TenantContext>();
         builder.Services.AddScoped<ITenantPlan, TenantPlan>();
