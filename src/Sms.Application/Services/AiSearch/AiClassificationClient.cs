@@ -59,6 +59,12 @@ public sealed class AiClassificationClient(HttpClient http, IOptions<AiSearchOpt
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(TimeSpan.FromSeconds(options.Value.TimeoutSeconds));
 
+            // Defensive fallback: normally the DI-registered "claude" HttpClient already has
+            // BaseAddress set from AiSearchOptions.BaseUrl (see ServiceCollectionExtensions),
+            // but guard here too so a relative request URI never silently fails against a
+            // client that wasn't configured that way (e.g. constructed directly in tests).
+            http.BaseAddress ??= new Uri(options.Value.BaseUrl);
+
             var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
             {
                 Content = JsonContent.Create(new

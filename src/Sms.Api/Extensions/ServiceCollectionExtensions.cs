@@ -105,7 +105,11 @@ public static class ServiceCollectionExtensions
         builder.Services.AddHttpClient("razorpay");
         builder.Services.AddSingleton<IRazorpayGateway, RazorpayGateway>();
         builder.Services.Configure<AiSearchOptions>(builder.Configuration.GetSection(AiSearchOptions.SectionName));
-        builder.Services.AddHttpClient("claude");
+        builder.Services.AddHttpClient("claude", (sp, client) =>
+        {
+            var aiOptions = sp.GetRequiredService<IOptions<AiSearchOptions>>().Value;
+            client.BaseAddress = new Uri(aiOptions.BaseUrl);
+        });
         builder.Services.AddScoped<IAiClassificationClient>(sp =>
             new AiClassificationClient(
                 sp.GetRequiredService<IHttpClientFactory>().CreateClient("claude"),

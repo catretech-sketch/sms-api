@@ -1,6 +1,8 @@
 using System.Net;
+using System.Net.Http;
 using System.Text;
 using FluentAssertions;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Sms.Application.Services.AiSearch;
 using Sms.Shared.Kernel.AiSearch;
@@ -54,7 +56,7 @@ public class AiClassificationClientTests
     public async Task ClassifyAsync_returns_Unsupported_on_malformed_response()
     {
         // Genuinely malformed at the top level (not just inside "input").
-        var httpClient = new HttpClient(new BrokenHandler());
+        var httpClient = new HttpClient(new BrokenHandler()) { BaseAddress = new Uri("https://api.anthropic.com") };
         var options = Options.Create(new AiSearchOptions { ApiKey = "test-key" });
         var client = new AiClassificationClient(httpClient, options);
 
@@ -70,5 +72,50 @@ public class AiClassificationClientTests
             {
                 Content = new StringContent("not json at all {{{", Encoding.UTF8, "application/json")
             });
+    }
+
+    [Fact]
+    public async Task ClassifyAsync_still_calls_the_configured_BaseUrl_when_HttpClient_BaseAddress_was_never_set()
+    {
+        // Regression test: previously the "claude" HttpClient never had BaseAddress set (see
+        // ServiceCollectionExtensions), so HttpClient.SendAsync threw InvalidOperationException
+        // on every call, and that exception was silently swallowed by the catch-all fallback,
+        // making every real classification request fail invisibly. Simulate that scenario here
+        // (an HttpClient with no BaseAddress) and assert the request still reaches the handler
+        // instead of being silently degraded to "Unsupported".
+        var handler = new FakeHandler(
+            """{"language":"en","intent":"StudentSearch","filters":{"targetSelf":false}}""");
+        var httpClient = new HttpClient(handler); // BaseAddress intentionally left unset.
+        var options = Options.Create(new AiSearchOptions { ApiKey = "test-key", BaseUrl = "https://api.anthropic.com" });
+        var client = new AiClassificationClient(httpClient, options);
+
+        var result = await client.ClassifyAsync("find student Ravi");
+
+        result.Intent.Should().Be("StudentSearch");
+        httpClient.BaseAddress.Should().Be(new Uri("https://api.anthropic.com"));
+    }
+
+    [Fact]
+    public void DI_registration_sets_the_claude_HttpClient_BaseAddress_from_AiSearchOptions_BaseUrl()
+    {
+        // Reproduces the real ServiceCollectionExtensions.ConfigureSmsServices wiring for the
+        // "claude" named HttpClient and proves BaseAddress ends up set from AiSearchOptions.BaseUrl
+        // (the fix for the Critical finding), rather than being left null.
+        var services = new ServiceCollection();
+        services.Configure<AiSearchOptions>(o =>
+        {
+            o.BaseUrl = "https://api.anthropic.com";
+            o.ApiKey = "test-key";
+        });
+        services.AddHttpClient("claude", (sp, client) =>
+        {
+            var aiOptions = sp.GetRequiredService<IOptions<AiSearchOptions>>().Value;
+            client.BaseAddress = new Uri(aiOptions.BaseUrl);
+        });
+
+        using var provider = services.BuildServiceProvider();
+        var httpClient = provider.GetRequiredService<IHttpClientFactory>().CreateClient("claude");
+
+        httpClient.BaseAddress.Should().Be(new Uri("https://api.anthropic.com"));
     }
 }
