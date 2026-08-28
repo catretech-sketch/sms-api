@@ -21,6 +21,7 @@
     <ProjectReference Include="..\Sms.Modules.Transport\Sms.Modules.Transport.csproj" />
     <ProjectReference Include="..\Sms.Modules.Comms\Sms.Modules.Comms.csproj" />
     <ProjectReference Include="..\Sms.Modules.Reporting\Sms.Modules.Reporting.csproj" />
+    <ProjectReference Include="..\Sms.Modules.AiSearch\Sms.Modules.AiSearch.csproj" />
   </ItemGroup>
 
   <ItemGroup>

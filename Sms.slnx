@@ -5,6 +5,7 @@
   <Folder Name="/src/">
     <Project Path="src/Sms.Api/Sms.Api.csproj" />
     <Project Path="src/Sms.Modules.Academics/Sms.Modules.Academics.csproj" />
+    <Project Path="src/Sms.Modules.AiSearch/Sms.Modules.AiSearch.csproj" />
     <Project Path="src/Sms.Modules.Attendance/Sms.Modules.Attendance.csproj" />
     <Project Path="src/Sms.Modules.Comms/Sms.Modules.Comms.csproj" />
     <Project Path="src/Sms.Modules.Finance/Sms.Modules.Finance.csproj" />
