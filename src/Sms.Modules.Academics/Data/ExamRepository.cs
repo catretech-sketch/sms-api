@@ -31,6 +31,12 @@ public sealed class ExamRepository(IDbConnectionFactory factory) : BaseRepositor
     public Task<IReadOnlyList<ExamResponse>> ListExamsAsync(CancellationToken ct = default) =>
         QueryInlineAsync<ExamResponse>($"SELECT {ExamCols} FROM dbo.Exams ORDER BY FromDate DESC", null, ct);
 
+    public Task<IReadOnlyList<ExamResponse>> ListUpcomingExamsAsync(
+        Guid tenantId, DateTime fromDate, CancellationToken ct = default) =>
+        QueryInlineAsync<ExamResponse>(
+            $"SELECT {ExamCols} FROM dbo.Exams WHERE TenantId = @tenantId AND FromDate >= @fromDate ORDER BY FromDate ASC",
+            new { tenantId, fromDate }, ct);
+
     public Task<IReadOnlyList<Guid>> ListExamClassIdsAsync(Guid examId, CancellationToken ct = default) =>
         QueryProcAsync<Guid>("dbo.ExamClass_List", new { ExamId = examId }, ct);
 
