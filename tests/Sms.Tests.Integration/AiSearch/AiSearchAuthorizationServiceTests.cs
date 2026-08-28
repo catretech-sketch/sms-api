@@ -72,6 +72,20 @@ public class AiSearchAuthorizationServiceTests(SqlServerFixture fx)
             new { email, tenantId });
     }
 
+    private async Task<Guid> StudentUserId(string admissionNo, Guid tenantId)
+    {
+        await using var conn = new SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'IsPlatform', @value=1");
+        return await conn.QuerySingleAsync<Guid>(
+            """
+            SELECT Id FROM dbo.Users
+            WHERE TenantId = @tenantId
+              AND LOWER(LTRIM(RTRIM(StudentId))) = LOWER(LTRIM(RTRIM(@admissionNo)))
+            """,
+            new { admissionNo, tenantId });
+    }
+
     /// Runs <paramref name="act"/> against a scope whose ambient ITenantContext is the caller,
     /// exactly as the request pipeline would have set it after JWT validation.
     private static async Task<AiAuthorizationResult> AsCaller(
@@ -125,6 +139,9 @@ public class AiSearchAuthorizationServiceTests(SqlServerFixture fx)
         result.ClampedFilters.StudentName.Should().BeNull();
         result.AllowedChildStudentIds.Should().BeEquivalentTo([aisha.GetProperty("id").GetGuid()]);
         result.AllowedChildStudentIds.Should().NotContain(rahul.GetProperty("id").GetGuid());
+        // A name WAS asked and matched nothing the parent may see — distinguishable from "no name asked".
+        result.NameUnmatched.Should().BeTrue();
+        result.Unrestricted.Should().BeFalse();
     }
 
     [Fact]
@@ -155,6 +172,152 @@ public class AiSearchAuthorizationServiceTests(SqlServerFixture fx)
         result.Allowed.Should().BeTrue();
         result.ResolvedStudentId.Should().Be(aisha.GetProperty("id").GetGuid());
         result.ClampedFilters.StudentName.Should().Be("aisha");
+        result.NameUnmatched.Should().BeFalse();
+        // Even with a non-empty child list, a parent is never unrestricted.
+        result.Unrestricted.Should().BeFalse();
+    }
+
+    /// Spec invariant: TargetSelf must resolve to the CALLER'S OWN record and ignore any other
+    /// name the LLM extracted — "my attendance" can never be redirected at another student.
+    [Fact]
+    public async Task Student_with_TargetSelf_resolves_to_their_own_record_ignoring_any_other_name()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admin = Admin(app, tenantId);
+        var admissionNo = $"ADM-SELF-{Guid.NewGuid():N}"[..20];
+
+        var me = await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = admissionNo,
+            name = "Nikhil Rao",
+            grade = "VI",
+            section = "A",
+            roll = 1,
+        }), HttpStatusCode.Created);
+
+        // A different student the caller must never be redirected at.
+        var someoneElse = await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = $"ADM-OTH-{Guid.NewGuid():N}"[..20],
+            name = "SomeoneElse Gupta",
+            grade = "VI",
+            section = "B",
+            roll = 2,
+        }), HttpStatusCode.Created);
+
+        var studentUserId = await StudentUserId(admissionNo, tenantId);
+
+        var result = await AsCaller(app, tenantId, studentUserId, svc => svc.AuthorizeAsync(
+            "StudentAttendance",
+            new AiSearchFilters("SomeoneElse", null, null, "today", TargetSelf: true),
+            [Policies.StudentOrParent]));
+
+        result.Allowed.Should().BeTrue();
+        result.ResolvedStudentId.Should().Be(me.GetProperty("id").GetGuid());
+        result.ResolvedStudentId.Should().NotBe(someoneElse.GetProperty("id").GetGuid());
+        result.ClampedFilters.StudentName.Should().BeNull();
+        result.Unrestricted.Should().BeFalse();
+        result.NameUnmatched.Should().BeFalse();
+    }
+
+    /// Pins the ACTUAL parent + TargetSelf behaviour, which is not "denied": a guardian's Users row
+    /// is provisioned by EnsureParentLoginAsync with StudentId = the linked child's admission no, so
+    /// GetMyStudentAsync resolves for a parent too and TargetSelf lands on that linked child. The
+    /// security invariant that matters — and is asserted here — is that whatever it resolves to is
+    /// inside the caller's authorized set and never the unrelated student whose name was extracted.
+    [Fact]
+    public async Task Parent_with_TargetSelf_resolves_only_within_their_own_linked_children()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admin = Admin(app, tenantId);
+        var parentEmail = $"dad{Guid.NewGuid():N}@home.test";
+
+        var aisha = await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = $"ADM-PS-{Guid.NewGuid():N}"[..20],
+            name = "Aisha Khan",
+            grade = "IV",
+            section = "B",
+            roll = 1,
+            guardian_email = parentEmail,
+        }), HttpStatusCode.Created);
+
+        var outsider = await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = $"ADM-PO-{Guid.NewGuid():N}"[..20],
+            name = "SomeoneElse Gupta",
+            grade = "IV",
+            section = "C",
+            roll = 2,
+        }), HttpStatusCode.Created);
+
+        var parentId = await ParentUserId(parentEmail, tenantId);
+
+        var result = await AsCaller(app, tenantId, parentId, svc => svc.AuthorizeAsync(
+            "StudentAttendance",
+            new AiSearchFilters("SomeoneElse", null, null, "today", TargetSelf: true),
+            [Policies.StudentOrParent]));
+
+        result.ClampedFilters.StudentName.Should().BeNull();
+        result.ResolvedStudentId.Should().NotBe(outsider.GetProperty("id").GetGuid());
+        result.Unrestricted.Should().BeFalse();
+        if (result.Allowed)
+            result.ResolvedStudentId.Should().Be(aisha.GetProperty("id").GetGuid());
+        else
+            result.ResultIntent.Should().Be("Forbidden");
+    }
+
+    /// A same-named student in another tenant must be invisible: name resolution runs only over
+    /// the caller's own ParentStudentLinks, and RLS keeps the other tenant's row out entirely.
+    [Fact]
+    public async Task Parent_asking_by_name_never_resolves_a_same_named_student_in_another_tenant()
+    {
+        await using var app = App();
+        var tenantA = Guid.NewGuid();
+        var tenantB = Guid.NewGuid();
+        var adminA = Admin(app, tenantA);
+        var adminB = Admin(app, tenantB);
+        var parentEmail = $"dad{Guid.NewGuid():N}@home.test";
+
+        var aishaA = await Data(await adminA.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = $"ADM-TA-{Guid.NewGuid():N}"[..20],
+            name = "Aisha Khan",
+            grade = "IV",
+            section = "B",
+            roll = 1,
+            guardian_email = parentEmail,
+        }), HttpStatusCode.Created);
+
+        // Same name, different tenant, unrelated to the tenant-A parent.
+        var aishaB = await Data(await adminB.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = $"ADM-TB-{Guid.NewGuid():N}"[..20],
+            name = "Aisha Khan",
+            grade = "IV",
+            section = "B",
+            roll = 1,
+            guardian_email = $"other{Guid.NewGuid():N}@home.test",
+        }), HttpStatusCode.Created);
+
+        aishaB.GetProperty("id").GetGuid().Should().NotBe(aishaA.GetProperty("id").GetGuid());
+
+        var parentId = await ParentUserId(parentEmail, tenantA);
+
+        var result = await AsCaller(app, tenantA, parentId, svc => svc.AuthorizeAsync(
+            "StudentAttendance",
+            new AiSearchFilters("Aisha", null, null, "today", false),
+            [Policies.StudentOrParent]));
+
+        result.Allowed.Should().BeTrue();
+        result.ResolvedStudentId.Should().Be(aishaA.GetProperty("id").GetGuid());
+        result.ResolvedStudentId.Should().NotBe(aishaB.GetProperty("id").GetGuid());
+        result.AllowedChildStudentIds.Should().BeEquivalentTo([aishaA.GetProperty("id").GetGuid()]);
+        result.AllowedChildStudentIds.Should().NotContain(aishaB.GetProperty("id").GetGuid());
+        result.Unrestricted.Should().BeFalse();
+        result.NameUnmatched.Should().BeFalse();
     }
 
     [Fact]
@@ -199,6 +362,7 @@ public class AiSearchAuthorizationServiceTests(SqlServerFixture fx)
         result.AllowedClassNames.Should().BeEquivalentTo(["8A"]);
         result.ClampedFilters.ClassName.Should().BeNull();
         result.ClampedFilters.Section.Should().BeNull();
+        result.Unrestricted.Should().BeFalse();
     }
 
     [Fact]
@@ -242,6 +406,9 @@ public class AiSearchAuthorizationServiceTests(SqlServerFixture fx)
         result.Allowed.Should().BeTrue();
         result.ClampedFilters.ClassName.Should().Be("8a");
         result.ClampedFilters.Section.Should().Be("A");
+        // Teaching the asked-about class does not promote a teacher to whole-tenant scope.
+        result.Unrestricted.Should().BeFalse();
+        result.AllowedClassNames.Should().BeEquivalentTo(["8A"]);
     }
 
     [Fact]
@@ -260,6 +427,9 @@ public class AiSearchAuthorizationServiceTests(SqlServerFixture fx)
         result.ResolvedStudentId.Should().BeNull();
         result.AllowedChildStudentIds.Should().BeNull();
         result.AllowedClassNames.Should().BeNull();
+        // Denied must never look like "unrestricted" to a handler.
+        result.Unrestricted.Should().BeFalse();
+        result.NameUnmatched.Should().BeFalse();
     }
 
     [Fact]
@@ -274,6 +444,7 @@ public class AiSearchAuthorizationServiceTests(SqlServerFixture fx)
 
         result.Allowed.Should().BeFalse();
         result.ResultIntent.Should().Be("Forbidden");
+        result.Unrestricted.Should().BeFalse();
     }
 
     [Fact]
@@ -290,5 +461,7 @@ public class AiSearchAuthorizationServiceTests(SqlServerFixture fx)
         result.ClampedFilters.ClassName.Should().Be("9B");
         result.ClampedFilters.Section.Should().Be("B");
         result.AllowedClassNames.Should().BeNull();
+        // The only path where null clamp lists legitimately mean "no filter".
+        result.Unrestricted.Should().BeTrue();
     }
 }

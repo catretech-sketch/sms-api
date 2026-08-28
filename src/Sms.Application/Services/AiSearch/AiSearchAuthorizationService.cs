@@ -10,13 +10,52 @@ namespace Sms.Application.Services.AiSearch;
 /// never from the LLM-extracted filters — <c>ClampedFilters</c> is the caller-safe subset of the
 /// requested filters, with anything the caller is not authorized for removed.
 /// </summary>
+/// <param name="Allowed">False when the caller may not run this intent at all; handlers must not query.</param>
+/// <param name="ResultIntent">The intent to handle, or <c>"Forbidden"</c> when <paramref name="Allowed"/> is false.</param>
+/// <param name="ResolvedStudentId">
+/// A single student the query was narrowed to, re-derived from the caller's own links. Null means
+/// "not narrowed to one student" — see <paramref name="NameUnmatched"/> to tell "no name asked"
+/// apart from "the name asked matched nothing the caller may see".
+/// </param>
+/// <param name="AllowedChildStudentIds">
+/// The exhaustive set of student ids the caller may see, when a per-student clamp applies (parent path).
+/// <para>
+/// IMPORTANT — <c>null</c> here does NOT mean "no filter". Only <paramref name="Unrestricted"/> being
+/// <c>true</c> means the caller has whole-tenant scope. An empty list means the caller has ZERO
+/// authorized students and must see NOTHING (e.g. a parent with no <c>ParentStudentLinks</c> rows).
+/// Never write <c>if (AllowedChildStudentIds is null or { Count: 0 })</c> to mean "unfiltered" — that
+/// turns a zero-scope caller into a whole-tenant read. Gate on <paramref name="Unrestricted"/> first.
+/// </para>
+/// </param>
+/// <param name="AllowedClassNames">
+/// The exhaustive set of class names the caller may see, when a per-class clamp applies (teacher path).
+/// <para>
+/// IMPORTANT — same rule as <paramref name="AllowedChildStudentIds"/>: <c>null</c> with
+/// <paramref name="Unrestricted"/> <c>false</c> is NOT "no filter", and an empty list means the caller
+/// teaches nothing and must see NOTHING (e.g. a <c>school.teacher</c> JWT with no matching
+/// <c>dbo.Teachers</c> row). Gate on <paramref name="Unrestricted"/>, never on emptiness.
+/// </para>
+/// </param>
+/// <param name="ClampedFilters">The caller-safe subset of the LLM-extracted filters.</param>
+/// <param name="Unrestricted">
+/// True ONLY for the admin/owner/principal/staff path, where no per-record clamp applies beyond the
+/// role gate and handlers may query the whole tenant. This is the single authoritative signal for
+/// "no clamp"; the clamp lists' nullness is not.
+/// </param>
+/// <param name="NameUnmatched">
+/// True only when a student name WAS asked for but resolved to nothing the caller is authorized to see
+/// (e.g. a parent asking about a child that is not linked to them). False when no name was asked at all.
+/// Lets a handler answer "I couldn't find a child named X" instead of silently listing everything.
+/// </param>
 public sealed record AiAuthorizationResult(
     bool Allowed,
     string ResultIntent,
     Guid? ResolvedStudentId,
     IReadOnlyList<Guid>? AllowedChildStudentIds,
     IReadOnlyList<string>? AllowedClassNames,
-    AiSearchFilters ClampedFilters);
+    AiSearchFilters ClampedFilters,
+    bool Unrestricted,
+    bool NameUnmatched);
 
 public interface IAiSearchAuthorizationService
 {
@@ -47,6 +86,7 @@ public sealed class AiSearchAuthorizationService(
             var me = await sis.GetMyStudentAsync(ct);
             if (!me.IsSuccess)
                 return Denied("Forbidden", filters);
+            // Clamped to the caller's own record: emphatically NOT unrestricted.
             return Allowed(intent, me.Data!.Id, null, null, filters with { StudentName = null });
         }
 
@@ -57,6 +97,7 @@ public sealed class AiSearchAuthorizationService(
                 ? children.Data!.Select(c => c.Id).ToList()
                 : [];
 
+            // An empty childIds list is a real answer ("this parent may see nothing"), never "no filter".
             if (string.IsNullOrWhiteSpace(filters.StudentName))
                 return Allowed(intent, null, childIds, null, filters);
 
@@ -65,7 +106,9 @@ public sealed class AiSearchAuthorizationService(
                     c.Name.Contains(filters.StudentName, StringComparison.OrdinalIgnoreCase))
                 : null;
             return match is null
-                ? Allowed(intent, null, childIds, null, filters with { StudentName = null }) // no-match, not a leak
+                // A name was asked for and matched none of the caller's children: report it as
+                // unmatched rather than falling back to "show everything they may see".
+                ? Allowed(intent, null, childIds, null, filters with { StudentName = null }, nameUnmatched: true)
                 : Allowed(intent, match.Id, childIds, null, filters);
         }
 
@@ -89,18 +132,22 @@ public sealed class AiSearchAuthorizationService(
                 clamped = filters with { ClassName = null, Section = null }; // asked about a class they don't teach
             }
 
+            // An empty allowedClassNames list is a real answer ("this teacher may see nothing" — e.g. a
+            // school.teacher JWT with no matching dbo.Teachers row), never "no filter".
             return Allowed(intent, null, null, allowedClassNames, clamped);
         }
 
         // Admin/principal/owner/staff: no per-record clamp beyond the role gate already applied above.
-        return Allowed(intent, null, null, null, filters);
+        // This is the ONLY branch that may read the whole tenant, so it is the only Unrestricted = true.
+        return Allowed(intent, null, null, null, filters, unrestricted: true);
     }
 
     private static AiAuthorizationResult Denied(string resultIntent, AiSearchFilters filters) =>
-        new(false, resultIntent, null, null, null, filters);
+        new(false, resultIntent, null, null, null, filters, Unrestricted: false, NameUnmatched: false);
 
     private static AiAuthorizationResult Allowed(
         string intent, Guid? studentId, IReadOnlyList<Guid>? childIds,
-        IReadOnlyList<string>? classNames, AiSearchFilters filters) =>
-        new(true, intent, studentId, childIds, classNames, filters);
+        IReadOnlyList<string>? classNames, AiSearchFilters filters,
+        bool unrestricted = false, bool nameUnmatched = false) =>
+        new(true, intent, studentId, childIds, classNames, filters, unrestricted, nameUnmatched);
 }
