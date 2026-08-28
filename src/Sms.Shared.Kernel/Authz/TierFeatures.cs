@@ -13,7 +13,7 @@ public static class TierFeatures
     private static readonly string[] Gold =
     [
         FeatureCatalog.AnalyticsWeakStudents, FeatureCatalog.ReportingAdvanced,
-        FeatureCatalog.ReportsCsv, FeatureCatalog.AnalyticsAdvanced,
+        FeatureCatalog.ReportsCsv, FeatureCatalog.AnalyticsAdvanced, FeatureCatalog.AiSearch,
     ];
 
     private static readonly string[] Platinum =

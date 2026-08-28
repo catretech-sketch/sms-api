@@ -26,6 +26,7 @@ using Sms.Modules.Sports;
 using Sms.Modules.Staffing;
 using Sms.Modules.Tenancy;
 using Sms.Modules.Transport;
+using Sms.Shared.Kernel.AiSearch;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Configuration;
@@ -101,6 +102,8 @@ public static class ServiceCollectionExtensions
         builder.Services.Configure<RazorpayOptions>(builder.Configuration.GetSection(RazorpayOptions.SectionName));
         builder.Services.AddHttpClient("razorpay");
         builder.Services.AddSingleton<IRazorpayGateway, RazorpayGateway>();
+        builder.Services.Configure<AiSearchOptions>(builder.Configuration.GetSection(AiSearchOptions.SectionName));
+        builder.Services.AddHttpClient("claude");
 
         builder.Services.AddScoped<ITenantContext, TenantContext>();
         builder.Services.AddScoped<ITenantPlan, TenantPlan>();

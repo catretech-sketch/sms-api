@@ -13,6 +13,7 @@ public static class FeatureCatalog
     public const string StaffSupport = "staff_support";
     public const string AnalyticsWeakStudents = "analytics.weak_students";
     public const string ReportingAdvanced = "reporting.advanced";
+    public const string AiSearch = "ai_search";
 
     // Legacy / module-specific keys (kept for existing gates)
     public const string ExamsDatesheet = "exams.datesheet";
@@ -37,7 +38,7 @@ public static class FeatureCatalog
     [
         Sis, Academics, Attendance, Exams, Fees, Communication, Operations, Library, Transport, Hostel, Sports,
         ExamsDatesheet, ReportsCsv, AnalyticsAdvanced, CommsTargeted,
-        HrPayroll, StaffSupport, AnalyticsWeakStudents, ReportingAdvanced,
+        HrPayroll, StaffSupport, AnalyticsWeakStudents, ReportingAdvanced, AiSearch,
         AttendanceGeofence, TransportGps, SupportDedicated,
     ];
 }
