@@ -17,8 +17,13 @@ public sealed class TeacherAttendanceHandler(
 {
     public string Intent => "TeacherAttendance";
 
-    public async Task<AiSearchResponse> HandleAsync(
-        AiAuthorizationResult auth, string language, int page, int pageSize, CancellationToken ct = default)
+    public Task<AiSearchResponse> HandleAsync(
+        AiAuthorizationResult auth, string language, int page, int pageSize, CancellationToken ct = default) =>
+        GetSummaryAsync(attendance, templates, Intent, language, pageSize, ct);
+
+    internal static async Task<AiSearchResponse> GetSummaryAsync(
+        IAttendanceService attendance, IAiAnswerTemplateService templates, string intent, string language,
+        int pageSize, CancellationToken ct)
     {
         var summary = await attendance.GetSummaryAsync(null, null, ct);
         if (!summary.IsSuccess)
@@ -31,7 +36,7 @@ public sealed class TeacherAttendanceHandler(
             "hinglish" => "Aapka attendance summary taiyar hai.",
             _ => "Your attendance summary is ready.",
         };
-        return AiSearchResponse.Ok(language, Intent, answer, data, 1, pageSize, 1, false);
+        return AiSearchResponse.Ok(language, intent, answer, data, 1, pageSize, 1, false);
     }
 }
 
@@ -47,5 +52,5 @@ public sealed class StaffAttendanceHandler(
 
     public Task<AiSearchResponse> HandleAsync(
         AiAuthorizationResult auth, string language, int page, int pageSize, CancellationToken ct = default) =>
-        new TeacherAttendanceHandler(attendance, templates).HandleAsync(auth, language, page, pageSize, ct);
+        TeacherAttendanceHandler.GetSummaryAsync(attendance, templates, Intent, language, pageSize, ct);
 }
