@@ -12,6 +12,7 @@ using Sms.Api.Hubs;
 using Sms.Api.Services;
 using Sms.Api.Swagger;
 using Sms.Application.Services.AiSearch;
+using Sms.Application.Services.AiSearch.Handlers;
 using Sms.Application.Services.Realtime;
 using Sms.Application.Services.Transport;
 using Sms.Application;
@@ -19,6 +20,7 @@ using Sms.Infrastructure;
 using Sms.Migrations;
 using Sms.Modules.Academics;
 using Sms.Modules.AiSearch;
+using Sms.Modules.AiSearch.Data;
 using Sms.Modules.Attendance;
 using Sms.Modules.Comms;
 using Sms.Modules.Finance;
@@ -119,6 +121,9 @@ public static class ServiceCollectionExtensions
         builder.Services.AddScoped<IAiSearchAuditService, AiSearchAuditService>();
         builder.Services.AddScoped<IAiSearchAuthorizationService, AiSearchAuthorizationService>();
         builder.Services.AddSingleton<IAiAnswerTemplateService, AiAnswerTemplateService>();
+        builder.Services.AddScoped<AiAttendanceAggregateRepository>();
+        builder.Services.AddScoped<IAiIntentHandler, DailyAttendanceSummaryHandler>();
+        builder.Services.AddScoped<IAiIntentHandler, DashboardSummaryHandler>();
 
         builder.Services.AddScoped<ITenantContext, TenantContext>();
         builder.Services.AddScoped<ITenantPlan, TenantPlan>();
