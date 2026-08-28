@@ -130,6 +130,7 @@ public static class ServiceCollectionExtensions
         builder.Services.AddScoped<IAiIntentHandler, TeacherAttendanceHandler>();
         builder.Services.AddScoped<IAiIntentHandler, StaffAttendanceHandler>();
         builder.Services.AddScoped<IAiIntentHandler, StudentSearchHandler>();
+        builder.Services.AddScoped<IAiIntentHandler, StudentDetailsHandler>();
 
         builder.Services.AddScoped<ITenantContext, TenantContext>();
         builder.Services.AddScoped<ITenantPlan, TenantPlan>();

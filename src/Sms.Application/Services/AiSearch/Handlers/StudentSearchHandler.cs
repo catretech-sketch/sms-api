@@ -47,3 +47,31 @@ public sealed class StudentSearchHandler(ISisService sis, IAiAnswerTemplateServi
         return AiSearchResponse.Ok(language, Intent, answer, rows, page, pageSize, rows.Count, result.Data.NextCursor is not null);
     }
 }
+
+/// <summary>
+/// Returns full details for a single, already-resolved student. This handler never performs its
+/// own scope/authorization resolution — it relies entirely on
+/// <see cref="AiAuthorizationResult.ResolvedStudentId"/> having already been set (or left null) by
+/// <c>AiSearchAuthorizationService</c> for this caller. A null <c>ResolvedStudentId</c> means the
+/// authorization service could not (or would not) resolve a single student for this caller/query,
+/// so this handler must degrade to "Unsupported" rather than guessing or falling back to any other
+/// identifier.
+/// </summary>
+public sealed class StudentDetailsHandler(ISisService sis, IAiAnswerTemplateService templates) : IAiIntentHandler
+{
+    public string Intent => "StudentDetails";
+
+    public async Task<AiSearchResponse> HandleAsync(
+        AiAuthorizationResult auth, string language, int page, int pageSize, CancellationToken ct = default)
+    {
+        if (auth.ResolvedStudentId is not { } studentId)
+            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language));
+
+        var student = await sis.GetStudentAsync(studentId, ct);
+        if (!student.IsSuccess)
+            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language));
+
+        var answer = $"Showing details for {student.Data!.Name}.";
+        return AiSearchResponse.Ok(language, Intent, answer, student.Data, 1, pageSize, 1, false);
+    }
+}

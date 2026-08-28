@@ -150,3 +150,86 @@ public class StudentSearchHandlerTests(SqlServerFixture fx)
         response.Answer.Should().Be(templates.RenderNoMatch("en"));
     }
 }
+
+/// Exercises StudentDetailsHandler directly. The handler must rely solely on
+/// AiAuthorizationResult.ResolvedStudentId — never throw, never leak — when that id is null, and
+/// otherwise must return the real student resolved via ISisService.GetStudentAsync.
+[Collection("sql")]
+public class StudentDetailsHandlerTests(SqlServerFixture fx)
+{
+    private WebApplicationFactory<Program> App() =>
+        new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("environment", "Production");
+            b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
+            b.UseSetting("Jwt:SigningKey", "integration-test-signing-key-32-bytes-min!!");
+        });
+
+    private static async Task<AiSearchResponse> Handle(
+        WebApplicationFactory<Program> app, Guid tenantId, AiAuthorizationResult auth, string language = "en")
+    {
+        using var scope = app.Services.CreateScope();
+        scope.ServiceProvider.GetRequiredService<ITenantContext>().Set(tenantId, Guid.NewGuid(), isPlatform: false);
+        var handler = new StudentDetailsHandler(
+            scope.ServiceProvider.GetRequiredService<ISisService>(),
+            scope.ServiceProvider.GetRequiredService<IAiAnswerTemplateService>());
+        return await handler.HandleAsync(auth, language, 1, 20);
+    }
+
+    private async Task Seed(Func<SqlConnection, Task> work)
+    {
+        await using var conn = new SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'IsPlatform', @value=1");
+        await work(conn);
+    }
+
+    private static async Task InsertStudent(
+        SqlConnection conn, Guid id, Guid tenantId, string name, string admissionNoPrefix) =>
+        await conn.ExecuteAsync(
+            """
+            INSERT dbo.Students (Id, TenantId, AdmissionNo, Name, Grade, Section, ClassLabel, Status)
+            VALUES (@id, @tenantId, @adm, @name, N'8', N'A', N'8A', N'active')
+            """,
+            new { id, tenantId, adm = $"{admissionNoPrefix}-{Guid.NewGuid():N}"[..20], name });
+
+    private static AiAuthorizationResult AuthWithResolvedStudent(Guid? studentId) => new(
+        Allowed: true, ResultIntent: "StudentDetails", ResolvedStudentId: studentId,
+        AllowedChildStudentIds: null, AllowedClassNames: null,
+        ClampedFilters: new AiSearchFilters(null, null, null, null, false),
+        Unrestricted: false, NameUnmatched: false);
+
+    [Fact]
+    public async Task Null_resolved_student_id_never_reaches_GetStudentAsync_and_never_throws()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+
+        // A caller whose ResolvedStudentId is null must degrade to Unsupported — this is the
+        // security-relevant case: no id, no lookup, no leak, no throw.
+        var response = await Handle(app, tenantId, AuthWithResolvedStudent(null));
+
+        response.Intent.Should().Be("Unsupported");
+        response.Data.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Resolved_student_id_returns_that_students_real_details()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var studentId = Guid.NewGuid();
+
+        await Seed(async conn =>
+            await InsertStudent(conn, studentId, tenantId, "Priya Nair", "ADM-SD1"));
+
+        var response = await Handle(app, tenantId, AuthWithResolvedStudent(studentId));
+
+        response.Intent.Should().Be("StudentDetails");
+        response.Data.Should().NotBeNull();
+        var student = (StudentResponse)response.Data!;
+        student.Id.Should().Be(studentId);
+        student.Name.Should().Be("Priya Nair");
+        response.Answer.Should().Be("Showing details for Priya Nair.");
+    }
+}
