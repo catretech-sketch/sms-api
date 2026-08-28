@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Sms.Shared.Kernel\Sms.Shared.Kernel.csproj" />
+    <ProjectReference Include="..\Sms.Modules.AiSearch\Sms.Modules.AiSearch.csproj" />
     <ProjectReference Include="..\Sms.Modules.Tenancy\Sms.Modules.Tenancy.csproj" />
     <ProjectReference Include="..\Sms.Modules.Sis\Sms.Modules.Sis.csproj" />
     <ProjectReference Include="..\Sms.Modules.Staffing\Sms.Modules.Staffing.csproj" />

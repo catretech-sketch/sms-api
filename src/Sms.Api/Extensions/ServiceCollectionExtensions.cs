@@ -18,6 +18,7 @@ using Sms.Application;
 using Sms.Infrastructure;
 using Sms.Migrations;
 using Sms.Modules.Academics;
+using Sms.Modules.AiSearch;
 using Sms.Modules.Attendance;
 using Sms.Modules.Comms;
 using Sms.Modules.Finance;
@@ -114,6 +115,8 @@ public static class ServiceCollectionExtensions
             new AiClassificationClient(
                 sp.GetRequiredService<IHttpClientFactory>().CreateClient("claude"),
                 sp.GetRequiredService<IOptions<AiSearchOptions>>()));
+        builder.Services.AddAiSearchModule();
+        builder.Services.AddScoped<IAiSearchAuditService, AiSearchAuditService>();
 
         builder.Services.AddScoped<ITenantContext, TenantContext>();
         builder.Services.AddScoped<ITenantPlan, TenantPlan>();
