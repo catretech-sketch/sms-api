@@ -117,6 +117,7 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<IOptions<AiSearchOptions>>()));
         builder.Services.AddAiSearchModule();
         builder.Services.AddScoped<IAiSearchAuditService, AiSearchAuditService>();
+        builder.Services.AddScoped<IAiSearchAuthorizationService, AiSearchAuthorizationService>();
 
         builder.Services.AddScoped<ITenantContext, TenantContext>();
         builder.Services.AddScoped<ITenantPlan, TenantPlan>();
