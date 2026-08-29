@@ -136,6 +136,7 @@ public static class ServiceCollectionExtensions
         builder.Services.AddScoped<IAiIntentHandler, UpcomingExamSearchHandler>();
         builder.Services.AddScoped<IAiIntentHandler, TestSearchHandler>();
         builder.Services.AddScoped<IAiIntentHandler, HomeworkSearchHandler>();
+        builder.Services.AddScoped<IAiIntentHandler, SubjectSearchHandler>();
 
         builder.Services.AddScoped<ITenantContext, TenantContext>();
         builder.Services.AddScoped<ITenantPlan, TenantPlan>();
