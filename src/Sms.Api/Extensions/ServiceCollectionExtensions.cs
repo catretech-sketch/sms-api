@@ -240,6 +240,7 @@ public static class ServiceCollectionExtensions
         var globalPermit = builder.Configuration.GetValue<int?>("RateLimiting:GlobalPermitPerWindow") ?? 100;
         var globalWindow = builder.Configuration.GetValue<int?>("RateLimiting:GlobalWindowSeconds") ?? 10;
         var authPermit = builder.Configuration.GetValue<int?>("RateLimiting:AuthPermitPerMinute") ?? 5;
+        var aiSearchPermit = builder.Configuration.GetValue<int?>("RateLimiting:AiSearchPermitPerMinute") ?? 10;
         builder.Services.AddRateLimiter(o =>
         {
             o.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -257,6 +258,13 @@ public static class ServiceCollectionExtensions
                     _ => new FixedWindowRateLimiterOptions
                     {
                         PermitLimit = authPermit, Window = TimeSpan.FromMinutes(1), QueueLimit = 0
+                    }));
+            o.AddPolicy("ai-search", http =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    http.User.FindFirst("sub")?.Value ?? http.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = aiSearchPermit, Window = TimeSpan.FromMinutes(1), QueueLimit = 0
                     }));
             o.OnRejected = async (ctx, ct) =>
             {
