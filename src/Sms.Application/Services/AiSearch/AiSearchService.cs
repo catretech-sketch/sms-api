@@ -1,0 +1,109 @@
+using Microsoft.Extensions.Options;
+using Sms.Application.Common;
+using Sms.Shared.Kernel.AiSearch;
+using Sms.Shared.Kernel.Authz;
+using Sms.Shared.Kernel.Tenancy;
+
+namespace Sms.Application.Services.AiSearch;
+
+public interface IAiSearchService
+{
+    Task<AiSearchResponse> SearchAsync(
+        AiSearchRequest request, IReadOnlyList<string> callerRoles, CancellationToken ct = default);
+}
+
+/// <summary>
+/// The single entry point for AI global search. It owns the fixed pipeline every query must walk:
+/// plan-tier feature gate -> input validation -> LLM classification -> write-intent refusal ->
+/// intent support check -> authorization/scope clamping -> handler dispatch -> audit log.
+/// <para>
+/// The ordering is load-bearing. The feature gate runs before classification so a locked tenant never
+/// costs an LLM call; the write-intent refusal runs before authorization so a mutation phrased by an
+/// otherwise-authorized caller is still refused; and no handler is ever reached without an
+/// <see cref="AiAuthorizationResult"/> produced by <see cref="IAiSearchAuthorizationService"/>, which
+/// is the only component permitted to derive the caller's scope. Handlers receive that result and
+/// nothing else from the request, so raw LLM-extracted filters can never reach a repository unclamped.
+/// </para>
+/// </summary>
+public sealed class AiSearchService(
+    IAiClassificationClient classifier,
+    IAiSearchAuthorizationService authz,
+    IEnumerable<IAiIntentHandler> handlers,
+    IAiAnswerTemplateService templates,
+    IAiSearchAuditService audit,
+    ITenantContext tenant,
+    ITenantFeatureSet features,
+    IOptions<AiSearchOptions> options) : IAiSearchService
+{
+    private readonly Dictionary<string, IAiIntentHandler> _handlersByIntent =
+        handlers.GroupBy(h => h.Intent, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
+
+    public async Task<AiSearchResponse> SearchAsync(
+        AiSearchRequest request, IReadOnlyList<string> callerRoles, CancellationToken ct = default)
+    {
+        if (!FeatureGate.Allowed(tenant, features, FeatureCatalog.AiSearch))
+            return AiSearchResponse.Fail("FeatureNotEnabled", "AI Search is not available on your plan.");
+
+        var query = request.Query;
+        if (string.IsNullOrWhiteSpace(query))
+            return AiSearchResponse.Fail("InvalidRequest", "query is required.");
+
+        var maxLength = options.Value.MaxQueryLength;
+        if (query.Length > maxLength)
+            return AiSearchResponse.Fail("InvalidRequest", $"query exceeds {maxLength} characters.");
+
+        var page = Math.Max(1, request.Page ?? 1);
+        var pageSize = Math.Clamp(request.PageSize ?? 20, 1, 100);
+
+        var classification = await classifier.ClassifyAsync(query, ct);
+        var language = classification.Language;
+
+        // A mutation request is refused before authorization runs: "can this caller read X" is not the
+        // question being asked, and an admin must be refused just as firmly as a parent.
+        if (string.Equals(classification.Intent, WriteIntent, StringComparison.OrdinalIgnoreCase))
+            return await TerminalAsync(
+                callerRoles, query, language, "WriteBlocked", templates.RenderWriteBlocked(language), ct);
+
+        // Resolve the handler before authorizing so an intent nobody implements (including the
+        // classifier's own "Unsupported") is reported as unsupported. AiIntentAccessRules.IsAllowed
+        // returns false for any unknown intent, so authorizing first would mislabel "I didn't
+        // understand that" as "you are not permitted to see that".
+        if (!_handlersByIntent.TryGetValue(classification.Intent, out var handler))
+            return await TerminalAsync(
+                callerRoles, query, language, "Unsupported", templates.RenderUnsupported(language), ct);
+
+        var auth = await authz.AuthorizeAsync(classification.Intent, classification.Filters, callerRoles, ct);
+        if (!auth.Allowed)
+            return await TerminalAsync(
+                callerRoles, query, language, "Forbidden", templates.RenderForbidden(language), ct);
+
+        var response = await handler.HandleAsync(auth, language, page, pageSize, ct);
+
+        await audit.LogAsync(
+            TenantId, UserId, PrimaryRole(callerRoles), query, language,
+            response.Intent ?? classification.Intent, response.Count ?? 0, response.Success, ct);
+
+        return response;
+    }
+
+    private const string WriteIntent = "WriteRequestDetected";
+
+    private Guid TenantId => tenant.TenantId ?? Guid.Empty;
+
+    private Guid UserId => tenant.UserId ?? Guid.Empty;
+
+    private static string PrimaryRole(IReadOnlyList<string> callerRoles) =>
+        callerRoles.Count > 0 ? callerRoles[0] : "";
+
+    private async Task<AiSearchResponse> TerminalAsync(
+        IReadOnlyList<string> callerRoles, string query, string language,
+        string intent, string answer, CancellationToken ct)
+    {
+        // Refusals are audited as unsuccessful searches: they returned no rows, and the audit trail
+        // exists precisely so blocked write attempts and permission failures are reviewable.
+        await audit.LogAsync(
+            TenantId, UserId, PrimaryRole(callerRoles), query, language, intent, 0, false, ct);
+        return AiSearchResponse.Terminal(language, intent, answer);
+    }
+}
