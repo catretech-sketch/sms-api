@@ -65,6 +65,19 @@ public class AiSearchServiceTests
         }
     }
 
+    private sealed class ThrowingHandler(string intent, Exception failure) : IAiIntentHandler
+    {
+        public string Intent { get; } = intent;
+        public bool Called { get; private set; }
+
+        public Task<AiSearchResponse> HandleAsync(
+            AiAuthorizationResult auth, string language, int page, int pageSize, CancellationToken ct = default)
+        {
+            Called = true;
+            throw failure;
+        }
+    }
+
     private sealed record AuditEntry(
         Guid TenantId, Guid UserId, string Role, string Question,
         string? Language, string? Intent, int ResultCount, bool Success);
@@ -337,6 +350,94 @@ public class AiSearchServiceTests
         entry.TenantId.Should().Be(Guid.Empty);
         entry.UserId.Should().Be(Guid.Empty);
         entry.Role.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Handler_exception_is_audited_as_a_failure_and_returned_as_a_SearchFailed_response()
+    {
+        var tenant = new TestTenant();
+        var classifier = new FakeClassifier(new AiClassificationResult("en", "StudentSearch", EmptyFilters));
+        var handler = new ThrowingHandler("StudentSearch", new TimeoutException("sql timeout"));
+        var audit = new RecordingAudit();
+        var service = Build(classifier, new FakeAuthz(Allowed("StudentSearch")), [handler],
+            audit, new FeatureSet(true), tenant);
+
+        var result = await service.SearchAsync(
+            new AiSearchRequest("students named Rahul", null, null), ["school.admin"]);
+
+        handler.Called.Should().BeTrue();
+        result.Success.Should().BeFalse("an infra failure must stay inside the response contract");
+        result.Error!.Code.Should().Be("SearchFailed");
+
+        var entry = audit.Entries.Should().ContainSingle(
+            "every request is audited, including one whose handler blew up").Subject;
+        entry.Success.Should().BeFalse();
+        entry.ResultCount.Should().Be(0);
+        entry.Intent.Should().Be("StudentSearch");
+        entry.Question.Should().Be("students named Rahul");
+        entry.TenantId.Should().Be(tenant.TenantId!.Value);
+    }
+
+    [Fact]
+    public async Task Cancellation_is_not_swallowed_by_the_handler_failure_guard()
+    {
+        using var cts = new CancellationTokenSource();
+        await cts.CancelAsync();
+        var classifier = new FakeClassifier(new AiClassificationResult("en", "StudentSearch", EmptyFilters));
+        var handler = new ThrowingHandler("StudentSearch", new OperationCanceledException(cts.Token));
+        var audit = new RecordingAudit();
+        var service = Build(classifier, new FakeAuthz(Allowed("StudentSearch")), [handler],
+            audit, new FeatureSet(true));
+
+        var act = () => service.SearchAsync(new AiSearchRequest("students", null, null), ["school.admin"], cts.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        audit.Entries.Should().BeEmpty("an abandoned request has no outcome to record");
+    }
+
+    [Fact]
+    public async Task Handler_returned_refusal_is_audited_exactly_like_an_orchestrator_level_refusal()
+    {
+        // Same semantic outcome ("we cannot answer that"), decided in two different places. The audit
+        // row must not depend on which one decided it, or WHERE Success = 0 stops selecting refusals.
+        static AiSearchService BuildFor(IAiIntentHandler[] handlers, string intent, RecordingAudit audit) =>
+            Build(new FakeClassifier(new AiClassificationResult("en", intent, EmptyFilters)),
+                new FakeAuthz(Allowed(intent)), handlers, audit, new FeatureSet(true));
+
+        var fromHandler = new RecordingAudit();
+        var handler = new FakeHandler("StudentSearch",
+            AiSearchResponse.Terminal("en", "Unsupported", "I couldn't understand that."));
+        var handlerResult = await BuildFor([handler], "StudentSearch", fromHandler)
+            .SearchAsync(new AiSearchRequest("who is Rahul", null, null), ["school.admin"]);
+
+        var fromOrchestrator = new RecordingAudit();
+        var shortCircuitResult = await BuildFor([], "Unsupported", fromOrchestrator)
+            .SearchAsync(new AiSearchRequest("who is Rahul", null, null), ["school.admin"]);
+
+        handlerResult.Intent.Should().Be("Unsupported");
+        shortCircuitResult.Intent.Should().Be("Unsupported");
+
+        var handlerEntry = fromHandler.Entries.Should().ContainSingle().Subject;
+        var orchestratorEntry = fromOrchestrator.Entries.Should().ContainSingle().Subject;
+        handlerEntry.Success.Should().Be(orchestratorEntry.Success);
+        handlerEntry.Success.Should().BeFalse();
+        handlerEntry.ResultCount.Should().Be(orchestratorEntry.ResultCount).And.Be(0);
+    }
+
+    [Fact]
+    public async Task An_empty_but_authorized_result_set_is_audited_as_unsuccessful()
+    {
+        var classifier = new FakeClassifier(new AiClassificationResult("en", "StudentSearch", EmptyFilters));
+        var handler = new FakeHandler("StudentSearch",
+            AiSearchResponse.Ok("en", "StudentSearch", "No students matched.", Array.Empty<int>(), 1, 20, 0, false));
+        var audit = new RecordingAudit();
+        var service = Build(classifier, new FakeAuthz(Allowed("StudentSearch")), [handler],
+            audit, new FeatureSet(true));
+
+        var result = await service.SearchAsync(new AiSearchRequest("students named Zzz", null, null), ["school.admin"]);
+
+        result.Success.Should().BeTrue("an empty result set is still a well-formed answer");
+        audit.Entries.Should().ContainSingle().Which.Success.Should().BeFalse();
     }
 
     [Fact]

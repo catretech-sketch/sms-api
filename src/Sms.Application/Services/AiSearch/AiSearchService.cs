@@ -78,16 +78,47 @@ public sealed class AiSearchService(
             return await TerminalAsync(
                 callerRoles, query, language, "Forbidden", templates.RenderForbidden(language), ct);
 
-        var response = await handler.HandleAsync(auth, language, page, pageSize, ct);
+        AiSearchResponse response;
+        try
+        {
+            response = await handler.HandleAsync(auth, language, page, pageSize, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // The caller walked away; there is no response to shape and no outcome worth auditing.
+            throw;
+        }
+        catch (Exception)
+        {
+            // Handlers talk to repositories directly, so a SQL timeout or deadlock is a live
+            // possibility. An escaping exception would skip the audit row and surface as a generic
+            // 500 instead of the documented AiSearchResponse failure shape, so it is contained here:
+            // every request gets audited, and infra failures stay inside the response contract.
+            await audit.LogAsync(
+                TenantId, UserId, PrimaryRole(callerRoles), query, language,
+                classification.Intent, 0, false, ct);
+            return AiSearchResponse.Fail("SearchFailed", "Search could not be completed. Please try again.");
+        }
 
         await audit.LogAsync(
             TenantId, UserId, PrimaryRole(callerRoles), query, language,
-            response.Intent ?? classification.Intent, response.Count ?? 0, response.Success, ct);
+            response.Intent ?? classification.Intent, response.Count ?? 0, Audited(response), ct);
 
         return response;
     }
 
     private const string WriteIntent = "WriteRequestDetected";
+
+    /// <summary>
+    /// The audited Success flag answers "did this query actually return data", which is deliberately
+    /// NOT the same question as <see cref="AiSearchResponse.Success"/> ("was this a well-formed answer
+    /// rather than an infra failure"). Handlers return <see cref="AiSearchResponse.Terminal"/> — whose
+    /// Success is true — for refusals and no-match outcomes that are structurally identical to the
+    /// orchestrator's own WriteBlocked/Forbidden/Unsupported short-circuits, which audit false. Deriving
+    /// the flag from the row count keeps both origins consistent, so <c>WHERE Success = 0</c> in the
+    /// audit log reliably selects refusals and empty results wherever they were decided.
+    /// </summary>
+    private static bool Audited(AiSearchResponse response) => response.Success && response.Count is > 0;
 
     private Guid TenantId => tenant.TenantId ?? Guid.Empty;
 
