@@ -63,7 +63,8 @@ public sealed class AiSearchService(
         // question being asked, and an admin must be refused just as firmly as a parent.
         if (string.Equals(classification.Intent, WriteIntent, StringComparison.OrdinalIgnoreCase))
             return await TerminalAsync(
-                callerRoles, query, language, "WriteBlocked", templates.RenderWriteBlocked(language), ct);
+                callerRoles, query, language, "WriteBlocked", classification.Intent,
+                templates.RenderWriteBlocked(language), ct);
 
         // Resolve the handler before authorizing so an intent nobody implements (including the
         // classifier's own "Unsupported") is reported as unsupported. AiIntentAccessRules.IsAllowed
@@ -71,12 +72,14 @@ public sealed class AiSearchService(
         // understand that" as "you are not permitted to see that".
         if (!_handlersByIntent.TryGetValue(classification.Intent, out var handler))
             return await TerminalAsync(
-                callerRoles, query, language, "Unsupported", templates.RenderUnsupported(language), ct);
+                callerRoles, query, language, "Unsupported", classification.Intent,
+                templates.RenderUnsupported(language), ct);
 
         var auth = await authz.AuthorizeAsync(classification.Intent, classification.Filters, callerRoles, ct);
         if (!auth.Allowed)
             return await TerminalAsync(
-                callerRoles, query, language, "Forbidden", templates.RenderForbidden(language), ct);
+                callerRoles, query, language, "Forbidden", classification.Intent,
+                templates.RenderForbidden(language), ct);
 
         AiSearchResponse response;
         try
@@ -129,12 +132,16 @@ public sealed class AiSearchService(
 
     private async Task<AiSearchResponse> TerminalAsync(
         IReadOnlyList<string> callerRoles, string query, string language,
-        string intent, string answer, CancellationToken ct)
+        string outcomeIntent, string auditedIntent, string answer, CancellationToken ct)
     {
         // Refusals are audited as unsuccessful searches: they returned no rows, and the audit trail
-        // exists precisely so blocked write attempts and permission failures are reviewable.
+        // exists precisely so blocked write attempts and permission failures are reviewable. The
+        // audited intent is the classifier's actual attempted intent (auditedIntent), never the
+        // outcome label (outcomeIntent) — an admin reviewing "WHERE Success = 0" needs to see what
+        // the caller was really trying to reach, not just that it was refused. The response's own
+        // "intent" field still reports the outcome label to the caller, unchanged.
         await audit.LogAsync(
-            TenantId, UserId, PrimaryRole(callerRoles), query, language, intent, 0, false, ct);
-        return AiSearchResponse.Terminal(language, intent, answer);
+            TenantId, UserId, PrimaryRole(callerRoles), query, language, auditedIntent, 0, false, ct);
+        return AiSearchResponse.Terminal(language, outcomeIntent, answer);
     }
 }

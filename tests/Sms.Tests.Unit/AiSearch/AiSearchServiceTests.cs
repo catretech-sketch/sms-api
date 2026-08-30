@@ -187,7 +187,9 @@ public class AiSearchServiceTests
         result.Data.Should().BeNull();
         handler.Called.Should().BeFalse();
         authz.Calls.Should().Be(0, "a mutation is refused outright, not evaluated for permission");
-        audit.Entries.Should().ContainSingle().Which.Intent.Should().Be("WriteBlocked");
+        // Finding 5: the audited intent is the classifier's actual attempted intent, not the outcome
+        // label — the response's own "intent" field (asserted above) still reports "WriteBlocked".
+        audit.Entries.Should().ContainSingle().Which.Intent.Should().Be("WriteRequestDetected");
     }
 
     [Fact]
@@ -204,7 +206,10 @@ public class AiSearchServiceTests
         result.Intent.Should().Be("Forbidden");
         result.Answer.Should().Contain("permission");
         handler.Called.Should().BeFalse();
-        audit.Entries.Should().ContainSingle().Which.Intent.Should().Be("Forbidden");
+        // Finding 5: the audited intent is the classifier's actual attempted intent ("DashboardSummary"),
+        // not the outcome label — an admin reviewing "WHERE Success = 0" needs to see what was really
+        // being asked for. The response's own "intent" field (asserted above) still says "Forbidden".
+        audit.Entries.Should().ContainSingle().Which.Intent.Should().Be("DashboardSummary");
     }
 
     [Fact]
