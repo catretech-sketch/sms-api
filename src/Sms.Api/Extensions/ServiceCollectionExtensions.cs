@@ -152,6 +152,7 @@ public static class ServiceCollectionExtensions
         builder.Services.AddScoped<UserProvisioningRepository>();
         builder.Services.AddScoped<IRefreshTokenStore, RefreshTokenStore>();
         builder.Services.AddScoped<IUserDirectoryLookup, UserDirectoryRepository>();
+        builder.Services.AddScoped<IPersonResolver, PersonResolver>();
 
         builder.Services.AddInfrastructureDaos();
         builder.Services.AddApplicationServices();
