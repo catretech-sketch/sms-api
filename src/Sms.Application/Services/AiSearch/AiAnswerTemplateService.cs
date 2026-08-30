@@ -106,30 +106,45 @@ public sealed class AiAnswerTemplateService : IAiAnswerTemplateService
 
     public string RenderPersonIsStudent(string language, string name, string? classLabel)
     {
-        var cls = classLabel ?? "";
+        if (string.IsNullOrWhiteSpace(classLabel))
+            return language switch
+            {
+                "hi" => $"{name} एक Student हैं।",
+                "hinglish" => $"{name} ek Student hain.",
+                _ => $"{name} is a Student.",
+            };
+
         return language switch
         {
-            "hi" => $"{name} एक Student हैं, कक्षा {cls}.",
-            "hinglish" => $"{name} ek Student hain, class {cls}.",
-            _ => $"{name} is a Student in class {cls}.",
+            "hi" => $"{name} एक Student हैं, कक्षा {classLabel}.",
+            "hinglish" => $"{name} ek Student hain, class {classLabel}.",
+            _ => $"{name} is a Student in class {classLabel}.",
         };
     }
 
     public string RenderPersonIsTeacher(string language, string name, IReadOnlyList<string> subjects)
     {
-        var list = subjects.Count == 0 ? "" : string.Join(", ", subjects);
+        if (subjects.Count == 0)
+            return language switch
+            {
+                "hi" => $"{name} एक Teacher हैं। अभी तक कोई विषय दर्ज नहीं है।",
+                "hinglish" => $"{name} ek Teacher hain. Abhi tak koi subject darj nahi hai.",
+                _ => $"{name} is a Teacher. No subjects are on file.",
+            };
+
+        var list = string.Join(", ", subjects);
         return language switch
         {
-            "hi" => $"{name} ek Teacher hain. Ye {list} padhate hain.",
+            "hi" => $"{name} एक Teacher हैं। ये {list} पढ़ाते हैं।",
             "hinglish" => $"{name} ek Teacher hain. Ye {list} padhate hain.",
-            _ => $"{name} is a Teacher. {(subjects.Count > 1 ? "He/She teaches" : "He/She teaches")} {list}.",
+            _ => $"{name} is a Teacher. He/She teaches {list}.",
         };
     }
 
     public string RenderPersonIsStaffLike(string language, string name, string roleLabel) =>
         language switch
         {
-            "hi" => $"{name} ek {roleLabel} hain.",
+            "hi" => $"{name} एक {roleLabel} हैं।",
             "hinglish" => $"{name} ek {roleLabel} hain.",
             _ => $"{name} is a {roleLabel}.",
         };
