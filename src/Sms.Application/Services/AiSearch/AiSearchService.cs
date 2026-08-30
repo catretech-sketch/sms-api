@@ -196,7 +196,9 @@ public sealed class AiSearchService(
 
         var update = response.ConversationUpdate;
         var context = new AiConversationContext(
-            update?.ResolvedEntityId, update?.ResolvedEntityType, languageOverride, update?.PendingCandidates, intent);
+            update?.ResolvedEntityId, update?.ResolvedEntityType,
+            SanitizeLanguageOverrideForStorage(languageOverride), update?.PendingCandidates,
+            ClampIntentForStorage(intent));
 
         Guid.TryParse(requestedConversationId, out var existingId);
         return await contextStore.SaveAsync(
@@ -207,6 +209,25 @@ public sealed class AiSearchService(
 
     private const string WriteIntent = "WriteRequestDetected";
     private const string PersonLookupIntent = "PersonLookup";
+
+    /// AiSearchConversation.LastIntent is NVARCHAR(60) (see M0161_AiSearchConversation) and is
+    /// write-only bookkeeping -- never read back by this service -- so clamping is the correct,
+    /// lossless-enough fix: an over-long or adversarial classifier "intent" string is truncated
+    /// rather than allowed to hit the column raw and throw an unhandled SQL truncation exception.
+    private const int MaxStoredIntentLength = 60;
+
+    private static string? ClampIntentForStorage(string? intent) =>
+        intent is null ? null : intent.Length <= MaxStoredIntentLength ? intent : intent[..MaxStoredIntentLength];
+
+    /// AiSearchConversation.LanguageOverride is NVARCHAR(10), but more importantly it is READ BACK
+    /// and used directly as the effective language for a later turn (see the
+    /// <c>storedContext?.LanguageOverride</c> fallback above) -- so truncating a malformed value
+    /// would still persist meaningless garbage that later gets treated as a real language. The only
+    /// two values that are ever meaningful downstream are "en"/"hi" (see AiConversationContextStore's
+    /// own doc comment and the migration's column comment), so anything else -- however short -- is
+    /// dropped entirely rather than stored.
+    private static string? SanitizeLanguageOverrideForStorage(string? languageOverride) =>
+        languageOverride is "en" or "hi" ? languageOverride : null;
 
     /// <summary>
     /// The audited Success flag answers "did this query actually return data", which is deliberately
@@ -246,12 +267,19 @@ public sealed class AiSearchService(
         await audit.LogAsync(TenantId, UserId, PrimaryRole(callerRoles), query, language, auditedIntent, 0, false, ct);
         var response = AiSearchResponse.Terminal(language, outcomeIntent, answer, status);
 
-        if (languageOverride is null || tenant.TenantId is null || tenant.UserId is null)
+        if (tenant.TenantId is null || tenant.UserId is null)
+            return response;
+
+        var sanitizedLanguageOverride = SanitizeLanguageOverrideForStorage(languageOverride);
+        if (sanitizedLanguageOverride is null)
+            // Nothing meaningful survives sanitization (no override at all, or a malformed/adversarial
+            // one) -- there is nothing worth persisting a row for, so leave any existing context alone
+            // exactly as if no language override had ever been present.
             return response;
 
         var newId = await contextStore.SaveAsync(
             requestedConversationId, tenant.TenantId.Value, tenant.UserId.Value,
-            new AiConversationContext(null, null, languageOverride, null, auditedIntent), ct);
+            new AiConversationContext(null, null, sanitizedLanguageOverride, null, ClampIntentForStorage(auditedIntent)), ct);
         return response with { ConversationId = newId.ToString() };
     }
 }

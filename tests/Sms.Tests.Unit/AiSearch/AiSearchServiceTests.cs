@@ -130,6 +130,40 @@ public class AiSearchServiceTests
             Task.FromResult(false);
     }
 
+    /// A scripted conversation-context store that returns a fixed value from LoadAsync (regardless of
+    /// the ids passed in -- the orchestrator's own tenant/user scoping is exercised by the integration
+    /// tests, not here) and records exactly what SaveAsync was called with, so a test can assert on the
+    /// values actually handed to persistence rather than trusting the orchestrator's internal state.
+    private sealed class ScriptedContextStore(AiConversationContext? toLoad) : IAiConversationContextStore
+    {
+        public bool SaveCalled { get; private set; }
+        public AiConversationContext? SavedContext { get; private set; }
+
+        public Task<AiConversationContext?> LoadAsync(Guid conversationId, Guid tenantId, Guid userId, CancellationToken ct = default) =>
+            Task.FromResult(toLoad);
+
+        public Task<Guid> SaveAsync(Guid? conversationId, Guid tenantId, Guid userId, AiConversationContext context, CancellationToken ct = default)
+        {
+            SaveCalled = true;
+            SavedContext = context;
+            return Task.FromResult(conversationId ?? Guid.NewGuid());
+        }
+
+        public Task ClearAsync(Guid conversationId, CancellationToken ct = default) => Task.CompletedTask;
+    }
+
+    /// Unlike FakeHandler (a fixed canned response), this handler echoes back the `language` argument
+    /// it actually receives, so a test can assert on the orchestrator's computed effective language
+    /// rather than a value baked into the test's own setup.
+    private sealed class EchoLanguageHandler(string intent) : IAiIntentHandler
+    {
+        public string Intent { get; } = intent;
+
+        public Task<AiSearchResponse> HandleAsync(
+            AiAuthorizationResult auth, string language, int page, int pageSize, CancellationToken ct = default) =>
+            Task.FromResult(AiSearchResponse.Ok(language, Intent, "ok", null, 1, pageSize, 1, false));
+    }
+
     private sealed class TestTenant(bool isPlatform = false) : ITenantContext
     {
         public Guid? TenantId { get; private set; } = Guid.NewGuid();
@@ -485,5 +519,92 @@ public class AiSearchServiceTests
 
         handler.Called.Should().BeTrue();
         result.Success.Should().BeTrue();
+    }
+
+    // --- Task 12 review Finding I-3: unit coverage for the new conversation-context orchestration ---
+
+    [Fact]
+    public async Task An_explicit_language_directive_overrides_a_previously_stored_override_and_is_what_persists_for_the_next_turn()
+    {
+        var conversationId = Guid.NewGuid();
+        var storedContext = new AiConversationContext(null, null, "hi", null, "PersonLookup");
+        var contextStore = new ScriptedContextStore(storedContext);
+        var classifier = new FakeClassifier(
+            new AiClassificationResult("en", "PersonLookup", new AiSearchFilters("Rahul", null, null, null, false), "en"));
+        var handler = new EchoLanguageHandler("PersonLookup");
+        var service = Build(classifier, new FakeAuthz(Allowed("PersonLookup")), [handler],
+            new RecordingAudit(), new FeatureSet(true), contextStore: contextStore);
+
+        var result = await service.SearchAsync(
+            new AiSearchRequest("English mein batao, Rahul kaun hai?", null, null, conversationId.ToString()),
+            ["school.admin"]);
+
+        result.Language.Should().Be("en", "an explicit directive on this turn must win over a stored 'hi' override");
+        contextStore.SaveCalled.Should().BeTrue();
+        contextStore.SavedContext!.LanguageOverride.Should().Be(
+            "en", "what gets persisted for the NEXT turn must be the fresh directive, not the stale stored 'hi'");
+    }
+
+    [Fact]
+    public async Task Forbidden_never_persists_a_pending_language_override_even_when_the_classifier_included_one()
+    {
+        var contextStore = new ScriptedContextStore(null);
+        var classifier = new FakeClassifier(new AiClassificationResult("en", "DashboardSummary", EmptyFilters, "hi"));
+        // A handler must be registered so the intent is recognized and AuthorizeAsync actually runs
+        // (and is then denied) -- otherwise the request would short-circuit as Unsupported before
+        // AuthorizeAsync is ever reached, same as Finding I-1's fix elsewhere in this plan.
+        var handler = new FakeHandler("DashboardSummary",
+            AiSearchResponse.Ok("en", "DashboardSummary", "should never be reached", null, 1, 20, 1, false));
+        var service = Build(classifier, new FakeAuthz(Denied()), [handler], new RecordingAudit(),
+            new FeatureSet(true), contextStore: contextStore);
+
+        var result = await service.SearchAsync(
+            new AiSearchRequest("Hindi mein batao, aaj ka school summary do", null, null, null), ["staff"]);
+
+        result.Intent.Should().Be("Forbidden");
+        handler.Called.Should().BeFalse();
+        contextStore.SaveCalled.Should().BeFalse(
+            "a Forbidden outcome must never touch conversation state, not even to persist a pending language override");
+    }
+
+    // --- Task 12 review Finding I-4: unvalidated LLM strings must not reach persistence unclamped ---
+
+    [Fact]
+    public async Task A_pathologically_long_classifier_intent_is_clamped_before_persistence_instead_of_crashing()
+    {
+        var contextStore = new ScriptedContextStore(null);
+        var hugeUnsupportedIntent = new string('X', 5000); // no handler implements this -- routes to Unsupported
+        var classifier = new FakeClassifier(
+            new AiClassificationResult("en", hugeUnsupportedIntent, EmptyFilters, "hi"));
+        var service = Build(classifier, new FakeAuthz(Denied()), [], new RecordingAudit(),
+            new FeatureSet(true), contextStore: contextStore);
+
+        var act = () => service.SearchAsync(
+            new AiSearchRequest("weird prompt-injection-shaped input", null, null, null), ["school.admin"]);
+
+        var result = (await act.Should().NotThrowAsync()).Subject;
+        result.Intent.Should().Be("Unsupported");
+        contextStore.SaveCalled.Should().BeTrue("a valid 'hi' language directive was present, so a context row is still expected");
+        contextStore.SavedContext!.LastIntent.Should().NotBeNull();
+        contextStore.SavedContext.LastIntent!.Length.Should().BeLessThanOrEqualTo(60,
+            "AiSearchConversation.LastIntent is NVARCHAR(60) -- an over-long value must be clamped before it ever reaches the column");
+    }
+
+    [Fact]
+    public async Task A_malformed_classifier_language_directive_is_dropped_rather_than_persisted_verbatim()
+    {
+        var contextStore = new ScriptedContextStore(null);
+        var classifier = new FakeClassifier(new AiClassificationResult("en", "Unsupported", EmptyFilters, "not-a-real-language"));
+        var service = Build(classifier, new FakeAuthz(Denied()), [], new RecordingAudit(),
+            new FeatureSet(true), contextStore: contextStore);
+
+        var act = () => service.SearchAsync(
+            new AiSearchRequest("weird prompt-injection-shaped input", null, null, null), ["school.admin"]);
+
+        var result = (await act.Should().NotThrowAsync()).Subject;
+        result.Intent.Should().Be("Unsupported");
+        contextStore.SaveCalled.Should().BeFalse(
+            "only 'en'/'hi' are ever meaningful downstream -- a malformed directive leaves nothing worth persisting, " +
+            "so no context row is created (mirroring how a Forbidden outcome with no override leaves state untouched)");
     }
 }
