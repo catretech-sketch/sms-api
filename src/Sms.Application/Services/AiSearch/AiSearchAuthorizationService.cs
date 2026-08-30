@@ -81,6 +81,15 @@ public sealed class AiSearchAuthorizationService(
         var isTeacher = callerRoles.Any(r => TeacherRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
         var isAdminLike = callerRoles.Any(r => AdminLikeRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
 
+        // GreetById repurposes the StudentName filter to carry a scanned admission number/employee
+        // code, not a person's name — an exact ID practically never Contains-matches a name, so the
+        // generic name/class narrowing below would null it out before GreetByIdHandler ever saw it.
+        // This intent-gated bypass hands back the caller's real scope (childIds/classNames/
+        // Unrestricted) with ClampedFilters completely unchanged, and leaves every other intent's
+        // behaviour (including TargetSelf) untouched.
+        if (intent == "GreetById")
+            return await AuthorizeGreetByIdAsync(filters, isParent, isTeacher, isAdminLike, ct);
+
         // Self-referential ("my attendance") always wins over any LLM-extracted student name.
         if (filters.TargetSelf)
         {
@@ -162,6 +171,40 @@ public sealed class AiSearchAuthorizationService(
         // Admin/principal/owner/staff: no per-record clamp beyond the role gate already applied above.
         // This is the ONLY branch that may read the whole tenant, so it is the only Unrestricted = true.
         return Allowed(intent, null, null, null, filters, unrestricted: true);
+    }
+
+    /// GreetById-only scope resolution: no name/class matching, no clamping — ClampedFilters is
+    /// handed back exactly as extracted (the raw scanned code intact), and the caller's real scope
+    /// (childIds for a parent, classNames for a teacher, Unrestricted for admin-like/staff) is
+    /// resolved the same way the generic branches do, minus the narrowing.
+    private async Task<AiAuthorizationResult> AuthorizeGreetByIdAsync(
+        AiSearchFilters filters, bool isParent, bool isTeacher, bool isAdminLike, CancellationToken ct)
+    {
+        if (isParent)
+        {
+            var children = await sis.ListMyChildrenAsync(ct);
+            var childIds = children.IsSuccess
+                ? children.Data!.Select(c => c.Id).ToList()
+                : [];
+            return Allowed("GreetById", null, childIds, null, filters);
+        }
+
+        if (isTeacher && !isAdminLike)
+        {
+            if (tenant.UserId is not { } teacherUserId)
+                return Denied("Forbidden", filters);
+
+            var teacherClasses = await classes.ListForTeacherAsync(teacherUserId, ct);
+            var allowedClassNames = teacherClasses
+                .Select(c => c.Name)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return Allowed("GreetById", null, null, allowedClassNames, filters);
+        }
+
+        // Admin/principal/owner/staff: whole-tenant scope, exactly as the generic branch below.
+        return Allowed("GreetById", null, null, null, filters, unrestricted: true);
     }
 
     private static AiAuthorizationResult Denied(string resultIntent, AiSearchFilters filters) =>

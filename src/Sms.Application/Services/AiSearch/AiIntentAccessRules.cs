@@ -27,6 +27,7 @@ public static class AiIntentAccessRules
         ["HomeworkSearch"] = [Admin, Owner, Principal, Teacher, Parent],
         ["SubjectSearch"] = [Admin, Owner, Principal, Teacher, Parent],
         ["BusLocationSearch"] = [Admin, Owner, Principal, Staff, Parent],
+        ["GreetById"] = [Admin, Owner, Principal, Teacher, Staff, Parent],
     };
 
     public static IReadOnlySet<string> KnownIntents { get; } = new HashSet<string>(Rules.Keys);

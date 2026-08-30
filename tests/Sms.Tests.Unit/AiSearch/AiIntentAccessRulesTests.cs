@@ -15,6 +15,13 @@ public class AiIntentAccessRulesTests
     [InlineData("StudentAttendance", "student.parent", true)]
     [InlineData("BusLocationSearch", "student.parent", true)]
     [InlineData("BusLocationSearch", "school.teacher", false)]
+    [InlineData("GreetById", "school.admin", true)]
+    [InlineData("GreetById", "school.owner", true)]
+    [InlineData("GreetById", "school.principal", true)]
+    [InlineData("GreetById", "school.teacher", true)]
+    [InlineData("GreetById", "staff", true)]
+    [InlineData("GreetById", "student.parent", true)]
+    [InlineData("GreetById", "some.unrelated.role", false)]
     public void Role_matrix_matches_the_spec(string intent, string role, bool expected)
     {
         AiIntentAccessRules.IsAllowed(intent, [role]).Should().Be(expected);

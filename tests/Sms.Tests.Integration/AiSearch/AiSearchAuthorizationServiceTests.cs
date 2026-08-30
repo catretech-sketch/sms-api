@@ -568,6 +568,134 @@ public class AiSearchAuthorizationServiceTests(SqlServerFixture fx)
         result.Unrestricted.Should().BeFalse();
     }
 
+    /// GreetById reuses the StudentName filter field to carry a scanned admission number/employee
+    /// code, not a person's name — the generic name-matching narrowing (which would null it out
+    /// because an ID practically never Contains-matches a child's name) must be bypassed entirely
+    /// for this one intent, while still handing back the caller's real scope.
+    [Fact]
+    public async Task GreetById_for_a_parent_passes_the_raw_scanned_code_through_unclamped()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admin = Admin(app, tenantId);
+        var parentEmail = $"dad{Guid.NewGuid():N}@home.test";
+
+        var aisha = await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = $"ADM-GB-{Guid.NewGuid():N}"[..20],
+            name = "Aisha Khan",
+            grade = "IV",
+            section = "B",
+            roll = 1,
+            guardian_email = parentEmail,
+        }), HttpStatusCode.Created);
+
+        var parentId = await ParentUserId(parentEmail, tenantId);
+
+        var result = await AsCaller(app, tenantId, parentId, svc => svc.AuthorizeAsync(
+            "GreetById",
+            new AiSearchFilters("SCANNED-CODE-123", null, null, null, false),
+            [Policies.StudentOrParent]));
+
+        result.Allowed.Should().BeTrue();
+        // The raw scanned code must survive completely unchanged — never nulled by name-matching.
+        result.ClampedFilters.StudentName.Should().Be("SCANNED-CODE-123");
+        result.AllowedChildStudentIds.Should().BeEquivalentTo([aisha.GetProperty("id").GetGuid()]);
+        result.Unrestricted.Should().BeFalse();
+        result.NameUnmatched.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GreetById_for_a_teacher_passes_ClassName_and_Section_through_unclamped()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var teacherUserId = Guid.NewGuid();
+
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                "EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            var teacherId = Guid.NewGuid();
+            var classId = Guid.NewGuid();
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId) VALUES (@teacherUserId, @tenantId)",
+                new { teacherUserId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Teachers (Id, TenantId, Name, UserId) VALUES (@teacherId, @tenantId, N'Meena', @teacherUserId)",
+                new { teacherId, tenantId, teacherUserId });
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.Classes (Id, TenantId, Name, StudentCount, ClassTeacherId)
+                VALUES (@classId, @tenantId, N'8A', 0, @teacherId)
+                """,
+                new { classId, tenantId, teacherId });
+        });
+
+        var result = await AsCaller(app, tenantId, teacherUserId, svc => svc.AuthorizeAsync(
+            "GreetById",
+            new AiSearchFilters("SCANNED-4521", "9B", "B", null, false),
+            [Policies.Teacher]));
+
+        result.Allowed.Should().BeTrue();
+        // GreetById never asks the generic ClassName/Section narrowing to run for this intent —
+        // whatever was extracted (even a class the teacher doesn't teach) must pass through untouched.
+        result.ClampedFilters.StudentName.Should().Be("SCANNED-4521");
+        result.ClampedFilters.ClassName.Should().Be("9B");
+        result.ClampedFilters.Section.Should().Be("B");
+        result.AllowedClassNames.Should().BeEquivalentTo(["8A"]);
+        result.Unrestricted.Should().BeFalse();
+    }
+
+    /// Regression guard: a NON-GreetById intent for the same parent must keep the existing
+    /// name-matching/nulling behaviour completely unchanged by this new intent-gated branch.
+    [Fact]
+    public async Task Non_GreetById_intent_for_a_parent_still_gets_name_matching_and_nulling()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admin = Admin(app, tenantId);
+        var parentEmail = $"dad{Guid.NewGuid():N}@home.test";
+
+        await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = $"ADM-GB2-{Guid.NewGuid():N}"[..20],
+            name = "Aisha Khan",
+            grade = "IV",
+            section = "B",
+            roll = 1,
+            guardian_email = parentEmail,
+        }), HttpStatusCode.Created);
+
+        var parentId = await ParentUserId(parentEmail, tenantId);
+
+        var result = await AsCaller(app, tenantId, parentId, svc => svc.AuthorizeAsync(
+            "StudentAttendance",
+            new AiSearchFilters("SCANNED-CODE-123", null, null, "today", false),
+            [Policies.StudentOrParent]));
+
+        result.Allowed.Should().BeTrue();
+        // An ID-shaped string does not Contains-match "Aisha Khan" — old behaviour nulls it out.
+        result.ClampedFilters.StudentName.Should().BeNull();
+        result.NameUnmatched.Should().BeTrue();
+        result.Unrestricted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task GreetById_for_admin_like_caller_is_unrestricted_with_filters_unclamped()
+    {
+        await using var app = App();
+
+        var result = await AsCaller(app, Guid.NewGuid(), Guid.NewGuid(), svc => svc.AuthorizeAsync(
+            "GreetById",
+            new AiSearchFilters("SCANNED-9999", null, null, null, false),
+            [Policies.SchoolAdmin]));
+
+        result.Allowed.Should().BeTrue();
+        result.ClampedFilters.StudentName.Should().Be("SCANNED-9999");
+        result.Unrestricted.Should().BeTrue();
+    }
+
     [Fact]
     public async Task Admin_filters_pass_through_unclamped()
     {
