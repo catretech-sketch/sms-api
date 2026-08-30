@@ -49,6 +49,12 @@ Non-goals (explicitly out of scope for this iteration):
   (admin/owner/principal — no separate profile table), `Teachers`, `Staff`, `Students`. Each has its
   own repository (`TeacherRepository`, `StaffRepository`, `ISisService`) already used by existing
   intents; `Users` has no dedicated repository used by AI Search today.
+- **Verified gap, not assumed:** `dbo.Users` (`M0001_Foundation_Tables.cs`) has no `Name` column at
+  all — only `Email`, `Phone`, `Status`, `TenantId`, plus roles via `UserRoles`. Neither `Teachers`
+  nor `Staff` carries a `UserId` foreign key back to `Users` either — they are independent directory
+  rows, not profile extensions of a `Users` account. Confirmed via `Users_ListByTenant.sql`, which
+  itself has no name to select. This means there is genuinely no name stored anywhere for a bare
+  admin/owner/principal account today — resolved in §4/§10, not an assumption carried forward.
 - The hard-won invariant from today's work, inherited unchanged: `AiAuthorizationResult`'s scope
   lists (`AllowedChildStudentIds`, `AllowedClassNames`) being null or empty is never "no filter" —
   only `Unrestricted == true` means that. Every new component in this spec must honor it.
@@ -91,10 +97,12 @@ authorization result exists, to check the previously-discussed entity is still i
 ```csharp
 public sealed record PersonMatch(Guid Id, string Name, string Type, string? Detail);
 // Type: "student" | "teacher" | "staff" | "admin" | "owner" | "principal"
-// Detail: one safe disambiguating fact — a student's class label, a teacher's department/subject,
-// nothing for admin/owner/principal (name + type is already unambiguous enough in practice; if a
-// tenant somehow has two identically-named admins, they still disambiguate on the next attribute
-// available without exposing anything new — see open item in §10).
+// Detail: one safe disambiguating fact — a student's class label, a teacher's department/subject;
+// for admin/owner/principal, the specific role label ("Owner" / "Principal" / "Admin") — distinct
+// roles already disambiguate two identically-named accounts in the overwhelmingly common case,
+// since a school rarely has two Owners. In the rare case two matches share both name AND role, a
+// masked-email suffix (e.g. "r***@school.com", already-existing data, no new field) is appended as
+// a final tie-breaker — see §10 for why this, not raw email, was chosen.
 
 public interface IPersonResolver
 {
@@ -116,9 +124,12 @@ Fans out across the four sources **in parallel**, each query scoped by `auth`:
   the existing RLS/`ITenantContext` guarantee every repository already provides — no manual tenant
   filter is constructed.
 - A new **`IUserDirectoryLookup`** (thin, `Sms.Modules.Identity` or wherever `dbo.Users` already has
-  a home) is added specifically to search `Users` by name for admin/owner/principal — this is the one
-  genuinely new repository-level query in this spec, since no AI intent has ever needed to search
-  `Users` directly before.
+  a home) searches `Users` by name for admin/owner/principal. This requires a small, additive schema
+  change resolved in §10: `dbo.Users` gains a nullable `Name` column (it has none today — verified in
+  §2, not assumed) plus a `(TenantId, Name)` index, the same indexing pattern already used for
+  `Teachers`/`Staff` tenant-scoped search. Existing rows get `Name = NULL` until backfilled or edited;
+  `PersonResolver` simply cannot find an admin/owner/principal account with no name set, which
+  degrades to a clean no-match — never an error, never a partial/misleading result.
 
 Zero matches → no-match. Exactly one → resolved. Two or more → the `NeedsClarification` outcome
 (§6), and the candidate set (id, type — never sent to the client) is stored server-side against the
@@ -142,10 +153,14 @@ This keeps the new surface area to one handler, not N follow-up-shaped handlers 
 
 ### `IAiConversationContextStore` (`Sms.Modules.AiSearch.Data`)
 
-New table, migration **M0161** (next available after M0160 — bump if other work lands first, noted
-the same way the original spec flagged this risk):
+New table, migration **M0161** (`AiSearchConversation`); a second small migration **M0162** adds the
+`dbo.Users.Name` column + index (kept separate from M0161 since it touches a shared foundational
+table, not an AI-owned one — each migration should be revertible independently). Both assumed
+next-available after M0160 — bump if other work lands first, noted the same way the original AI
+Search spec flagged this risk; check `db/Sms.Migrations/` immediately before implementation.
 
 ```sql
+-- M0161
 CREATE TABLE dbo.AiSearchConversation (
     ConversationId    UNIQUEIDENTIFIER NOT NULL PRIMARY KEY,
     TenantId          UNIQUEIDENTIFIER NOT NULL,
@@ -155,9 +170,14 @@ CREATE TABLE dbo.AiSearchConversation (
     LanguageOverride  NVARCHAR(10) NULL,       -- 'en' | 'hi' | null
     PendingCandidates NVARCHAR(MAX) NULL,       -- JSON [{id, type}], set only during NeedsClarification
     LastIntent        NVARCHAR(60) NULL,
-    ExpiresAt         DATETIME2 NOT NULL
+    CreatedAt         DATETIME2 NOT NULL,       -- absolute-cap anchor, see §10
+    ExpiresAt         DATETIME2 NOT NULL        -- sliding, renewed each turn
 );
 CREATE INDEX IX_AiSearchConversation_Expiry ON dbo.AiSearchConversation(ExpiresAt);
+
+-- M0162
+ALTER TABLE dbo.Users ADD Name NVARCHAR(200) NULL;
+CREATE INDEX IX_Users_Tenant_Name ON dbo.Users(TenantId, Name);
 ```
 
 `PendingCandidates` stores only `{id, type}` pairs — never the `{name, detail}` shown to the
@@ -168,9 +188,13 @@ Read: only when the caller's `(TenantId, UserId)` matches the row exactly — a 
 `conversation_id` is silently treated as absent, never an error (no signal is given about whether
 that id ever existed, consistent with how the rest of this feature avoids existence leaks).
 
-Write: after every turn, sliding TTL (`ExpiresAt = now + AiSearchOptions.ConversationContextTtlMinutes`,
-default 10, configurable). A cleared/expired/failed-reauthorization outcome deletes the row rather
-than leaving stale state.
+Write: after every turn, sliding TTL renewed (`ExpiresAt = now + AiSearchOptions.ConversationContextTtlMinutes`,
+default 10, configurable) **capped by an absolute limit** anchored to `CreatedAt`
+(`AiSearchOptions.ConversationContextAbsoluteMaxMinutes`, default 30) — a context is treated as
+expired once either bound is crossed, whichever comes first. This bounds the worst-case exposure
+window of a leaked/shared `conversation_id` even under continuous light use, without abandoning the
+natural-pacing benefit of sliding renewal. A cleared/expired/failed-reauthorization outcome deletes
+the row rather than leaving stale state.
 
 ### Classifier prompt & schema changes (`AiClassificationClient`)
 
@@ -203,25 +227,61 @@ Request gains one optional field:
 { "query": "...", "page": 1, "page_size": 20, "conversation_id": "9f2b3a10-...(optional)" }
 ```
 
-Response gains one field, always echoed (a fresh id is minted server-side whenever the submitted
-one is absent, expired, or foreign — the caller does not need to generate its own):
-```json
-{ "..." : "...", "conversation_id": "9f2b3a10-..." }
-```
-Every other existing field (`success`, `language`, `intent`, `answer`, `data`, `page`, `page_size`,
-`count`, `has_next_page`, `error`) is unchanged in shape and meaning for every existing intent — this
-is a strictly additive contract change.
+Response gains two fields. `conversation_id` is always echoed (a fresh id is minted server-side
+whenever the submitted one is absent, expired, or foreign — the caller does not need to generate its
+own). `status` is a new field applied **universally, across every intent — existing 14 and new**,
+per your explicit direction that `intent` describes *what was asked* and `status` describes *what
+happened*, so every frontend app gets one consistent field to branch on regardless of which intent
+fired:
+
+| `status`             | When                                                              | Existing/new |
+|----------------------|--------------------------------------------------------------------|---|
+| `success`            | A normal `Ok()` answer — including a list intent with `count: 0`   | existing, now labeled |
+| `no_match`           | An entity-resolution intent (`PersonLookup`, `GreetById`) found nobody | existing behavior, newly labeled |
+| `needs_clarification`| `PersonLookup` found 2+ candidates                                  | new |
+| `write_blocked`       | A mutation phrasing was detected and refused                       | existing `WriteBlocked`, now also `status` |
+| `unsupported`        | The classifier's intent has no handler, or classification failed   | existing `Unsupported`, now also `status` |
+| `forbidden`          | Role/scope denied the intent                                       | existing `Forbidden`, now also `status` (added beyond your listed 6 — see rationale below) |
+| `error`              | `success: false` — `FeatureNotEnabled`/`InvalidRequest`/`SearchFailed`/`rate_limited` | existing, now also `status` |
+
+**One addition beyond your recommended list: `forbidden`, distinct from `error`.** A role/scope
+rejection is neither "something went wrong" (infra `error`, which already carries `error.code`) nor
+"I didn't understand you" (`unsupported`) — collapsing it into `error` would make a frontend's
+generic error-toast path fire for an ordinary, expected permission boundary. Flagging this explicitly
+since it extends your list; happy to fold it into `error` instead if you'd rather keep exactly six
+values — say so and I'll adjust before implementation starts.
+
+**A real backward-compatibility question, not yet decided — flagging rather than assuming:**
+today, `intent` literally *is* the outcome label for a refusal (`intent: "Forbidden"`, `"Unsupported"`,
+`"WriteBlocked"`) — verified against the shipped `AiSearchSecurityTests.cs`, which asserts on exactly
+these string values, and per this thread's own opening message, `sms-admin`'s AI Mode is **already
+merged and presumably already consuming this contract**. Two ways to resolve "intent = what was
+asked" cleanly without an unflagged breaking change:
+- **(a) Keep `intent` as the outcome label for these three cases (no change), and let the new
+  `status` field be purely additive** — `status` and `intent` both say "Forbidden"-shaped things for
+  these cases today, which is some redundancy, but nothing existing breaks and every consumer keeps
+  working unmodified.
+- **(b) Change `intent` to the classifier's attempted intent for these cases** (matching "what was
+  asked" literally) — cleaner semantics, but breaks `sms-admin`'s existing integration and every
+  existing backend test asserting the current strings, unless those are updated in lockstep.
+
+This spec assumes **(a)** unless you say otherwise, since it's the non-breaking option and matches
+"do not introduce unnecessary infrastructure" — but confirm before the plan locks this in. Every
+other existing field (`success`, `language`, `answer`, `data`, `page`, `page_size`, `count`,
+`has_next_page`, `error`) is unchanged in shape and meaning.
 
 ## 6. Disambiguation Contract
 
-Reuses the existing outcome convention (`intent` as the single outcome axis — no parallel `status`
-field, per the reconciliation confirmed in chat) rather than introducing a second one:
+Uses the `status`/`intent` split from §5 — `status` carries the outcome, `intent` stays `PersonLookup`
+throughout the whole exchange (that's genuinely still what the user asked for; only the outcome
+changed):
 
 ```json
 {
   "success": true,
   "language": "en",
-  "intent": "NeedsClarification",
+  "status": "needs_clarification",
+  "intent": "PersonLookup",
   "conversation_id": "9f2b3a10-...",
   "answer": "I found two people named Rahul. Which one do you mean?",
   "data": [
@@ -240,9 +300,10 @@ Neither existing factory fits this shape exactly: `Ok()` requires non-nullable `
 (fine here — `page: 1, pageSize: candidates.Count` is the natural reading, no real pagination concept
 applies to a 2-5 item disambiguation list) but assumes a "found N, showing M" list semantics that
 doesn't quite apply; `Terminal()` hardcodes `count: 0` and nulls `data`, neither of which fits a
-clarification that must carry real candidates and a real count. The implementation plan should add
-a small `AiSearchResponse.NeedsClarification(language, candidates)` factory alongside the existing
-three, rather than force-fitting one of the current two.
+clarification that must carry real candidates and a real count. The implementation plan adds a small
+`AiSearchResponse.NeedsClarification(language, intent, candidates)` factory alongside the existing
+three — and per §5, every one of the four factories (`Ok`/`Terminal`/`Fail`/`NeedsClarification`) now
+sets `Status` as part of its own construction, so no call site has to remember to set it separately.
 
 ## 7. Language Handling
 
@@ -265,10 +326,11 @@ exactly like a fresh conversation).
    no-match, and the stale row is deleted, not left to be retried against later.
 3. `conversation_id` scoped strictly to `(TenantId, UserId)` — a foreign id (wrong tenant, wrong
    user, or simply invented) is silently treated as absent. No error, no existence signal.
-3. TTL is sliding, configurable (`AiSearchOptions.ConversationContextTtlMinutes`, default 10),
-   renewed on every successful turn; expired context is silently treated as absent, same as a
-   foreign one — never resurrected, never partially trusted.
-4. A pending clarification is single-use: a follow-up that doesn't relate to it is classified fresh,
+4. TTL is sliding (`AiSearchOptions.ConversationContextTtlMinutes`, default 10) capped by an absolute
+   limit (`ConversationContextAbsoluteMaxMinutes`, default 30, anchored to `CreatedAt`) — whichever
+   bound is crossed first ends the context. Both configurable. Expired-either-way context is silently
+   treated as absent, same as a foreign one — never resurrected, never partially trusted.
+5. A pending clarification is single-use: a follow-up that doesn't relate to it is classified fresh,
    not trapped waiting for an answer to the disambiguation question.
 
 ## 9. Testing
@@ -301,25 +363,38 @@ explicit absence of the unsafe one, not just "returns 200."
   into `Policies.All` must not accidentally widen any existing role check elsewhere in the app that
   enumerates `Policies.All`.
 - **No regression**: the full existing `AiSearch`-scoped suite (currently 70 unit / 81 integration)
-  passes unchanged — every existing intent's contract, especially the envelope shape, is unaffected
-  by the new optional `conversation_id` field.
+  passes unchanged except where §5's `status` field is additive to every response — every existing
+  intent's `intent`/`data`/`answer` semantics stay byte-identical (pending the §5(a)/(b) decision for
+  the three refusal cases specifically).
+- **`Users.Name` migration**: a fresh `Users` row (no name set) never surfaces in `PersonResolver`
+  results — a targeted test seeds an admin with `Name = NULL` and confirms a name-search for them
+  cleanly no-matches, not an error.
+- **Two same-named, same-role admins** (the rare tie-break case): confirm the masked-email suffix is
+  genuinely masked in the response (not the raw address) and that it only appears when name+role are
+  both identical, never otherwise.
 
 ## 10. Risks & Open Items
 
-- **`Users` search performance/design**: this is the one genuinely new repository query in the
-  whole feature (no AI intent has searched `Users` directly before). Needs an index check
-  (`Users(TenantId, Name)` or equivalent) before this ships, not assumed.
-- **Ambiguous admin/owner/principal disambiguation**: if a tenant has two identically-named
-  admins, `detail` has nothing obvious to disambiguate on (unlike a student's class or a teacher's
-  department). Likely resolution: fall back to `detail: null` and let the client render "two
-  admins named X" — flagging this as a decision for the implementation plan, not resolved here.
+**Resolved during this revision (previously flagged, now decided):**
+- ~~`Users` search performance~~ → resolved: `dbo.Users` gains a `Name` column + `(TenantId, Name)`
+  index (§4/M0162), the same indexing convention `Teachers`/`Staff` already use for tenant-scoped
+  name search. Not a performance-only fix — the column didn't exist at all (§2).
+- ~~Ambiguous admin/owner/principal disambiguation~~ → resolved: `detail` is the specific role label,
+  falling back to a masked-email tie-breaker only when name AND role both collide (§4).
+- ~~Sliding vs. absolute TTL~~ → resolved: both — sliding renewal for natural pacing, absolute cap
+  (default 30 min) as a hard ceiling on worst-case exposure (§4/§8).
+
+**Still open, needs your call before the plan locks it in:**
+- **§5(a) vs (b)**: whether `intent` changes meaning for the three existing refusal cases
+  (`Forbidden`/`Unsupported`/`WriteBlocked`) or stays exactly as shipped today. This spec assumes (a),
+  the non-breaking option, but it's your decision to confirm given `sms-admin`'s AI Mode may already
+  depend on the current strings.
+- **`forbidden` as a 7th status value**, beyond your listed 6 — flagged in §5, assumed unless you'd
+  rather fold it into `error`.
+
+**Noted, not blocking:**
 - **Classifier prompt size growth**: adding `PersonLookup` few-shot examples across three languages,
   plus the context-injection paragraph, grows an already-substantial system prompt. Worth watching
-  Claude's classification latency/cost as intents keep growing — not a blocker, a note for Spec 2.
-- **Sliding vs. absolute TTL**: sliding was chosen to match natural conversation pacing; if this
-  proves to let a conversation "live forever" under continuous light use in practice, an absolute
-  cap (e.g. 30 minutes from first turn regardless of activity) is a one-line addition to revisit
-  post-launch, not a redesign.
-- **Migration number**: M0161 assumed next-available; per the same risk noted in the original AI
-  Search spec, bump if concurrent untracked migration work lands first (check `db/Sms.Migrations/`
-  immediately before implementation, not from this document).
+  Claude's classification latency/cost as intents keep growing — a note for Spec 2, not a blocker here.
+- **Migration numbers**: M0161/M0162 assumed next-available; bump if concurrent untracked migration
+  work lands first (check `db/Sms.Migrations/` immediately before implementation, not from this doc).
