@@ -55,22 +55,8 @@ public sealed class AcademicsService(
             .Any(r => r == Policies.StudentOrParent ||
                 r.Split('.').LastOrDefault() is "student" or "parent");
 
-    private static DateOnly SchoolToday(DateTime utcNow)
-    {
-        var utc = utcNow.Kind == DateTimeKind.Unspecified
-            ? DateTime.SpecifyKind(utcNow, DateTimeKind.Utc)
-            : utcNow.ToUniversalTime();
-        try
-        {
-            var timeZone = TimeZoneInfo.FindSystemTimeZoneById(
-                OperatingSystem.IsWindows() ? "India Standard Time" : "Asia/Kolkata");
-            return DateOnly.FromDateTime(TimeZoneInfo.ConvertTimeFromUtc(utc, timeZone));
-        }
-        catch (Exception ex) when (ex is TimeZoneNotFoundException or InvalidTimeZoneException)
-        {
-            return DateOnly.FromDateTime(utc.AddHours(5).AddMinutes(30));
-        }
-    }
+    private static DateOnly SchoolToday(DateTime utcNow) =>
+        DateOnly.FromDateTime(SchoolClock.ToSchoolLocal(utcNow));
 
     private async Task<ApiResult<T>?> DenyIfNotOwnStudentAsync<T>(
         Guid studentId, ClaimsPrincipal caller, CancellationToken ct)
