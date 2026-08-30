@@ -145,7 +145,7 @@ public class AiSearchServiceTests
         var features = new FeatureSet(false);
         var service = Build(classifier, new FakeAuthz(Allowed("DailyAttendanceSummary")), [], audit, features);
 
-        var result = await service.SearchAsync(new AiSearchRequest("Aaj kitne bachche aaye?", null, null), ["school.admin"]);
+        var result = await service.SearchAsync(new AiSearchRequest("Aaj kitne bachche aaye?", null, null, null), ["school.admin"]);
 
         result.Success.Should().BeFalse();
         result.Error!.Code.Should().Be("FeatureNotEnabled");
@@ -163,7 +163,7 @@ public class AiSearchServiceTests
         var service = Build(classifier, new FakeAuthz(Allowed("DailyAttendanceSummary")), [handler],
             new RecordingAudit(), new FeatureSet(false), new TestTenant(isPlatform: true));
 
-        var result = await service.SearchAsync(new AiSearchRequest("How many students today?", null, null), ["school.admin"]);
+        var result = await service.SearchAsync(new AiSearchRequest("How many students today?", null, null, null), ["school.admin"]);
 
         result.Success.Should().BeTrue();
         handler.Called.Should().BeTrue();
@@ -180,7 +180,7 @@ public class AiSearchServiceTests
         var service = Build(classifier, authz, [handler], audit, new FeatureSet(true));
 
         var result = await service.SearchAsync(
-            new AiSearchRequest("Rahul ki attendance present kar do", null, null), ["school.admin"]);
+            new AiSearchRequest("Rahul ki attendance present kar do", null, null, null), ["school.admin"]);
 
         result.Intent.Should().Be("WriteBlocked");
         result.Answer.Should().Contain("nahi kar sakta");
@@ -201,7 +201,7 @@ public class AiSearchServiceTests
         var audit = new RecordingAudit();
         var service = Build(classifier, new FakeAuthz(Denied()), [handler], audit, new FeatureSet(true));
 
-        var result = await service.SearchAsync(new AiSearchRequest("Aaj ka school summary batao", null, null), ["staff"]);
+        var result = await service.SearchAsync(new AiSearchRequest("Aaj ka school summary batao", null, null, null), ["staff"]);
 
         result.Intent.Should().Be("Forbidden");
         result.Answer.Should().Contain("permission");
@@ -220,7 +220,7 @@ public class AiSearchServiceTests
         var audit = new RecordingAudit();
         var service = Build(classifier, authz, [], audit, new FeatureSet(true));
 
-        var result = await service.SearchAsync(new AiSearchRequest("What's the weather?", null, null), ["school.admin"]);
+        var result = await service.SearchAsync(new AiSearchRequest("What's the weather?", null, null, null), ["school.admin"]);
 
         result.Intent.Should().Be("Unsupported");
         result.Answer.Should().Contain("couldn't understand");
@@ -239,7 +239,7 @@ public class AiSearchServiceTests
         var service = Build(classifier, new FakeAuthz(Allowed("ClassAttendance")), [wrong, right],
             new RecordingAudit(), new FeatureSet(true));
 
-        var result = await service.SearchAsync(new AiSearchRequest("Class 8A attendance", null, null), ["school.admin"]);
+        var result = await service.SearchAsync(new AiSearchRequest("Class 8A attendance", null, null, null), ["school.admin"]);
 
         result.Success.Should().BeTrue();
         result.Answer.Should().Be("right");
@@ -258,7 +258,7 @@ public class AiSearchServiceTests
             AiSearchResponse.Ok("en", "StudentAttendance", "ok", null, 1, 20, 1, false));
         var service = Build(classifier, authz, [handler], new RecordingAudit(), new FeatureSet(true));
 
-        await service.SearchAsync(new AiSearchRequest("Rahul 12A attendance today", null, null), ["school.admin"]);
+        await service.SearchAsync(new AiSearchRequest("Rahul 12A attendance today", null, null, null), ["school.admin"]);
 
         authz.LastFilters.Should().BeSameAs(rawFilters);
         handler.LastAuth!.ClampedFilters.Should().BeSameAs(clamped);
@@ -278,7 +278,7 @@ public class AiSearchServiceTests
         var service = Build(classifier, new FakeAuthz(Allowed("StudentSearch")), [handler],
             new RecordingAudit(), new FeatureSet(true));
 
-        await service.SearchAsync(new AiSearchRequest("students named Rahul", page, pageSize), ["school.admin"]);
+        await service.SearchAsync(new AiSearchRequest("students named Rahul", page, pageSize, null), ["school.admin"]);
 
         handler.LastPage.Should().Be(expPage);
         handler.LastPageSize.Should().Be(expSize);
@@ -293,7 +293,7 @@ public class AiSearchServiceTests
         var service = Build(classifier, new FakeAuthz(Allowed("StudentSearch")), [],
             new RecordingAudit(), new FeatureSet(true));
 
-        var result = await service.SearchAsync(new AiSearchRequest(query, null, null), ["school.admin"]);
+        var result = await service.SearchAsync(new AiSearchRequest(query, null, null, null), ["school.admin"]);
 
         result.Success.Should().BeFalse();
         result.Error!.Code.Should().Be("InvalidRequest");
@@ -307,7 +307,7 @@ public class AiSearchServiceTests
         var service = Build(classifier, new FakeAuthz(Allowed("StudentSearch")), [],
             new RecordingAudit(), new FeatureSet(true), options: new AiSearchOptions { MaxQueryLength = 10 });
 
-        var result = await service.SearchAsync(new AiSearchRequest(new string('a', 11), null, null), ["school.admin"]);
+        var result = await service.SearchAsync(new AiSearchRequest(new string('a', 11), null, null, null), ["school.admin"]);
 
         result.Success.Should().BeFalse();
         result.Error!.Code.Should().Be("InvalidRequest");
@@ -326,7 +326,7 @@ public class AiSearchServiceTests
         var service = Build(classifier, new FakeAuthz(Allowed("HomeworkSearch")), [handler],
             audit, new FeatureSet(true), tenant);
 
-        await service.SearchAsync(new AiSearchRequest("Aaj ka homework", null, null), ["school.teacher", "staff"]);
+        await service.SearchAsync(new AiSearchRequest("Aaj ka homework", null, null, null), ["school.teacher", "staff"]);
 
         var entry = audit.Entries.Should().ContainSingle().Subject;
         entry.TenantId.Should().Be(tenant.TenantId!.Value);
@@ -349,7 +349,7 @@ public class AiSearchServiceTests
         var service = Build(classifier, new FakeAuthz(Denied()), [], audit,
             new FeatureSet(true), tenant);
 
-        await service.SearchAsync(new AiSearchRequest("hello", null, null), []);
+        await service.SearchAsync(new AiSearchRequest("hello", null, null, null), []);
 
         var entry = audit.Entries.Should().ContainSingle().Subject;
         entry.TenantId.Should().Be(Guid.Empty);
@@ -368,7 +368,7 @@ public class AiSearchServiceTests
             audit, new FeatureSet(true), tenant);
 
         var result = await service.SearchAsync(
-            new AiSearchRequest("students named Rahul", null, null), ["school.admin"]);
+            new AiSearchRequest("students named Rahul", null, null, null), ["school.admin"]);
 
         handler.Called.Should().BeTrue();
         result.Success.Should().BeFalse("an infra failure must stay inside the response contract");
@@ -394,7 +394,7 @@ public class AiSearchServiceTests
         var service = Build(classifier, new FakeAuthz(Allowed("StudentSearch")), [handler],
             audit, new FeatureSet(true));
 
-        var act = () => service.SearchAsync(new AiSearchRequest("students", null, null), ["school.admin"], cts.Token);
+        var act = () => service.SearchAsync(new AiSearchRequest("students", null, null, null), ["school.admin"], cts.Token);
 
         await act.Should().ThrowAsync<OperationCanceledException>();
         audit.Entries.Should().BeEmpty("an abandoned request has no outcome to record");
@@ -413,11 +413,11 @@ public class AiSearchServiceTests
         var handler = new FakeHandler("StudentSearch",
             AiSearchResponse.Terminal("en", "Unsupported", "I couldn't understand that."));
         var handlerResult = await BuildFor([handler], "StudentSearch", fromHandler)
-            .SearchAsync(new AiSearchRequest("who is Rahul", null, null), ["school.admin"]);
+            .SearchAsync(new AiSearchRequest("who is Rahul", null, null, null), ["school.admin"]);
 
         var fromOrchestrator = new RecordingAudit();
         var shortCircuitResult = await BuildFor([], "Unsupported", fromOrchestrator)
-            .SearchAsync(new AiSearchRequest("who is Rahul", null, null), ["school.admin"]);
+            .SearchAsync(new AiSearchRequest("who is Rahul", null, null, null), ["school.admin"]);
 
         handlerResult.Intent.Should().Be("Unsupported");
         shortCircuitResult.Intent.Should().Be("Unsupported");
@@ -439,7 +439,7 @@ public class AiSearchServiceTests
         var service = Build(classifier, new FakeAuthz(Allowed("StudentSearch")), [handler],
             audit, new FeatureSet(true));
 
-        var result = await service.SearchAsync(new AiSearchRequest("students named Zzz", null, null), ["school.admin"]);
+        var result = await service.SearchAsync(new AiSearchRequest("students named Zzz", null, null, null), ["school.admin"]);
 
         result.Success.Should().BeTrue("an empty result set is still a well-formed answer");
         audit.Entries.Should().ContainSingle().Which.Success.Should().BeFalse();
@@ -454,7 +454,7 @@ public class AiSearchServiceTests
         var service = Build(classifier, new FakeAuthz(Allowed("StudentSearch")), [handler],
             new RecordingAudit(), new FeatureSet(true));
 
-        var result = await service.SearchAsync(new AiSearchRequest("students", null, null), ["school.admin"]);
+        var result = await service.SearchAsync(new AiSearchRequest("students", null, null, null), ["school.admin"]);
 
         handler.Called.Should().BeTrue();
         result.Success.Should().BeTrue();
