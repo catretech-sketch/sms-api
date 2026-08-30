@@ -151,6 +151,7 @@ public static class ServiceCollectionExtensions
         builder.Services.AddScoped<AuthRepository>();
         builder.Services.AddScoped<UserProvisioningRepository>();
         builder.Services.AddScoped<IRefreshTokenStore, RefreshTokenStore>();
+        builder.Services.AddScoped<IUserDirectoryLookup, UserDirectoryRepository>();
 
         builder.Services.AddInfrastructureDaos();
         builder.Services.AddApplicationServices();
