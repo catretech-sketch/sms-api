@@ -21,6 +21,7 @@ public interface IAiAnswerTemplateService
     string RenderPersonIsStaffLike(string language, string name, string roleLabel);
     string RenderNoActiveTrip(string language);
     string RenderTripStatus(string language, string busNo, string direction, string status);
+    string RenderNeedsClarification(string language, int count);
 }
 
 public sealed class AiAnswerTemplateService : IAiAnswerTemplateService
@@ -147,5 +148,13 @@ public sealed class AiAnswerTemplateService : IAiAnswerTemplateService
             "hi" => $"आपकी बस {busNo} {direction} की ओर, स्थिति: {status}.",
             "hinglish" => $"Aapki bus {busNo} {direction} ki taraf, status: {status}.",
             _ => $"Your bus {busNo} is heading {direction}, status: {status}.",
+        };
+
+    public string RenderNeedsClarification(string language, int count) =>
+        language switch
+        {
+            "hi" => $"मुझे इस नाम के {count} लोग मिले। आप किसकी बात कर रहे हैं?",
+            "hinglish" => $"Mujhe is naam ke {count} log mile. Aap kiski baat kar rahe hain?",
+            _ => $"I found {count} people with that name. Which one do you mean?",
         };
 }
