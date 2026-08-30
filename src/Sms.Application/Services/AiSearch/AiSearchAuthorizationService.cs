@@ -1,3 +1,4 @@
+using Sms.Application.Services.Academics;
 using Sms.Application.Services.Sis;
 using Sms.Modules.Academics.Data;
 using Sms.Shared.Kernel.Tenancy;
@@ -64,7 +65,7 @@ public interface IAiSearchAuthorizationService
 }
 
 public sealed class AiSearchAuthorizationService(
-    ISisService sis, TimetableRepository timetable, ITenantContext tenant) : IAiSearchAuthorizationService
+    ISisService sis, ClassRepository classes, ITenantContext tenant) : IAiSearchAuthorizationService
 {
     private static readonly string[] TeacherRoles = ["school.teacher"];
     private static readonly string[] ParentRoles = ["student.parent"];
@@ -117,20 +118,41 @@ public sealed class AiSearchAuthorizationService(
             if (tenant.UserId is not { } teacherUserId)
                 return Denied("Forbidden", filters);
 
-            var slots = await timetable.ListForTeacherAsync(teacherUserId, ct);
-            var allowedClassNames = slots
-                .Select(s => s.ClassName)
+            // ClassRepository (not TimetableRepository) is used here specifically because it carries
+            // each class's own Grade/Section columns — TimetableSlots.ClassName is just a free-text
+            // string with no independently-checkable section, which is exactly what let Section pass
+            // through unvalidated before (Finding 2).
+            var teacherClasses = await classes.ListForTeacherAsync(teacherUserId, ct);
+            var allowedClassNames = teacherClasses
+                .Select(c => c.Name)
                 .Where(n => !string.IsNullOrWhiteSpace(n))
-                .Select(n => n!)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            var clamped = filters;
-            if (!string.IsNullOrWhiteSpace(filters.ClassName) &&
-                !allowedClassNames.Contains(filters.ClassName, StringComparer.OrdinalIgnoreCase))
-            {
-                clamped = filters with { ClassName = null, Section = null }; // asked about a class they don't teach
-            }
+            // Classes matching the asked-for ClassName (or every class the teacher teaches, when no
+            // class name was asked for) — the candidate set Section is checked against below.
+            var matchedByClassName = string.IsNullOrWhiteSpace(filters.ClassName)
+                ? teacherClasses
+                : teacherClasses.Where(c =>
+                    StudentClassScope.LabelsMatch(c.Name, filters.ClassName)
+                    || StudentClassScope.LabelsMatch($"{c.Grade}-{c.Section}", filters.ClassName)).ToList();
+
+            var classNameOk = string.IsNullOrWhiteSpace(filters.ClassName) || matchedByClassName.Count > 0;
+
+            // Section must independently correspond to a class this teacher actually teaches — never
+            // validated merely as a side effect of the ClassName check (Finding 2). When Classes rows
+            // carry no separate Grade/Section metadata (only a combined Name like "8A"), there is
+            // nothing to check Section against beyond the ClassName match already performed above, so
+            // it is treated as already covered rather than spuriously rejected.
+            var sectionOk = string.IsNullOrWhiteSpace(filters.Section)
+                || !classNameOk
+                || matchedByClassName.All(c => string.IsNullOrWhiteSpace(c.Section))
+                || matchedByClassName.Any(c => StudentClassScope.LabelsMatch(c.Section, filters.Section));
+
+            // Asked about a class or section they don't teach: clamp both away together, exactly as
+            // before — a class name without its (now-validated) section, or vice versa, is not a
+            // safe partial answer.
+            var clamped = classNameOk && sectionOk ? filters : filters with { ClassName = null, Section = null };
 
             // An empty allowedClassNames list is a real answer ("this teacher may see nothing" — e.g. a
             // school.teacher JWT with no matching dbo.Teachers row), never "no filter".

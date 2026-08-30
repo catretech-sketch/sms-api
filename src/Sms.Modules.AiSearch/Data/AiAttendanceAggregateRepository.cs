@@ -55,4 +55,24 @@ WHERE s.TenantId = @tenantId AND s.Status = N'active'";
             sql, new { tenantId, date = date.ToDateTime(TimeOnly.MinValue), className, section }, ct);
         return rows.FirstOrDefault() ?? new AttendanceAggregate(0, 0, 0, 0);
     }
+
+    /// <summary>
+    /// The literal <c>Students.ClassLabel</c> values actually in use for this tenant (e.g.
+    /// <c>"8-A"</c>, generated as Grade + '-' + Section). Callers (see
+    /// <c>ClassAttendanceHandler</c>) resolve a free-text class filter like <c>"8A"</c> against this
+    /// candidate set — using <c>StudentClassScope.LabelsMatch</c>, which this project cannot
+    /// reference directly (Sms.Application depends on this module, not the reverse) — before calling
+    /// <see cref="ForClassAsync"/> with the real stored label, so the exact-match SQL above keeps
+    /// working unchanged once the caller has resolved the mismatch.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> DistinctClassLabelsAsync(Guid tenantId, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<string>(
+            """
+            SELECT DISTINCT ClassLabel FROM dbo.Students
+            WHERE TenantId = @tenantId AND Status = N'active' AND ClassLabel IS NOT NULL
+            """,
+            new { tenantId }, ct);
+        return rows.ToList();
+    }
 }

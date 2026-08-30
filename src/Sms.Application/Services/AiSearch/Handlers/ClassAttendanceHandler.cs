@@ -1,3 +1,4 @@
+using Sms.Application.Services.Academics;
 using Sms.Modules.AiSearch.Data;
 using Sms.Shared.Kernel.Tenancy;
 
@@ -10,6 +11,16 @@ namespace Sms.Application.Services.AiSearch.Handlers;
 /// <c>ClassName</c>/<c>Section</c> back to null for a teacher who asked about a class they don't
 /// teach, so a null/blank class name here means "not authorized for any class" (or "no class was
 /// asked for") and must degrade to <c>Unsupported</c> rather than querying school-wide data.
+/// <para>
+/// Production <c>Students.ClassLabel</c> is generated as Grade + '-' + Section (e.g. <c>"8-A"</c>),
+/// but the filter here is free text like <c>"8A"</c> (a caller's own phrasing, or a
+/// <c>TimetableSlots.ClassName</c> value). Before querying, the free-text filter is resolved against
+/// the tenant's real <c>ClassLabel</c> values using <see cref="StudentClassScope.LabelsMatch"/> — the
+/// same normalizer already used for class-label matching elsewhere — so a realistic mismatch like
+/// "8A" vs "8-A" still finds the class. When nothing resolves, the original filter is passed through
+/// unchanged so the exact-match SQL still degrades to a graceful zero-count answer rather than
+/// silently swallowing a genuinely unknown class name.
+/// </para>
 /// </summary>
 public sealed class ClassAttendanceHandler(
     AiAttendanceAggregateRepository repo, IAiAnswerTemplateService templates,
@@ -27,7 +38,12 @@ public sealed class ClassAttendanceHandler(
 
         var (from, _) = DateExpressionResolver.Resolve(auth.ClampedFilters.DateExpression,
             DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime));
-        var agg = await repo.ForClassAsync(tenantId, auth.ClampedFilters.ClassName, auth.ClampedFilters.Section, from, ct);
+
+        var candidateLabels = await repo.DistinctClassLabelsAsync(tenantId, ct);
+        var resolvedClassName = candidateLabels.FirstOrDefault(
+            l => StudentClassScope.LabelsMatch(l, auth.ClampedFilters.ClassName)) ?? auth.ClampedFilters.ClassName;
+
+        var agg = await repo.ForClassAsync(tenantId, resolvedClassName, auth.ClampedFilters.Section, from, ct);
 
         var answer = templates.RenderClassAttendance(
             language, auth.ClampedFilters.ClassName, agg.Total, agg.Present, agg.Absent, agg.Pct);

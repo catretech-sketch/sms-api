@@ -114,13 +114,18 @@ public static class StudentClassScope
         return false;
     }
 
-    private static bool LabelsMatch(string? a, string? b)
+    /// Normalizes away whitespace/hyphen/underscore differences before comparing two class-shaped
+    /// labels (e.g. a stored <c>"8-A"</c> ClassLabel against a free-text filter like <c>"8A"</c>).
+    /// Public so callers outside this file's own scope-matching helpers (e.g. AI search's
+    /// class-attendance resolution and per-teacher section validation) can reuse the exact same
+    /// normalization instead of re-implementing it.
+    public static bool LabelsMatch(string? a, string? b)
     {
         if (string.IsNullOrWhiteSpace(a) || string.IsNullOrWhiteSpace(b)) return false;
         if (string.Equals(a.Trim(), b.Trim(), StringComparison.OrdinalIgnoreCase)) return true;
         return string.Equals(CompactLabel(a), CompactLabel(b), StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string CompactLabel(string raw) =>
+    public static string CompactLabel(string raw) =>
         string.Concat(raw.Where(c => !char.IsWhiteSpace(c) && c is not '-' and not '_'));
 }

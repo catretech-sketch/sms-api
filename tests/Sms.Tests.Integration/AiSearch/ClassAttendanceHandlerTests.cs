@@ -230,4 +230,57 @@ public class ClassAttendanceHandlerTests(SqlServerFixture fx)
         response.Answer.Should().Contain(absent.ToString());
         response.Answer.Should().Contain(pct.ToString());
     }
+
+    /// Finding 1: production Students.ClassLabel is generated as Grade + '-' + Section (e.g. "8-A"),
+    /// but a caller's free-text class filter (or a TimetableSlots.ClassName value) is commonly the
+    /// compact form "8A" with no dash. Before the fix, ForClassAsync's exact SQL equality on
+    /// s.ClassLabel = @className meant this realistic mismatch always returned a zero/empty
+    /// aggregate — this test proves the free-text filter now resolves to the real stored label and
+    /// returns the actual data.
+    [Fact]
+    public async Task ForClassAsync_matches_a_compact_free_text_filter_against_a_hyphenated_ClassLabel()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        const string storedClassLabel = "8-A"; // realistic production shape: Grade + '-' + Section
+        const string freeTextFilter = "8A"; // realistic caller/timetable phrasing: no dash
+
+        var student1 = Guid.NewGuid();
+
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.Students (Id, TenantId, AdmissionNo, Name, Grade, Section, ClassLabel, Status)
+                VALUES (@student1, @tenantId, @adm1, N'Compact Match', N'8', N'A', @storedClassLabel, N'active')
+                """,
+                new { student1, tenantId, adm1 = $"ADM-CAF-{Guid.NewGuid():N}"[..20], storedClassLabel });
+
+            var classId = Guid.NewGuid();
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.PeriodAttendanceRecords (Id, TenantId, ClassId, StudentId, [Date], Period, Subject, Status)
+                VALUES (NEWID(), @tenantId, @classId, @student1, @date, 1, N'Math', N'present')
+                """,
+                new { tenantId, classId, student1, date = today.ToDateTime(TimeOnly.MinValue) });
+        });
+
+        var filters = new AiSearchFilters(null, freeTextFilter, null, "today", false);
+        var auth = new AiAuthorizationResult(
+            Allowed: true, ResultIntent: "ClassAttendance", ResolvedStudentId: null,
+            AllowedChildStudentIds: null, AllowedClassNames: null,
+            ClampedFilters: filters, Unrestricted: true, NameUnmatched: false);
+
+        var response = await Handle(app, tenantId, auth);
+
+        response.Intent.Should().Be("ClassAttendance");
+        var data = response.Data!;
+        var type = data.GetType();
+        var total = (int)type.GetProperty("total")!.GetValue(data)!;
+        var present = (int)type.GetProperty("present")!.GetValue(data)!;
+
+        total.Should().Be(1, "the free-text filter \"8A\" must resolve to the real stored ClassLabel \"8-A\"");
+        present.Should().Be(1);
+    }
 }

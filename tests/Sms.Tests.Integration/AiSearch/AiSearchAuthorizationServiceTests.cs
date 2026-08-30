@@ -447,6 +447,127 @@ public class AiSearchAuthorizationServiceTests(SqlServerFixture fx)
         result.Unrestricted.Should().BeFalse();
     }
 
+    /// Finding 2: Section must be independently validated, not merely as a side effect of the
+    /// ClassName check. This teacher teaches ONLY grade 8 section A (a real Classes row with Grade
+    /// and Section populated, plus a matching TimetableSlots row) — a same-grade section B class also
+    /// exists in the tenant but is taught by someone else. Asking about section B (with no ClassName
+    /// filter to trigger the old side-effect-only check) must still be clamped away.
+    [Fact]
+    public async Task Teacher_asking_about_a_section_they_do_not_teach_is_clamped_even_without_a_class_name_filter()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var teacherUserId = Guid.NewGuid();
+        var otherTeacherUserId = Guid.NewGuid();
+
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                "EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+
+            var teacherId = Guid.NewGuid();
+            var otherTeacherId = Guid.NewGuid();
+            var classAId = Guid.NewGuid();
+            var classBId = Guid.NewGuid();
+
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId) VALUES (@teacherUserId, @tenantId), (@otherTeacherUserId, @tenantId)",
+                new { teacherUserId, otherTeacherUserId, tenantId });
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.Teachers (Id, TenantId, Name, UserId) VALUES
+                (@teacherId, @tenantId, N'Meena', @teacherUserId),
+                (@otherTeacherId, @tenantId, N'Asha', @otherTeacherUserId)
+                """,
+                new { teacherId, otherTeacherId, tenantId, teacherUserId, otherTeacherUserId });
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.Classes (Id, TenantId, Name, Grade, Section, StudentCount, ClassTeacherId) VALUES
+                (@classAId, @tenantId, N'8-A', N'8', N'A', 0, @teacherId),
+                (@classBId, @tenantId, N'8-B', N'8', N'B', 0, @otherTeacherId)
+                """,
+                new { classAId, classBId, tenantId, teacherId, otherTeacherId });
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.TimetableSlots (TenantId, [Day], Period, Subject, ClassId, ClassName, TeacherId) VALUES
+                (@tenantId, 'Mon', 1, N'Math', @classAId, N'8-A', @teacherId),
+                (@tenantId, 'Mon', 2, N'Math', @classBId, N'8-B', @otherTeacherId)
+                """,
+                new { tenantId, classAId, classBId, teacherId, otherTeacherId });
+        });
+
+        // No ClassName asked — only Section "B", which this teacher does not teach at all.
+        var result = await AsCaller(app, tenantId, teacherUserId, svc => svc.AuthorizeAsync(
+            "ClassAttendance",
+            new AiSearchFilters(null, null, "B", "today", false),
+            [Policies.Teacher]));
+
+        result.Allowed.Should().BeTrue();
+        result.ClampedFilters.Section.Should().BeNull(
+            "a teacher must never be able to reach a section they don't teach just by omitting ClassName");
+        result.ClampedFilters.ClassName.Should().BeNull();
+        result.Unrestricted.Should().BeFalse();
+    }
+
+    /// Finding 2, ClassName-present variant: the teacher teaches class "8-A" and asks about it by
+    /// name, but pairs it with a Section that belongs to a DIFFERENT class ("8-B") they don't teach —
+    /// this must be clamped even though the ClassName itself is one they are authorized for.
+    [Fact]
+    public async Task Teacher_pairing_their_own_class_name_with_someone_elses_section_is_clamped()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var teacherUserId = Guid.NewGuid();
+        var otherTeacherUserId = Guid.NewGuid();
+
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                "EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+
+            var teacherId = Guid.NewGuid();
+            var otherTeacherId = Guid.NewGuid();
+            var classAId = Guid.NewGuid();
+            var classBId = Guid.NewGuid();
+
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId) VALUES (@teacherUserId, @tenantId), (@otherTeacherUserId, @tenantId)",
+                new { teacherUserId, otherTeacherUserId, tenantId });
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.Teachers (Id, TenantId, Name, UserId) VALUES
+                (@teacherId, @tenantId, N'Meena', @teacherUserId),
+                (@otherTeacherId, @tenantId, N'Asha', @otherTeacherUserId)
+                """,
+                new { teacherId, otherTeacherId, tenantId, teacherUserId, otherTeacherUserId });
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.Classes (Id, TenantId, Name, Grade, Section, StudentCount, ClassTeacherId) VALUES
+                (@classAId, @tenantId, N'8-A', N'8', N'A', 0, @teacherId),
+                (@classBId, @tenantId, N'8-B', N'8', N'B', 0, @otherTeacherId)
+                """,
+                new { classAId, classBId, tenantId, teacherId, otherTeacherId });
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.TimetableSlots (TenantId, [Day], Period, Subject, ClassId, ClassName, TeacherId) VALUES
+                (@tenantId, 'Mon', 1, N'Math', @classAId, N'8-A', @teacherId),
+                (@tenantId, 'Mon', 2, N'Math', @classBId, N'8-B', @otherTeacherId)
+                """,
+                new { tenantId, classAId, classBId, teacherId, otherTeacherId });
+        });
+
+        var result = await AsCaller(app, tenantId, teacherUserId, svc => svc.AuthorizeAsync(
+            "ClassAttendance",
+            new AiSearchFilters(null, "8-A", "B", "today", false),
+            [Policies.Teacher]));
+
+        result.Allowed.Should().BeTrue();
+        result.ClampedFilters.ClassName.Should().BeNull(
+            "the class name they teach must not smuggle through a section they don't teach");
+        result.ClampedFilters.Section.Should().BeNull();
+        result.Unrestricted.Should().BeFalse();
+    }
+
     [Fact]
     public async Task Admin_filters_pass_through_unclamped()
     {
