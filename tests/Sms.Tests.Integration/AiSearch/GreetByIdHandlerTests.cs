@@ -1,0 +1,422 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using Dapper;
+using FluentAssertions;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Data.SqlClient;
+using Microsoft.Extensions.DependencyInjection;
+using Sms.Application.Services.AiSearch;
+using Sms.Application.Services.AiSearch.Handlers;
+using Sms.Application.Services.Sis;
+using Sms.Modules.Staffing.Data;
+using Sms.Shared.Kernel.Auth;
+using Sms.Shared.Kernel.Authz;
+using Sms.Shared.Kernel.Tenancy;
+using Sms.Shared.Kernel.Time;
+using Xunit;
+
+namespace Sms.Tests.Integration.AiSearch;
+
+/// Exercises GreetByIdHandler through the REAL AiSearchAuthorizationService.AuthorizeAsync
+/// pipeline (not hand-crafted auth results) wherever a role's scope-resolution matters, proving
+/// the full authorization-service -> handler chain never leaks a name the caller is not
+/// authorized to see, even when the exact code they scanned genuinely exists in the tenant (or in
+/// another tenant entirely).
+[Collection("sql")]
+public class GreetByIdHandlerTests(SqlServerFixture fx)
+{
+    private const string Key = "integration-test-signing-key-32-bytes-min!!";
+
+    private WebApplicationFactory<Program> App() =>
+        new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("environment", "Production");
+            b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
+            b.UseSetting("Jwt:SigningKey", Key);
+        });
+
+    private static HttpClient Admin(WebApplicationFactory<Program> app, Guid tenantId)
+    {
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, [Policies.SchoolAdmin], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+        return client;
+    }
+
+    private static async Task<JsonElement> Data(HttpResponseMessage res, HttpStatusCode expected)
+    {
+        var body = await res.Content.ReadAsStringAsync();
+        res.StatusCode.Should().Be(expected, body);
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.GetProperty("data").Clone();
+    }
+
+    private async Task Seed(Func<SqlConnection, Task> work)
+    {
+        await using var conn = new SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'IsPlatform', @value=1");
+        await work(conn);
+    }
+
+    private async Task<Guid> ParentUserId(string email, Guid tenantId)
+    {
+        await using var conn = new SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'IsPlatform', @value=1");
+        return await conn.QuerySingleAsync<Guid>(
+            """
+            SELECT Id FROM dbo.Users
+            WHERE TenantId = @tenantId
+              AND LOWER(LTRIM(RTRIM(Email))) = LOWER(LTRIM(RTRIM(@email)))
+            """,
+            new { email, tenantId });
+    }
+
+    /// Runs the REAL AiSearchAuthorizationService.AuthorizeAsync against the ambient tenant/user,
+    /// exactly as the request pipeline would after JWT validation.
+    private static async Task<AiAuthorizationResult> Authorize(
+        WebApplicationFactory<Program> app, Guid tenantId, Guid userId,
+        AiSearchFilters filters, string[] roles)
+    {
+        using var scope = app.Services.CreateScope();
+        scope.ServiceProvider.GetRequiredService<ITenantContext>().Set(tenantId, userId, isPlatform: false);
+        var svc = scope.ServiceProvider.GetRequiredService<IAiSearchAuthorizationService>();
+        return await svc.AuthorizeAsync("GreetById", filters, roles);
+    }
+
+    private static async Task<AiSearchResponse> Handle(
+        WebApplicationFactory<Program> app, Guid tenantId, Guid userId, AiAuthorizationResult auth,
+        string language = "en")
+    {
+        using var scope = app.Services.CreateScope();
+        scope.ServiceProvider.GetRequiredService<ITenantContext>().Set(tenantId, userId, isPlatform: false);
+        var handler = new GreetByIdHandler(
+            scope.ServiceProvider.GetRequiredService<ISisService>(),
+            scope.ServiceProvider.GetRequiredService<TeacherRepository>(),
+            scope.ServiceProvider.GetRequiredService<StaffRepository>(),
+            scope.ServiceProvider.GetRequiredService<IAiAnswerTemplateService>(),
+            scope.ServiceProvider.GetRequiredService<TimeProvider>());
+        return await handler.HandleAsync(auth, language, 1, 20);
+    }
+
+    /// End-to-end: Authorize (real) then Handle (real), for a caller with the given roles.
+    private static async Task<AiSearchResponse> AuthorizeAndHandle(
+        WebApplicationFactory<Program> app, Guid tenantId, Guid userId, string code, string[] roles)
+    {
+        var filters = new AiSearchFilters(code, null, null, null, false);
+        var auth = await Authorize(app, tenantId, userId, filters, roles);
+        auth.Allowed.Should().BeTrue();
+        return await Handle(app, tenantId, userId, auth);
+    }
+
+    private async Task SeedTeacherWithClass(
+        Guid tenantId, Guid teacherUserId, string taughtClassLabel)
+    {
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                "EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            var teacherId = Guid.NewGuid();
+            var classId = Guid.NewGuid();
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId) VALUES (@teacherUserId, @tenantId)",
+                new { teacherUserId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Teachers (Id, TenantId, Name, UserId) VALUES (@teacherId, @tenantId, N'Meena', @teacherUserId)",
+                new { teacherId, tenantId, teacherUserId });
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.Classes (Id, TenantId, Name, StudentCount, ClassTeacherId)
+                VALUES (@classId, @tenantId, @taughtClassLabel, 0, @teacherId)
+                """,
+                new { classId, tenantId, teacherId, taughtClassLabel });
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.TimetableSlots (TenantId, [Day], Period, Subject, ClassId, ClassName, TeacherId)
+                VALUES (@tenantId, 'Mon', 1, N'Math', @classId, @taughtClassLabel, @teacherId)
+                """,
+                new { tenantId, classId, teacherId, taughtClassLabel });
+        });
+    }
+
+    private static async Task<Guid> InsertStudent(
+        SqlConnection conn, Guid tenantId, string admissionNo, string name, string classLabel)
+    {
+        var id = Guid.NewGuid();
+        await conn.ExecuteAsync(
+            """
+            INSERT dbo.Students (Id, TenantId, AdmissionNo, Name, Grade, Section, ClassLabel, Status)
+            VALUES (@id, @tenantId, @admissionNo, @name, N'8', N'A', @classLabel, N'active')
+            """,
+            new { id, tenantId, admissionNo, name, classLabel });
+        return id;
+    }
+
+    private static async Task InsertTeacher(
+        SqlConnection conn, Guid tenantId, string name, string employeeCode) =>
+        await conn.ExecuteAsync(
+            "INSERT dbo.Teachers (Id, TenantId, Name, EmployeeCode) VALUES (@id, @tenantId, @name, @employeeCode)",
+            new { id = Guid.NewGuid(), tenantId, name, employeeCode });
+
+    private static async Task InsertStaff(
+        SqlConnection conn, Guid tenantId, string name, string employeeCode) =>
+        await conn.ExecuteAsync(
+            "INSERT dbo.Staff (Id, TenantId, Name, EmployeeCode) VALUES (@id, @tenantId, @name, @employeeCode)",
+            new { id = Guid.NewGuid(), tenantId, name, employeeCode });
+
+    [Fact]
+    public async Task Parent_scanning_their_own_childs_admission_number_resolves_with_the_correct_name()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admin = Admin(app, tenantId);
+        var parentEmail = $"dad{Guid.NewGuid():N}@home.test";
+        var admissionNo = $"ADM-GB-{Guid.NewGuid():N}"[..20];
+
+        await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = admissionNo,
+            name = "Aisha Khan",
+            grade = "IV",
+            section = "B",
+            roll = 1,
+            guardian_email = parentEmail,
+        }), HttpStatusCode.Created);
+
+        var parentId = await ParentUserId(parentEmail, tenantId);
+
+        var response = await AuthorizeAndHandle(app, tenantId, parentId, admissionNo, [Policies.StudentOrParent]);
+
+        response.Intent.Should().Be("GreetById");
+        response.Answer.Should().Contain("Aisha Khan");
+        response.Data.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Parent_scanning_a_different_real_students_admission_number_gets_no_match_and_never_leaks_the_name()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admin = Admin(app, tenantId);
+        var parentEmail = $"dad{Guid.NewGuid():N}@home.test";
+
+        await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = $"ADM-GBP-{Guid.NewGuid():N}"[..20],
+            name = "Aisha Khan",
+            grade = "IV",
+            section = "B",
+            roll = 1,
+            guardian_email = parentEmail,
+        }), HttpStatusCode.Created);
+
+        var strangersAdmissionNo = $"ADM-GBS-{Guid.NewGuid():N}"[..20];
+        await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = strangersAdmissionNo,
+            name = "Rahul Verma",
+            grade = "V",
+            section = "A",
+            roll = 2,
+            guardian_email = $"other{Guid.NewGuid():N}@home.test",
+        }), HttpStatusCode.Created);
+
+        var parentId = await ParentUserId(parentEmail, tenantId);
+
+        var response = await AuthorizeAndHandle(
+            app, tenantId, parentId, strangersAdmissionNo, [Policies.StudentOrParent]);
+
+        response.Intent.Should().Be("Unsupported");
+        response.Data.Should().BeNull();
+        response.Answer.Should().NotContain("Rahul");
+    }
+
+    [Fact]
+    public async Task Teacher_scanning_a_student_from_a_class_they_teach_resolves()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var teacherUserId = Guid.NewGuid();
+        var admissionNo = $"ADM-GBT1-{Guid.NewGuid():N}"[..20];
+
+        await SeedTeacherWithClass(tenantId, teacherUserId, "8A");
+        await Seed(async conn => await InsertStudent(conn, tenantId, admissionNo, "Taught Student", "8A"));
+
+        var response = await AuthorizeAndHandle(app, tenantId, teacherUserId, admissionNo, [Policies.Teacher]);
+
+        response.Intent.Should().Be("GreetById");
+        response.Answer.Should().Contain("Taught Student");
+    }
+
+    [Fact]
+    public async Task Teacher_scanning_a_student_from_a_class_they_do_not_teach_gets_no_match_and_never_leaks_the_name()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var teacherUserId = Guid.NewGuid();
+        var admissionNo = $"ADM-GBT2-{Guid.NewGuid():N}"[..20];
+
+        await SeedTeacherWithClass(tenantId, teacherUserId, "8A");
+        // Real student, real admission number, but in a class this teacher does not teach.
+        await Seed(async conn => await InsertStudent(conn, tenantId, admissionNo, "Untaught Student", "9B"));
+
+        var response = await AuthorizeAndHandle(app, tenantId, teacherUserId, admissionNo, [Policies.Teacher]);
+
+        response.Intent.Should().Be("Unsupported");
+        response.Data.Should().BeNull();
+        response.Answer.Should().NotContain("Untaught");
+    }
+
+    [Fact]
+    public async Task Admin_scanning_a_students_admission_number_resolves_via_the_unrestricted_path()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admissionNo = $"ADM-GBA-{Guid.NewGuid():N}"[..20];
+
+        await Seed(async conn => await InsertStudent(conn, tenantId, admissionNo, "Priya Nair", "8A"));
+
+        var response = await AuthorizeAndHandle(app, tenantId, Guid.NewGuid(), admissionNo, [Policies.SchoolAdmin]);
+
+        response.Intent.Should().Be("GreetById");
+        response.Answer.Should().Contain("Priya Nair");
+    }
+
+    [Fact]
+    public async Task Admin_scanning_a_staff_employee_code_resolves_as_staff_not_student()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var employeeCode = $"EMP-GBS-{Guid.NewGuid():N}"[..20];
+
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                "EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            await InsertStaff(conn, tenantId, "Gita Sharma", employeeCode);
+        });
+
+        var response = await AuthorizeAndHandle(app, tenantId, Guid.NewGuid(), employeeCode, [Policies.SchoolAdmin]);
+
+        response.Intent.Should().Be("GreetById");
+        response.Answer.Should().Contain("Gita Sharma");
+        var type = response.Data!.GetType();
+        type.GetProperty("type")!.GetValue(response.Data).Should().Be("staff");
+    }
+
+    [Fact]
+    public async Task Admin_scanning_a_teacher_employee_code_resolves_as_staff_type_via_teacher_repository()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var employeeCode = $"EMP-GBT-{Guid.NewGuid():N}"[..20];
+
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                "EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            await InsertTeacher(conn, tenantId, "Meena Rao", employeeCode);
+        });
+
+        var response = await AuthorizeAndHandle(app, tenantId, Guid.NewGuid(), employeeCode, [Policies.SchoolAdmin]);
+
+        response.Intent.Should().Be("GreetById");
+        response.Answer.Should().Contain("Meena Rao");
+    }
+
+    [Fact]
+    public async Task Parent_scanning_a_real_staff_employee_code_gets_no_match()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admin = Admin(app, tenantId);
+        var parentEmail = $"dad{Guid.NewGuid():N}@home.test";
+        var employeeCode = $"EMP-GBP-{Guid.NewGuid():N}"[..20];
+
+        await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = $"ADM-GBPP-{Guid.NewGuid():N}"[..20],
+            name = "Aisha Khan",
+            grade = "IV",
+            section = "B",
+            roll = 1,
+            guardian_email = parentEmail,
+        }), HttpStatusCode.Created);
+
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                "EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            await InsertStaff(conn, tenantId, "Gita Sharma", employeeCode);
+        });
+
+        var parentId = await ParentUserId(parentEmail, tenantId);
+
+        var response = await AuthorizeAndHandle(app, tenantId, parentId, employeeCode, [Policies.StudentOrParent]);
+
+        response.Intent.Should().Be("Unsupported");
+        response.Data.Should().BeNull();
+        response.Answer.Should().NotContain("Gita");
+    }
+
+    [Fact]
+    public async Task Teacher_scanning_a_real_staff_employee_code_gets_no_match()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var teacherUserId = Guid.NewGuid();
+        var employeeCode = $"EMP-GBTC-{Guid.NewGuid():N}"[..20];
+
+        await SeedTeacherWithClass(tenantId, teacherUserId, "8A");
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                "EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            await InsertStaff(conn, tenantId, "Gita Sharma", employeeCode);
+        });
+
+        var response = await AuthorizeAndHandle(app, tenantId, teacherUserId, employeeCode, [Policies.Teacher]);
+
+        response.Intent.Should().Be("Unsupported");
+        response.Data.Should().BeNull();
+        response.Answer.Should().NotContain("Gita");
+    }
+
+    [Fact]
+    public async Task Cross_tenant_admission_number_real_in_another_tenant_is_never_resolved()
+    {
+        await using var app = App();
+        var tenantA = Guid.NewGuid();
+        var tenantB = Guid.NewGuid();
+        var admissionNo = $"ADM-GBX-{Guid.NewGuid():N}"[..20];
+
+        await Seed(async conn => await InsertStudent(conn, tenantB, admissionNo, "Someone Else", "8A"));
+
+        var response = await AuthorizeAndHandle(app, tenantA, Guid.NewGuid(), admissionNo, [Policies.SchoolAdmin]);
+
+        response.Intent.Should().Be("Unsupported");
+        response.Data.Should().BeNull();
+        response.Answer.Should().NotContain("Someone Else");
+    }
+
+    [Fact]
+    public async Task A_code_matching_nothing_anywhere_returns_a_clean_not_found_response()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+
+        var response = await AuthorizeAndHandle(
+            app, tenantId, Guid.NewGuid(), $"NOPE-{Guid.NewGuid():N}", [Policies.SchoolAdmin]);
+
+        response.Intent.Should().Be("Unsupported");
+        response.Data.Should().BeNull();
+
+        var templates = app.Services.GetRequiredService<IAiAnswerTemplateService>();
+        response.Answer.Should().Be(templates.RenderNoMatch("en"));
+    }
+}
