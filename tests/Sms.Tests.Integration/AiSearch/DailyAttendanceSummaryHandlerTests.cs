@@ -6,6 +6,8 @@ using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
+using Sms.Application.Services.AiSearch;
+using Sms.Application.Services.AiSearch.Handlers;
 using Sms.Modules.AiSearch.Data;
 using Sms.Shared.Kernel.Tenancy;
 using Xunit;
@@ -141,5 +143,77 @@ public class DailyAttendanceSummaryHandlerTests(SqlServerFixture fx)
         aggB.Present.Should().Be(1);
         aggB.Absent.Should().Be(0);
         aggB.Pct.Should().Be(100.00m);
+    }
+
+    /// Resolves a DailyAttendanceSummaryHandler wired to the real repository, with the ambient
+    /// ITenantContext set exactly as the request pipeline would after JWT validation.
+    private static async Task<AiSearchResponse> Handle(
+        WebApplicationFactory<Program> app, Guid tenantId, AiAuthorizationResult auth)
+    {
+        using var scope = app.Services.CreateScope();
+        scope.ServiceProvider.GetRequiredService<ITenantContext>().Set(tenantId, Guid.NewGuid(), isPlatform: false);
+        var handler = new DailyAttendanceSummaryHandler(
+            scope.ServiceProvider.GetRequiredService<AiAttendanceAggregateRepository>(),
+            scope.ServiceProvider.GetRequiredService<IAiAnswerTemplateService>(),
+            scope.ServiceProvider.GetRequiredService<ITenantContext>(),
+            scope.ServiceProvider.GetRequiredService<TimeProvider>());
+        return await handler.HandleAsync(auth, "en", 1, 20);
+    }
+
+    /// Mirrors ClassAttendanceHandlerTests.ForClassAsync_matches_a_compact_free_text_filter_against_a_hyphenated_ClassLabel:
+    /// production Students.ClassLabel is generated as Grade + '-' + Section (e.g. "8-A"), but a
+    /// teacher's AllowedClassNames[0] comes from the free-text dbo.Classes.Name column (e.g. "8A").
+    /// Before this fix, DailyAttendanceSummaryHandler passed that free-text name straight into
+    /// ForClassAsync's exact SQL equality on s.ClassLabel, so this realistic mismatch always
+    /// returned a zero/empty aggregate for a teacher's own daily summary. This test proves the
+    /// free-text class name now resolves to the real stored label and returns the actual data.
+    [Fact]
+    public async Task Teacher_scoped_summary_matches_a_compact_free_text_class_name_against_a_hyphenated_ClassLabel()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        const string storedClassLabel = "8-A"; // realistic production shape: Grade + '-' + Section
+        const string freeTextClassName = "8A"; // realistic dbo.Classes.Name phrasing: no dash
+
+        var student1 = Guid.NewGuid();
+
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.Students (Id, TenantId, AdmissionNo, Name, Grade, Section, ClassLabel, Status)
+                VALUES (@student1, @tenantId, @adm1, N'Daily Compact Match', N'8', N'A', @storedClassLabel, N'active')
+                """,
+                new { student1, tenantId, adm1 = $"ADM-DAF-{Guid.NewGuid():N}"[..20], storedClassLabel });
+
+            var classId = Guid.NewGuid();
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.PeriodAttendanceRecords (Id, TenantId, ClassId, StudentId, [Date], Period, Subject, Status)
+                VALUES (NEWID(), @tenantId, @classId, @student1, @date, 1, N'Math', N'present')
+                """,
+                new { tenantId, classId, student1, date = today.ToDateTime(TimeOnly.MinValue) });
+        });
+
+        // Teacher (never Unrestricted), clamped to their own class via the free-text Classes.Name.
+        var filters = new AiSearchFilters(null, null, null, "today", false);
+        var auth = new AiAuthorizationResult(
+            Allowed: true, ResultIntent: "DailyAttendanceSummary", ResolvedStudentId: null,
+            AllowedChildStudentIds: null, AllowedClassNames: [freeTextClassName],
+            ClampedFilters: filters, Unrestricted: false, NameUnmatched: false);
+
+        var response = await Handle(app, tenantId, auth);
+
+        response.Intent.Should().Be("DailyAttendanceSummary");
+        response.Data.Should().NotBeNull();
+
+        var data = response.Data!;
+        var type = data.GetType();
+        var total = (int)type.GetProperty("totalStudents")!.GetValue(data)!;
+        var present = (int)type.GetProperty("present")!.GetValue(data)!;
+
+        total.Should().Be(1, "the free-text class name \"8A\" must resolve to the real stored ClassLabel \"8-A\"");
+        present.Should().Be(1);
     }
 }
