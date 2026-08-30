@@ -130,4 +130,38 @@ public class AiSearchControllerTests(SqlServerFixture fx)
                 page: request.Page ?? 1, pageSize: pageSize, count: 0, hasNextPage: false));
         }
     }
+
+    /// Finding 4: the "ai-search" rate-limit policy partitions on http.User.FindFirst("sub"), which
+    /// requires UseRateLimiter to run AFTER UseAuthentication — otherwise HttpContext.User is always
+    /// the unauthenticated principal at partition-key time and every caller silently falls back to
+    /// per-IP partitioning (an entire school behind one NAT gateway sharing a single budget). Both
+    /// callers below share the same client/IP (TestServer); if partitioning were still per-IP, user
+    /// B's request would also be rejected once user A exhausts the (permit=1) budget.
+    [Fact]
+    public async Task Two_different_authenticated_users_get_independent_rate_limit_budgets_not_a_shared_per_IP_one()
+    {
+        var capturing = new CapturingAiSearchService();
+        await using var app = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("environment", "Production");
+            b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
+            b.UseSetting("Jwt:SigningKey", Key);
+            b.UseSetting("RateLimiting:AiSearchPermitPerMinute", "1");
+            b.ConfigureTestServices(services => services.AddSingleton<IAiSearchService>(capturing));
+        });
+        var tenantId = Guid.NewGuid();
+        var userA = Admin(app, tenantId);
+        var userB = Admin(app, tenantId);
+
+        var first = await userA.PostAsJsonAsync("/v1/ai/search", new { query = "first" });
+        var second = await userA.PostAsJsonAsync("/v1/ai/search", new { query = "second" });
+        var fromUserB = await userB.PostAsJsonAsync("/v1/ai/search", new { query = "first for B" });
+
+        first.StatusCode.Should().Be(HttpStatusCode.OK);
+        second.StatusCode.Should().Be(HttpStatusCode.TooManyRequests,
+            "user A's own single-request budget is exhausted");
+        fromUserB.StatusCode.Should().Be(HttpStatusCode.OK,
+            "user B has their own, independent budget — proving the partition key is the " +
+            "authenticated user's sub claim, not the shared client IP");
+    }
 }

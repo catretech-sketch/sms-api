@@ -32,8 +32,15 @@ await Sms.Api.Metrics.MetricsSnapshotWriter.RunAsync(app);
 
 app.UseSerilogRequestLogging();
 app.UseCors("sms");
-app.UseRateLimiter();
+// UseRateLimiter must run AFTER UseAuthentication: the "ai-search" policy partitions on
+// http.User.FindFirst("sub") so each authenticated user gets their own budget, falling back to the
+// remote IP only for unauthenticated callers. Before this middleware ran after authentication,
+// HttpContext.User was always the unauthenticated principal here, so every request silently fell
+// back to per-IP partitioning (an entire school behind one NAT gateway sharing one budget). The
+// "auth" policy (used for login endpoints) partitions on IP unconditionally by design and is
+// unaffected by this reordering — it never reads HttpContext.User.
 app.UseAuthentication();
+app.UseRateLimiter();
 app.UseMiddleware<TenantResolutionMiddleware>();
 app.UseMiddleware<Sms.Api.Middleware.LastSeenTouchMiddleware>();
 app.UseMiddleware<BillingStateMiddleware>();
