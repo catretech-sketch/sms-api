@@ -9,6 +9,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Sms.Application.Services.AiSearch;
 using Sms.Application.Services.AiSearch.Handlers;
 using Sms.Application.Services.Sis;
+using Sms.Modules.Academics.Data;
 using Sms.Modules.Staffing.Data;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
@@ -91,7 +92,7 @@ public class GreetByIdHandlerTests(SqlServerFixture fx)
 
     private static async Task<AiSearchResponse> Handle(
         WebApplicationFactory<Program> app, Guid tenantId, Guid userId, AiAuthorizationResult auth,
-        string language = "en")
+        string language = "en", TimeProvider? clock = null)
     {
         using var scope = app.Services.CreateScope();
         scope.ServiceProvider.GetRequiredService<ITenantContext>().Set(tenantId, userId, isPlatform: false);
@@ -99,19 +100,22 @@ public class GreetByIdHandlerTests(SqlServerFixture fx)
             scope.ServiceProvider.GetRequiredService<ISisService>(),
             scope.ServiceProvider.GetRequiredService<TeacherRepository>(),
             scope.ServiceProvider.GetRequiredService<StaffRepository>(),
+            scope.ServiceProvider.GetRequiredService<ClassRepository>(),
+            scope.ServiceProvider.GetRequiredService<ITenantContext>(),
             scope.ServiceProvider.GetRequiredService<IAiAnswerTemplateService>(),
-            scope.ServiceProvider.GetRequiredService<TimeProvider>());
+            clock ?? scope.ServiceProvider.GetRequiredService<TimeProvider>());
         return await handler.HandleAsync(auth, language, 1, 20);
     }
 
     /// End-to-end: Authorize (real) then Handle (real), for a caller with the given roles.
     private static async Task<AiSearchResponse> AuthorizeAndHandle(
-        WebApplicationFactory<Program> app, Guid tenantId, Guid userId, string code, string[] roles)
+        WebApplicationFactory<Program> app, Guid tenantId, Guid userId, string code, string[] roles,
+        TimeProvider? clock = null)
     {
         var filters = new AiSearchFilters(code, null, null, null, false);
         var auth = await Authorize(app, tenantId, userId, filters, roles);
         auth.Allowed.Should().BeTrue();
-        return await Handle(app, tenantId, userId, auth);
+        return await Handle(app, tenantId, userId, auth, clock: clock);
     }
 
     private async Task SeedTeacherWithClass(
@@ -141,6 +145,33 @@ public class GreetByIdHandlerTests(SqlServerFixture fx)
                 VALUES (@tenantId, 'Mon', 1, N'Math', @classId, @taughtClassLabel, @teacherId)
                 """,
                 new { tenantId, classId, teacherId, taughtClassLabel });
+        });
+    }
+
+    /// Seeds a teacher whose taught class has a free-text Name that does NOT already look like a
+    /// compacted "Grade-Section" label (e.g. "Section Eight A"), alongside a real Grade/Section on
+    /// the class row itself — proving membership is resolved via Grade+Section, not just Name.
+    private async Task SeedTeacherWithGradeSectionClass(
+        Guid tenantId, Guid teacherUserId, string className, string grade, string section)
+    {
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync(
+                "EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            var teacherId = Guid.NewGuid();
+            var classId = Guid.NewGuid();
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId) VALUES (@teacherUserId, @tenantId)",
+                new { teacherUserId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Teachers (Id, TenantId, Name, UserId) VALUES (@teacherId, @tenantId, N'Meena', @teacherUserId)",
+                new { teacherId, tenantId, teacherUserId });
+            await conn.ExecuteAsync(
+                """
+                INSERT dbo.Classes (Id, TenantId, Name, Grade, Section, StudentCount, ClassTeacherId)
+                VALUES (@classId, @tenantId, @className, @grade, @section, 0, @teacherId)
+                """,
+                new { classId, tenantId, teacherId, className, grade, section });
         });
     }
 
@@ -310,7 +341,7 @@ public class GreetByIdHandlerTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task Admin_scanning_a_teacher_employee_code_resolves_as_staff_type_via_teacher_repository()
+    public async Task Admin_scanning_a_teacher_employee_code_resolves_as_teacher_type_via_teacher_repository()
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
@@ -327,6 +358,8 @@ public class GreetByIdHandlerTests(SqlServerFixture fx)
 
         response.Intent.Should().Be("GreetById");
         response.Answer.Should().Contain("Meena Rao");
+        var type = response.Data!.GetType();
+        type.GetProperty("type")!.GetValue(response.Data).Should().Be("teacher");
     }
 
     [Fact]
@@ -418,5 +451,104 @@ public class GreetByIdHandlerTests(SqlServerFixture fx)
 
         var templates = app.Services.GetRequiredService<IAiAnswerTemplateService>();
         response.Answer.Should().Be(templates.RenderNoMatch("en"));
+    }
+
+    [Fact]
+    public async Task Greeting_uses_school_local_IST_time_not_raw_UTC_hour()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admissionNo = $"ADM-GBIST-{Guid.NewGuid():N}"[..20];
+
+        await Seed(async conn => await InsertStudent(conn, tenantId, admissionNo, "Priya Nair", "8A"));
+
+        // 08:00 UTC is morning in UTC, but 13:30 IST (UTC+5:30) — afternoon. If the handler used raw
+        // UTC hour it would say "Good morning"; using school-local (IST) time it must say "Good afternoon".
+        var utcMorningButIstAfternoon = new DateTimeOffset(2026, 1, 15, 8, 0, 0, TimeSpan.Zero);
+        var clock = new FixedTimeProvider(utcMorningButIstAfternoon);
+
+        var response = await AuthorizeAndHandle(
+            app, tenantId, Guid.NewGuid(), admissionNo, [Policies.SchoolAdmin], clock);
+
+        response.Intent.Should().Be("GreetById");
+        response.Answer.Should().Contain("Good afternoon");
+        response.Answer.Should().NotContain("Good morning");
+    }
+
+    [Fact]
+    public async Task Teacher_can_resolve_a_student_via_GradeSection_even_when_the_classs_Name_is_not_a_compacted_label()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var teacherUserId = Guid.NewGuid();
+        var admissionNo = $"ADM-GBGS-{Guid.NewGuid():N}"[..20];
+
+        // Classes.Name is deliberately free text that does NOT compact down to "8A" — only the
+        // class's own Grade/Section columns line up with the student's Grade/Section.
+        await SeedTeacherWithGradeSectionClass(tenantId, teacherUserId, "Section Eight A", "8", "A");
+        // ClassLabel is the compact "8-A" form, distinct from the free-text class Name.
+        await Seed(async conn => await InsertStudent(conn, tenantId, admissionNo, "Grade Section Student", "8-A"));
+
+        var response = await AuthorizeAndHandle(app, tenantId, teacherUserId, admissionNo, [Policies.Teacher]);
+
+        response.Intent.Should().Be("GreetById");
+        response.Answer.Should().Contain("Grade Section Student");
+    }
+
+    [Fact]
+    public async Task Parent_with_zero_ParentStudentLinks_scanning_a_real_students_admission_number_gets_no_match()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admin = Admin(app, tenantId);
+        var otherAdmissionNo = $"ADM-GBZP-{Guid.NewGuid():N}"[..20];
+
+        await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = otherAdmissionNo,
+            name = "Someone Elses Child",
+            grade = "IV",
+            section = "B",
+            roll = 1,
+        }), HttpStatusCode.Created);
+
+        // A parent user that exists but has ZERO ParentStudentLinks rows.
+        var zeroScopeParentId = Guid.NewGuid();
+        await Seed(async conn => await conn.ExecuteAsync(
+            "INSERT dbo.Users (Id, TenantId) VALUES (@id, @tenantId)",
+            new { id = zeroScopeParentId, tenantId }));
+
+        var response = await AuthorizeAndHandle(
+            app, tenantId, zeroScopeParentId, otherAdmissionNo, [Policies.StudentOrParent]);
+
+        response.Intent.Should().Be("Unsupported");
+        response.Data.Should().BeNull();
+        response.Answer.Should().NotContain("Someone Elses Child");
+    }
+
+    [Fact]
+    public async Task Teacher_role_with_no_matching_Teachers_row_scanning_a_real_students_admission_number_gets_no_match()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var admissionNo = $"ADM-GBZT-{Guid.NewGuid():N}"[..20];
+
+        await Seed(async conn => await InsertStudent(conn, tenantId, admissionNo, "Real Student", "8A"));
+
+        // A caller with the school.teacher role but no row in dbo.Teachers — AllowedClassNames
+        // resolves to an empty (non-null) list.
+        var noTeacherRowUserId = Guid.NewGuid();
+
+        var response = await AuthorizeAndHandle(
+            app, tenantId, noTeacherRowUserId, admissionNo, [Policies.Teacher]);
+
+        response.Intent.Should().Be("Unsupported");
+        response.Data.Should().BeNull();
+        response.Answer.Should().NotContain("Real Student");
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => now;
     }
 }
