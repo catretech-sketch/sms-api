@@ -280,6 +280,80 @@ public class AiSearchConversationSecurityTests(SqlServerFixture fx)
     }
 
     /// <summary>
+    /// Final fix wave Finding I-1: a parent resolves their own linked child ("Aisha") in turn 1, then
+    /// asks about a DIFFERENT, REAL person in the SAME tenant ("Rahul", a teacher, not their child) in
+    /// turn 2 with the SAME conversation_id. AiSearchAuthorizationService's parent branch matches no
+    /// linked child for "Rahul", nulls ClampedFilters.StudentName, AND sets NameUnmatched: true -- this
+    /// must NOT be treated as a bare follow-up (which would wrongly fire pre-resolution against the
+    /// STORED Aisha and answer about her). The pre-resolution guard must see NameUnmatched and refuse to
+    /// treat this as a follow-up, so the parent gets no_match and neither Aisha's nor Rahul's data ever
+    /// appears in the response.
+    /// </summary>
+    [Fact]
+    public async Task A_parents_question_about_a_different_real_person_is_no_match_not_the_stored_child()
+    {
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+
+        var (app, classifier) = AppWithMutableClassifier(
+            new AiClassificationResult("en", "PersonLookup", Filters(studentName: "Aisha")));
+        await using var _ = app;
+
+        var admin = Admin(app, tenantId);
+        var parentEmail = $"mum{Guid.NewGuid():N}@home.test";
+        var childRes = await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = $"ADM-I1-{Guid.NewGuid():N}"[..20],
+            name = "Aisha Khan",
+            grade = "IV",
+            section = "B",
+            roll = 1,
+            guardian_email = parentEmail,
+        });
+        childRes.StatusCode.Should().Be(HttpStatusCode.Created, await childRes.Content.ReadAsStringAsync());
+        var childBody = await childRes.Content.ReadFromJsonAsync<JsonElement>();
+        var childId = childBody.GetProperty("data").GetProperty("id").GetGuid();
+
+        var parentId = await Query(conn => conn.QuerySingleAsync<Guid>(
+            """
+            SELECT Id FROM dbo.Users
+            WHERE TenantId = @tenantId AND LOWER(LTRIM(RTRIM(Email))) = LOWER(LTRIM(RTRIM(@email)))
+            """,
+            new { email = parentEmail, tenantId }));
+
+        // A real, distinct person ("Rahul Sharma" the teacher) seeded in the same tenant -- not linked
+        // to this parent at all -- so the repro is non-vacuous: "Rahul" genuinely exists and genuinely
+        // resolves to someone, just not someone this parent may see.
+        Guid teacherId = default;
+        await Seed(async conn =>
+        {
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            teacherId = Guid.NewGuid();
+            await conn.ExecuteAsync(
+                "INSERT dbo.Teachers (Id, TenantId, Name, SubjectsCsv) VALUES (@teacherId, @tenantId, N'Rahul Sharma', N'Mathematics')",
+                new { teacherId, tenantId });
+        });
+
+        var parent = AsUser(app, tenantId, parentId, Policies.StudentOrParent);
+        var turn1 = await Search(parent, "Aisha kaun hai?");
+        turn1.GetProperty("status").GetString().Should().Be("success");
+        var conversationId = ConversationId(turn1);
+        conversationId.Should().NotBeNull();
+
+        // Turn 2: a real person's name is asked for, but it matches none of this parent's linked
+        // children -- AuthorizeAsync's parent branch sets NameUnmatched: true and nulls StudentName.
+        classifier.Result = new AiClassificationResult("en", "PersonLookup", Filters(studentName: "Rahul"));
+        var turn2 = await Search(parent, "Who is Rahul?", conversationId);
+
+        turn2.GetProperty("status").GetString().Should().Be("no_match");
+        turn2.GetRawText().Should().NotContain("Aisha", "the stored child must never be substituted for the person actually asked about");
+        turn2.GetRawText().Should().NotContain(childId.ToString());
+        turn2.GetRawText().Should().NotContain("Rahul Sharma", "an unmatched name must never leak the real other person's data either");
+        turn2.GetRawText().Should().NotContain("Mathematics");
+        turn2.GetRawText().Should().NotContain(teacherId.ToString());
+    }
+
+    /// <summary>
     /// A conversation_id minted under tenant A is submitted, unchanged, by tenant B's admin.
     /// AiConversationContextStore.LoadAsync is scoped by the AMBIENT (JWT-derived) tenant id, so this
     /// must silently find no row -- a completely fresh classification happens (proved by scripting a

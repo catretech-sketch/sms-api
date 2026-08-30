@@ -118,6 +118,7 @@ public sealed class AiSearchService(
         // never trust the stored entity on its own, and never move it before AuthorizeAsync runs.
         if (string.Equals(classification.Intent, PersonLookupIntent, StringComparison.OrdinalIgnoreCase)
             && string.IsNullOrWhiteSpace(auth.ClampedFilters.StudentName)
+            && !auth.NameUnmatched
             && storedContext?.ResolvedEntityId is { } storedEntityId)
         {
             var stillInScope = auth.Unrestricted
