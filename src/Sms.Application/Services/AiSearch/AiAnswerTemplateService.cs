@@ -16,6 +16,11 @@ public interface IAiAnswerTemplateService
     string RenderUnsupported(string language);
     string RenderForbidden(string language);
     string RenderNoMatch(string language);
+    string RenderPersonIsStudent(string language, string name, string? classLabel);
+    string RenderPersonIsTeacher(string language, string name, IReadOnlyList<string> subjects);
+    string RenderPersonIsStaffLike(string language, string name, string roleLabel);
+    string RenderNoActiveTrip(string language);
+    string RenderTripStatus(string language, string busNo, string direction, string status);
 }
 
 public sealed class AiAnswerTemplateService : IAiAnswerTemplateService
@@ -96,5 +101,51 @@ public sealed class AiAnswerTemplateService : IAiAnswerTemplateService
             "hi" => "कोई मेल खाता रिकॉर्ड नहीं मिला।",
             "hinglish" => "Koi matching record nahi mila.",
             _ => "No matching records were found."
+        };
+
+    public string RenderPersonIsStudent(string language, string name, string? classLabel)
+    {
+        var cls = classLabel ?? "";
+        return language switch
+        {
+            "hi" => $"{name} एक Student हैं, कक्षा {cls}.",
+            "hinglish" => $"{name} ek Student hain, class {cls}.",
+            _ => $"{name} is a Student in class {cls}.",
+        };
+    }
+
+    public string RenderPersonIsTeacher(string language, string name, IReadOnlyList<string> subjects)
+    {
+        var list = subjects.Count == 0 ? "" : string.Join(", ", subjects);
+        return language switch
+        {
+            "hi" => $"{name} ek Teacher hain. Ye {list} padhate hain.",
+            "hinglish" => $"{name} ek Teacher hain. Ye {list} padhate hain.",
+            _ => $"{name} is a Teacher. {(subjects.Count > 1 ? "He/She teaches" : "He/She teaches")} {list}.",
+        };
+    }
+
+    public string RenderPersonIsStaffLike(string language, string name, string roleLabel) =>
+        language switch
+        {
+            "hi" => $"{name} ek {roleLabel} hain.",
+            "hinglish" => $"{name} ek {roleLabel} hain.",
+            _ => $"{name} is a {roleLabel}.",
+        };
+
+    public string RenderNoActiveTrip(string language) =>
+        language switch
+        {
+            "hi" => "अभी कोई सक्रिय ट्रिप नहीं है।",
+            "hinglish" => "Abhi koi active trip nahi hai.",
+            _ => "You have no active trip right now.",
+        };
+
+    public string RenderTripStatus(string language, string busNo, string direction, string status) =>
+        language switch
+        {
+            "hi" => $"आपकी बस {busNo} {direction} की ओर, स्थिति: {status}.",
+            "hinglish" => $"Aapki bus {busNo} {direction} ki taraf, status: {status}.",
+            _ => $"Your bus {busNo} is heading {direction}, status: {status}.",
         };
 }

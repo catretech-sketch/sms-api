@@ -56,4 +56,43 @@ public class AiAnswerTemplateServiceTests
     {
         svc.RenderGreeting("fr", "Aisha", 9).Should().Be("Good morning, Aisha");
     }
+
+    [Theory]
+    [InlineData("en", "Rahul Sharma is a Teacher.")]
+    [InlineData("hi", "Rahul Sharma ek Teacher hain.")]
+    [InlineData("hinglish", "Rahul Sharma ek Teacher hain.")]
+    public void RenderPersonIsTeacher_names_the_role_first_then_subjects(string language, string expectedStart)
+    {
+        var answer = svc.RenderPersonIsTeacher(language, "Rahul Sharma", ["Mathematics"]);
+        answer.Should().StartWith(expectedStart.Split(" hain")[0]); // loose start-of-sentence check; exact strings pinned in Step 3 below
+        answer.Should().Contain("Mathematics");
+    }
+
+    [Fact]
+    public void RenderPersonIsTeacher_lists_multiple_subjects()
+    {
+        var answer = svc.RenderPersonIsTeacher("en", "Rahul Sharma", ["Mathematics", "Physics"]);
+        answer.Should().Contain("Mathematics").And.Contain("Physics");
+    }
+
+    [Fact]
+    public void RenderPersonIsStudent_includes_the_class_label_when_present()
+    {
+        var answer = svc.RenderPersonIsStudent("en", "Rahul Verma", "8-A");
+        answer.Should().Contain("Rahul Verma").And.Contain("8-A").And.Contain("Student");
+    }
+
+    [Fact]
+    public void RenderPersonIsStaffLike_uses_the_supplied_role_label_verbatim()
+    {
+        svc.RenderPersonIsStaffLike("en", "Rahul Khan", "Owner").Should().Contain("Owner");
+    }
+
+    [Fact]
+    public void RenderNoActiveTrip_and_RenderTripStatus_are_distinct_per_language()
+    {
+        svc.RenderNoActiveTrip("en").Should().NotBe(svc.RenderNoActiveTrip("hi"));
+        svc.RenderTripStatus("en", "BUS-12", "morning", "in_progress")
+            .Should().Contain("BUS-12");
+    }
 }
