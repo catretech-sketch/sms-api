@@ -29,4 +29,31 @@ public class AiAnswerTemplateServiceTests
     {
         svc.RenderStudentAttendance("fr", "Rahul", 91.2m).Should().Be("Rahul's attendance is 91.2%.");
     }
+
+    [Theory]
+    [InlineData(0, "Good morning, Aisha")]
+    [InlineData(11, "Good morning, Aisha")]
+    [InlineData(12, "Good afternoon, Aisha")]
+    [InlineData(16, "Good afternoon, Aisha")]
+    [InlineData(17, "Good evening, Aisha")]
+    [InlineData(23, "Good evening, Aisha")]
+    public void RenderGreeting_buckets_by_hour_of_day_boundaries(int hour, string expected)
+    {
+        svc.RenderGreeting("en", "Aisha", hour).Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData(0, "सुप्रभात, Aisha")]
+    [InlineData(12, "नमस्कार, Aisha")]
+    [InlineData(17, "शुभ संध्या, Aisha")]
+    public void RenderGreeting_uses_the_detected_language(int hour, string expected)
+    {
+        svc.RenderGreeting("hi", "Aisha", hour).Should().Be(expected);
+    }
+
+    [Fact]
+    public void RenderGreeting_falls_back_to_english_for_an_unrecognized_language_code()
+    {
+        svc.RenderGreeting("fr", "Aisha", 9).Should().Be("Good morning, Aisha");
+    }
 }

@@ -5,6 +5,13 @@ public interface IAiAnswerTemplateService
     string RenderDailyAttendanceSummary(string language, int total, int present, int absent, decimal pct);
     string RenderClassAttendance(string language, string className, int total, int present, int absent, decimal pct);
     string RenderStudentAttendance(string language, string studentName, decimal pct);
+    /// <summary>
+    /// Time-of-day greeting for a resolved name. <paramref name="hour"/> is the already-resolved
+    /// hour-of-day (0-23) the caller determined from a <see cref="TimeProvider"/> — this method never
+    /// computes "now" itself, keeping it a pure function of its inputs like every other Render* method
+    /// here. Buckets: hour &lt; 12 morning, 12-16 afternoon, &gt;= 17 evening.
+    /// </summary>
+    string RenderGreeting(string language, string name, int hour);
     string RenderWriteBlocked(string language);
     string RenderUnsupported(string language);
     string RenderForbidden(string language);
@@ -36,6 +43,28 @@ public sealed class AiAnswerTemplateService : IAiAnswerTemplateService
             "hinglish" => $"{studentName} ki attendance {pct}% hai.",
             _ => $"{studentName}'s attendance is {pct}%."
         };
+
+    public string RenderGreeting(string language, string name, int hour)
+    {
+        var bucket = hour switch
+        {
+            < 12 => "morning",
+            < 17 => "afternoon",
+            _ => "evening",
+        };
+        return (language, bucket) switch
+        {
+            ("hi", "morning") => $"सुप्रभात, {name}",
+            ("hi", "afternoon") => $"नमस्कार, {name}",
+            ("hi", "evening") => $"शुभ संध्या, {name}",
+            ("hinglish", "morning") => $"Good morning, {name}",
+            ("hinglish", "afternoon") => $"Good afternoon, {name}",
+            ("hinglish", "evening") => $"Good evening, {name}",
+            (_, "morning") => $"Good morning, {name}",
+            (_, "afternoon") => $"Good afternoon, {name}",
+            _ => $"Good evening, {name}",
+        };
+    }
 
     public string RenderWriteBlocked(string language) =>
         language switch
