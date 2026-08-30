@@ -177,8 +177,27 @@ public sealed class AiSearchService(
             TenantId, UserId, PrimaryRole(callerRoles), query, effectiveLanguage,
             response.Intent ?? classification.Intent, response.Count ?? 0, Audited(response), ct);
 
-        var newConversationId = await PersistConversationAsync(
-            request.ConversationId, response, classification.Intent, languageOverrideToStore, ct);
+        Guid? newConversationId;
+        try
+        {
+            newConversationId = await PersistConversationAsync(
+                request.ConversationId, response, classification.Intent, languageOverrideToStore, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // Finding I-3: conversation-context persistence is best-effort bookkeeping, not the
+            // actual search result the caller asked for. By this point the search already
+            // succeeded and its audit row was already written -- a transient SQL failure writing
+            // or renewing the AiSearchConversation row must never surface as an unhandled
+            // exception / raw 500 and must never cost the caller the response they are owed. This
+            // mirrors how AiSearchAuditService.LogAsync already swallows its own failures so
+            // logging can never break the real response.
+            newConversationId = null;
+        }
 
         return response with { ConversationId = newConversationId?.ToString() };
     }
@@ -187,7 +206,13 @@ public sealed class AiSearchService(
     /// Persists a handler's <see cref="AiConversationUpdate"/> (resolved entity / pending candidates)
     /// together with any active language override as the conversation's new state for the NEXT turn.
     /// Returns null (no conversation id to echo) whenever there is no authenticated tenant/user to
-    /// scope the row to -- conversation state is meaningless without that.
+    /// scope the row to -- conversation state is meaningless without that -- and ALSO when there is
+    /// genuinely nothing worth writing a row for at all (Finding I-2): no <see cref="AiConversationUpdate"/>
+    /// from the handler, no language override to persist, and no incoming conversation_id whose TTL
+    /// needs renewing. Without this early-out, a plain query with no conversation context whatsoever
+    /// (e.g. "aaj kitne bachche aaye") would still mint a brand-new row on every single request that
+    /// nothing will ever clean up (the IX_AiSearchConversation_Expiry index exists for a sweep job
+    /// that was never written).
     /// </summary>
     private async Task<Guid?> PersistConversationAsync(
         string? requestedConversationId, AiSearchResponse response, string intent, string? languageOverride,
@@ -196,14 +221,20 @@ public sealed class AiSearchService(
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid) return null;
 
         var update = response.ConversationUpdate;
+        var sanitizedLanguageOverride = SanitizeLanguageOverrideForStorage(languageOverride);
+        var hasIncomingConversationId =
+            Guid.TryParse(requestedConversationId, out var existingId) && existingId != Guid.Empty;
+
+        if (update is null && sanitizedLanguageOverride is null && !hasIncomingConversationId)
+            return null;
+
         var context = new AiConversationContext(
             update?.ResolvedEntityId, update?.ResolvedEntityType,
-            SanitizeLanguageOverrideForStorage(languageOverride), update?.PendingCandidates,
+            sanitizedLanguageOverride, update?.PendingCandidates,
             ClampIntentForStorage(intent));
 
-        Guid.TryParse(requestedConversationId, out var existingId);
         return await contextStore.SaveAsync(
-            existingId == Guid.Empty ? null : existingId, tid, uid, context, ct);
+            hasIncomingConversationId ? existingId : null, tid, uid, context, ct);
     }
 
     private static Guid? TryGetGuid(string? s) => Guid.TryParse(s, out var g) ? g : null;
@@ -278,9 +309,23 @@ public sealed class AiSearchService(
             // exactly as if no language override had ever been present.
             return response;
 
-        var newId = await contextStore.SaveAsync(
-            requestedConversationId, tenant.TenantId.Value, tenant.UserId.Value,
-            new AiConversationContext(null, null, sanitizedLanguageOverride, null, ClampIntentForStorage(auditedIntent)), ct);
-        return response with { ConversationId = newId.ToString() };
+        try
+        {
+            var newId = await contextStore.SaveAsync(
+                requestedConversationId, tenant.TenantId.Value, tenant.UserId.Value,
+                new AiConversationContext(null, null, sanitizedLanguageOverride, null, ClampIntentForStorage(auditedIntent)), ct);
+            return response with { ConversationId = newId.ToString() };
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // Finding I-3 (same rationale as PersistConversationAsync's callsite): a language-override
+            // persistence failure must never turn an already-decided WriteBlocked/Unsupported outcome
+            // into an unhandled exception.
+            return response;
+        }
     }
 }

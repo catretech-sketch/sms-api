@@ -152,6 +152,20 @@ public class AiSearchServiceTests
         public Task ClearAsync(Guid conversationId, CancellationToken ct = default) => Task.CompletedTask;
     }
 
+    /// A context store whose SaveAsync always throws, used to prove that a persistence failure never
+    /// escapes SearchAsync (Finding I-3). LoadAsync is inert (always no stored context) since these
+    /// tests are about the SAVE side only.
+    private sealed class ThrowingSaveContextStore : IAiConversationContextStore
+    {
+        public Task<AiConversationContext?> LoadAsync(Guid conversationId, Guid tenantId, Guid userId, CancellationToken ct = default) =>
+            Task.FromResult<AiConversationContext?>(null);
+
+        public Task<Guid> SaveAsync(Guid? conversationId, Guid tenantId, Guid userId, AiConversationContext context, CancellationToken ct = default) =>
+            throw new TimeoutException("sql timeout writing AiSearchConversation");
+
+        public Task ClearAsync(Guid conversationId, CancellationToken ct = default) => Task.CompletedTask;
+    }
+
     /// Unlike FakeHandler (a fixed canned response), this handler echoes back the `language` argument
     /// it actually receives, so a test can assert on the orchestrator's computed effective language
     /// rather than a value baked into the test's own setup.
@@ -606,5 +620,52 @@ public class AiSearchServiceTests
         contextStore.SaveCalled.Should().BeFalse(
             "only 'en'/'hi' are ever meaningful downstream -- a malformed directive leaves nothing worth persisting, " +
             "so no context row is created (mirroring how a Forbidden outcome with no override leaves state untouched)");
+    }
+
+    // --- Final fix wave Finding I-2: no orphaned conversation row when there is nothing to persist ---
+
+    [Fact]
+    public async Task A_plain_search_with_no_conversation_id_no_update_and_no_language_override_never_saves_a_row()
+    {
+        var contextStore = new ScriptedContextStore(null);
+        var classifier = new FakeClassifier(new AiClassificationResult("hinglish", "DailyAttendanceSummary", EmptyFilters));
+        var handler = new FakeHandler("DailyAttendanceSummary",
+            AiSearchResponse.Ok("hinglish", "DailyAttendanceSummary", "ok", null, 1, 20, 3, false));
+        var service = Build(classifier, new FakeAuthz(Allowed("DailyAttendanceSummary")), [handler],
+            new RecordingAudit(), new FeatureSet(true), contextStore: contextStore);
+
+        var result = await service.SearchAsync(
+            new AiSearchRequest("aaj kitne bachche aaye", null, null, null), ["school.admin"]);
+
+        result.Success.Should().BeTrue();
+        contextStore.SaveCalled.Should().BeFalse(
+            "no ConversationUpdate, no language override, and no incoming conversation_id -- there is " +
+            "nothing worth writing an orphaned row for");
+        result.ConversationId.Should().BeNull();
+    }
+
+    // --- Final fix wave Finding I-3: a conversation-store failure must never propagate as an exception ---
+
+    [Fact]
+    public async Task A_conversation_store_save_failure_never_propagates_and_the_underlying_response_still_returns()
+    {
+        var contextStore = new ThrowingSaveContextStore();
+        var classifier = new FakeClassifier(new AiClassificationResult("en", "PersonLookup", new AiSearchFilters("Rahul", null, null, null, false)));
+        var handler = new FakeHandler("PersonLookup",
+            AiSearchResponse.Ok("en", "PersonLookup", "Rahul is a Student.", null, 1, 20, 1, false) with
+            {
+                ConversationUpdate = new AiConversationUpdate(Guid.NewGuid(), "student", null),
+            });
+        var service = Build(classifier, new FakeAuthz(Allowed("PersonLookup")), [handler],
+            new RecordingAudit(), new FeatureSet(true), contextStore: contextStore);
+
+        var act = () => service.SearchAsync(
+            new AiSearchRequest("Rahul kaun hai?", null, null, null), ["school.admin"]);
+
+        var result = (await act.Should().NotThrowAsync(
+            "a transient SQL failure persisting conversation context must never surface as an unhandled exception")).Subject;
+        result.Success.Should().BeTrue("the underlying search already succeeded and must not be lost");
+        result.Answer.Should().Be("Rahul is a Student.");
+        result.ConversationId.Should().BeNull("persistence did not succeed, so there is no id to echo");
     }
 }
