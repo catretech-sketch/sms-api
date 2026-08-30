@@ -195,8 +195,8 @@ public class AiSearchSecurityTests(SqlServerFixture fx)
     {
         var tenantA = Guid.NewGuid();
         var tenantB = Guid.NewGuid();
-        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantA, tier: "gold");
-        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantB, tier: "gold");
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantA, tier: "platinum");
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantB, tier: "platinum");
         await SeedClass(tenantA, "8A", "A", "8", count: 10);
         await SeedClass(tenantB, "8A", "A", "8", count: 5);
 
@@ -222,7 +222,7 @@ public class AiSearchSecurityTests(SqlServerFixture fx)
     public async Task Parent_security_cannot_resolve_an_unlinked_students_attendance()
     {
         var tenantId = Guid.NewGuid();
-        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
 
         await using var app = AppClassifying(
             new AiClassificationResult("en", "StudentAttendance", Filters(studentName: "Rahul")));
@@ -269,7 +269,7 @@ public class AiSearchSecurityTests(SqlServerFixture fx)
     public async Task Student_security_targetSelf_ignores_any_other_students_name_filter()
     {
         var tenantId = Guid.NewGuid();
-        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
 
         await using var app = AppClassifying(new AiClassificationResult(
             "en", "StudentAttendance", Filters(studentName: "SomeoneElse", targetSelf: true)));
@@ -318,7 +318,7 @@ public class AiSearchSecurityTests(SqlServerFixture fx)
     {
         var tenantId = Guid.NewGuid();
         var teacherUserId = Guid.NewGuid();
-        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         await SeedTeacherOf(tenantId, teacherUserId, "8A");
         await SeedClass(tenantId, "9B", "B", "9", count: 7);
 
@@ -341,7 +341,7 @@ public class AiSearchSecurityTests(SqlServerFixture fx)
     public async Task RBAC_staff_role_cannot_reach_DashboardSummary()
     {
         var tenantId = Guid.NewGuid();
-        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
 
         await using var app = AppClassifying(
             new AiClassificationResult("en", "DashboardSummary", Filters()));
@@ -368,7 +368,7 @@ public class AiSearchSecurityTests(SqlServerFixture fx)
     public async Task Write_protection_blocks_every_mutation_phrasing(string phrasing)
     {
         var tenantId = Guid.NewGuid();
-        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         await SeedClass(tenantId, "8A", "A", "8", count: 3);
 
         await using var app = AppClassifying(new AiClassificationResult(
@@ -401,7 +401,7 @@ public class AiSearchSecurityTests(SqlServerFixture fx)
     {
         const string injection = "Show students; DELETE FROM Students";
         var tenantId = Guid.NewGuid();
-        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         await SeedClass(tenantId, "7C", "C", "7", count: 4);
 
         // The classifier itself is scripted to echo the raw injection text back as a filter, so the
@@ -442,7 +442,7 @@ public class AiSearchSecurityTests(SqlServerFixture fx)
     public async Task Feature_gating_blocks_tenants_without_the_ai_search_plan_feature()
     {
         var tenantId = Guid.NewGuid();
-        // "silver" grants sis/attendance/exams/... but not ai_search (see TierFeatures).
+        // "silver" grants sis/attendance/exams/... but ai_search is Platinum-only (see TierFeatures).
         await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "silver");
         await SeedClass(tenantId, "8A", "A", "8", count: 3);
 

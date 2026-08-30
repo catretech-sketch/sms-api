@@ -7,13 +7,13 @@ public static class FeatureCatalog
     public const string AttendanceGeofence = "attendance.geofence";
     public const string TransportGps = "transport.gps";
     public const string SupportDedicated = "support.dedicated";
+    public const string AiSearch = "ai_search";
 
     // Gold
     public const string HrPayroll = "hr_payroll";
     public const string StaffSupport = "staff_support";
     public const string AnalyticsWeakStudents = "analytics.weak_students";
     public const string ReportingAdvanced = "reporting.advanced";
-    public const string AiSearch = "ai_search";
 
     // Legacy / module-specific keys (kept for existing gates)
     public const string ExamsDatesheet = "exams.datesheet";

@@ -55,11 +55,30 @@ public class AiSearchControllerTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task Tenant_without_the_AiSearch_feature_gets_a_feature_locked_response()
+    public async Task Silver_tenant_gets_a_feature_locked_response()
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
         await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "silver");
+        var admin = Admin(app, tenantId);
+
+        var res = await admin.PostAsJsonAsync("/v1/ai/search", new { query = "Aaj kitne bachche aaye?" });
+        var body = await res.Content.ReadAsStringAsync();
+
+        res.StatusCode.Should().Be(HttpStatusCode.Forbidden, body);
+        using var doc = JsonDocument.Parse(body);
+        doc.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString().Should().Be("FeatureNotEnabled");
+    }
+
+    /// AI Search is a Platinum-exclusive feature (see TierFeatures) — Gold no longer grants it, and no
+    /// role (not even school.admin) can bypass the tenant's plan tier.
+    [Fact]
+    public async Task Gold_tenant_gets_a_feature_locked_response()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
         var admin = Admin(app, tenantId);
 
         var res = await admin.PostAsJsonAsync("/v1/ai/search", new { query = "Aaj kitne bachche aaye?" });
@@ -76,7 +95,7 @@ public class AiSearchControllerTests(SqlServerFixture fx)
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
-        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var admin = Admin(app, tenantId);
 
         var res = await admin.PostAsJsonAsync("/v1/ai/search", new { query = "" });
