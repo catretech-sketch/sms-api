@@ -95,7 +95,10 @@ public class PersonLookupHandlerTests(SqlServerFixture fx)
         var handler = new PersonLookupHandler(
             scope.ServiceProvider.GetRequiredService<IPersonResolver>(),
             scope.ServiceProvider.GetRequiredService<IAiAnswerTemplateService>(),
-            scope.ServiceProvider.GetRequiredService<TeacherRepository>());
+            scope.ServiceProvider.GetRequiredService<TeacherRepository>(),
+            scope.ServiceProvider.GetRequiredService<StaffRepository>(),
+            scope.ServiceProvider.GetRequiredService<Sms.Application.Services.Sis.ISisService>(),
+            scope.ServiceProvider.GetRequiredService<Sms.Shared.Kernel.Auth.IUserDirectoryLookup>());
         return await handler.HandleAsync(auth, language, page, pageSize);
     }
 
@@ -202,5 +205,36 @@ public class PersonLookupHandlerTests(SqlServerFixture fx)
         pending!.Should().HaveCount(2);
         pending.Should().Contain(p => p.Id == teacherId && p.Type == "teacher");
         pending.Should().Contain(p => p.Id == studentId && p.Type == "student");
+    }
+
+    /// Task 12: the direct pre-resolved short-circuit -- no name in ClampedFilters at all, just a
+    /// PreResolvedEntityId/Type as AiSearchService would set after re-authorizing a conversation
+    /// follow-up. The handler must skip PersonResolver's name search entirely and re-fetch this exact
+    /// teacher's CURRENT name/subjects.
+    [Fact]
+    public async Task A_preresolved_teacher_renders_correctly_with_no_name_in_ClampedFilters()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        Guid teacherId = default;
+
+        await SeedInTenant(tenantId, async conn =>
+        {
+            teacherId = await InsertTeacher(conn, tenantId, "Rahul Sharma", "Mathematics");
+        });
+
+        var callerId = Guid.NewGuid();
+        var auth = new AiAuthorizationResult(
+            true, Intent, null, null, null, new AiSearchFilters(null, null, null, null, false),
+            Unrestricted: true, NameUnmatched: false,
+            PreResolvedEntityId: teacherId, PreResolvedEntityType: "teacher");
+
+        var response = await Handle(app, tenantId, callerId, auth);
+
+        response.Status.Should().Be("success");
+        response.Answer.Should().Contain("Mathematics");
+        response.ConversationUpdate.Should().NotBeNull();
+        response.ConversationUpdate!.ResolvedEntityId.Should().Be(teacherId);
+        response.ConversationUpdate.ResolvedEntityType.Should().Be("teacher");
     }
 }

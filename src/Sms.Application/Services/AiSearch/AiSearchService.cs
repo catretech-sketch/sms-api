@@ -14,8 +14,9 @@ public interface IAiSearchService
 
 /// <summary>
 /// The single entry point for AI global search. It owns the fixed pipeline every query must walk:
-/// plan-tier feature gate -> input validation -> LLM classification -> write-intent refusal ->
-/// intent support check -> authorization/scope clamping -> handler dispatch -> audit log.
+/// plan-tier feature gate -> input validation -> conversation-context load (a hint only) -> LLM
+/// classification -> write-intent refusal -> intent support check -> authorization/scope clamping ->
+/// conversation re-authorization -> handler dispatch -> audit log -> conversation-context save.
 /// <para>
 /// The ordering is load-bearing. The feature gate runs before classification so a locked tenant never
 /// costs an LLM call; the write-intent refusal runs before authorization so a mutation phrased by an
@@ -24,6 +25,15 @@ public interface IAiSearchService
 /// is the only component permitted to derive the caller's scope. Handlers receive that result and
 /// nothing else from the request, so raw LLM-extracted filters can never reach a repository unclamped.
 /// </para>
+/// <para>
+/// <b>conversation_id is a conversational convenience ONLY, never an authorization artifact.</b> Every
+/// single turn re-runs <see cref="IAiSearchAuthorizationService.AuthorizeAsync"/> in full, exactly as if
+/// no conversation_id were present. A stored resolved-entity hint is consulted STRICTLY AFTER that
+/// fresh authorization result exists, purely to check whether the previously-discussed entity is still
+/// inside the scope that fresh call just computed -- never before, never instead of it. If the entity is
+/// no longer in scope (moved class, a parent-child link was severed, the caller's role changed), the
+/// turn fails exactly like a cold no-match and the stale conversation-context row is cleared.
+/// </para>
 /// </summary>
 public sealed class AiSearchService(
     IAiClassificationClient classifier,
@@ -31,6 +41,8 @@ public sealed class AiSearchService(
     IEnumerable<IAiIntentHandler> handlers,
     IAiAnswerTemplateService templates,
     IAiSearchAuditService audit,
+    IAiConversationContextStore contextStore,
+    IPersonResolver personResolver,
     ITenantContext tenant,
     ITenantFeatureSet features,
     IOptions<AiSearchOptions> options) : IAiSearchService
@@ -56,35 +68,92 @@ public sealed class AiSearchService(
         var page = Math.Max(1, request.Page ?? 1);
         var pageSize = Math.Clamp(request.PageSize ?? 20, 1, 100);
 
-        var classification = await classifier.ClassifyAsync(query, ct: ct);
-        var language = classification.Language;
+        // Conversation context is a hint ONLY -- loaded before classification so it can inform the
+        // classifier's phrasing understanding, but AuthorizeAsync below re-runs in full regardless, and
+        // the stored ResolvedEntity is independently re-checked against that fresh result before any
+        // handler is allowed to use it (see the re-authorization block after AuthorizeAsync).
+        // AiConversationContextStore.LoadAsync is itself scoped by the AMBIENT (JWT-derived) tenant and
+        // user id, never by anything in the request -- so a conversation_id minted for a different
+        // tenant or a different user in the same tenant simply finds no row and is silently treated as
+        // absent, exactly like an unknown or expired id. No special-casing is needed here for that.
+        AiConversationContext? storedContext = null;
+        if (Guid.TryParse(request.ConversationId, out var requestedConversationId)
+            && tenant.TenantId is { } tid && tenant.UserId is { } uid)
+            storedContext = await contextStore.LoadAsync(requestedConversationId, tid, uid, ct);
 
-        // A mutation request is refused before authorization runs: "can this caller read X" is not the
-        // question being asked, and an admin must be refused just as firmly as a parent.
+        AiConversationHint? hint = storedContext?.ResolvedEntityId is not null
+            ? new AiConversationHint("the previously-discussed person", storedContext.ResolvedEntityType ?? "person")
+            : null;
+
+        var classification = await classifier.ClassifyAsync(query, hint, ct);
+        var perTurnLanguage = classification.Language;
+        var effectiveLanguage = classification.LanguageDirective ?? storedContext?.LanguageOverride ?? perTurnLanguage;
+        var languageOverrideToStore = classification.LanguageDirective ?? storedContext?.LanguageOverride;
+
         if (string.Equals(classification.Intent, WriteIntent, StringComparison.OrdinalIgnoreCase))
-            return await TerminalAsync(
-                callerRoles, query, language, "WriteBlocked", classification.Intent,
-                templates.RenderWriteBlocked(language), ct);
+            return await TerminalWithConversationAsync(
+                callerRoles, query, effectiveLanguage, "WriteBlocked", classification.Intent,
+                templates.RenderWriteBlocked(effectiveLanguage), "write_blocked",
+                requestedConversationId: TryGetGuid(request.ConversationId), languageOverrideToStore, ct);
 
-        // Resolve the handler before authorizing so an intent nobody implements (including the
-        // classifier's own "Unsupported") is reported as unsupported. AiIntentAccessRules.IsAllowed
-        // returns false for any unknown intent, so authorizing first would mislabel "I didn't
-        // understand that" as "you are not permitted to see that".
         if (!_handlersByIntent.TryGetValue(classification.Intent, out var handler))
-            return await TerminalAsync(
-                callerRoles, query, language, "Unsupported", classification.Intent,
-                templates.RenderUnsupported(language), ct);
+            return await TerminalWithConversationAsync(
+                callerRoles, query, effectiveLanguage, "Unsupported", classification.Intent,
+                templates.RenderUnsupported(effectiveLanguage), "unsupported",
+                requestedConversationId: TryGetGuid(request.ConversationId), languageOverrideToStore, ct);
 
         var auth = await authz.AuthorizeAsync(classification.Intent, classification.Filters, callerRoles, ct);
         if (!auth.Allowed)
+            // A caller who is not (or no longer) permitted to run this intent gets no benefit from
+            // persisting anything about the attempt -- any existing conversation context is left
+            // completely untouched (never renewed, never cleared) rather than routed through the
+            // language-override-persisting path below.
             return await TerminalAsync(
-                callerRoles, query, language, "Forbidden", classification.Intent,
-                templates.RenderForbidden(language), ct);
+                callerRoles, query, effectiveLanguage, "Forbidden", classification.Intent,
+                templates.RenderForbidden(effectiveLanguage), "forbidden", ct);
+
+        // Re-authorization of the stored hint: a previously-resolved entity is used to auto-fill a
+        // follow-up's target ONLY if it is still inside the scope AuthorizeAsync just (freshly)
+        // computed. This is THE load-bearing security check in this entire pipeline -- never skip it,
+        // never trust the stored entity on its own, and never move it before AuthorizeAsync runs.
+        if (string.Equals(classification.Intent, PersonLookupIntent, StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(auth.ClampedFilters.StudentName)
+            && storedContext?.ResolvedEntityId is { } storedEntityId)
+        {
+            var stillInScope = auth.Unrestricted
+                || (auth.AllowedChildStudentIds?.Contains(storedEntityId) ?? false)
+                || (storedContext.ResolvedEntityType == "student" && auth.AllowedClassNames is not null
+                    && await personResolver.IsStillInTeacherScopeAsync(storedEntityId, auth.AllowedClassNames, ct));
+
+            if (!stillInScope)
+            {
+                if (Guid.TryParse(request.ConversationId, out var expiredId))
+                    await contextStore.ClearAsync(expiredId, ct);
+                return await TerminalAsync(
+                    callerRoles, query, effectiveLanguage, "Unsupported", classification.Intent,
+                    templates.RenderNoMatch(effectiveLanguage), "no_match", ct);
+            }
+
+            // Still in scope: hand the handler a synthetic pre-resolved entity id/type, bypassing
+            // PersonResolver's name search entirely for this turn (there is no name to search for --
+            // the whole point of a follow-up). PersonLookupHandler reads this via a direct short-circuit
+            // (Task 12, Step 5) that re-fetches the entity's CURRENT name/detail rather than trusting
+            // anything carried in from prior context.
+            auth = auth with
+            {
+                PreResolvedEntityId = storedEntityId,
+                PreResolvedEntityType = storedContext.ResolvedEntityType,
+            };
+        }
+        // A bare follow-up to a still-open clarification (pending candidates, no new name) is
+        // intentionally NOT auto-resolved here -- narrowing "the teacher, not the student" from a
+        // vague reply is out of scope for this task; the handler will report no_match for a nameless
+        // PersonLookup with no single already-resolved entity, which is the safe default.
 
         AiSearchResponse response;
         try
         {
-            response = await handler.HandleAsync(auth, language, page, pageSize, ct);
+            response = await handler.HandleAsync(auth, effectiveLanguage, page, pageSize, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -98,19 +167,46 @@ public sealed class AiSearchService(
             // 500 instead of the documented AiSearchResponse failure shape, so it is contained here:
             // every request gets audited, and infra failures stay inside the response contract.
             await audit.LogAsync(
-                TenantId, UserId, PrimaryRole(callerRoles), query, language,
+                TenantId, UserId, PrimaryRole(callerRoles), query, effectiveLanguage,
                 classification.Intent, 0, false, ct);
             return AiSearchResponse.Fail("SearchFailed", "Search could not be completed. Please try again.");
         }
 
         await audit.LogAsync(
-            TenantId, UserId, PrimaryRole(callerRoles), query, language,
+            TenantId, UserId, PrimaryRole(callerRoles), query, effectiveLanguage,
             response.Intent ?? classification.Intent, response.Count ?? 0, Audited(response), ct);
 
-        return response;
+        var newConversationId = await PersistConversationAsync(
+            request.ConversationId, response, classification.Intent, languageOverrideToStore, ct);
+
+        return response with { ConversationId = newConversationId?.ToString() };
     }
 
+    /// <summary>
+    /// Persists a handler's <see cref="AiConversationUpdate"/> (resolved entity / pending candidates)
+    /// together with any active language override as the conversation's new state for the NEXT turn.
+    /// Returns null (no conversation id to echo) whenever there is no authenticated tenant/user to
+    /// scope the row to -- conversation state is meaningless without that.
+    /// </summary>
+    private async Task<Guid?> PersistConversationAsync(
+        string? requestedConversationId, AiSearchResponse response, string intent, string? languageOverride,
+        CancellationToken ct)
+    {
+        if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid) return null;
+
+        var update = response.ConversationUpdate;
+        var context = new AiConversationContext(
+            update?.ResolvedEntityId, update?.ResolvedEntityType, languageOverride, update?.PendingCandidates, intent);
+
+        Guid.TryParse(requestedConversationId, out var existingId);
+        return await contextStore.SaveAsync(
+            existingId == Guid.Empty ? null : existingId, tid, uid, context, ct);
+    }
+
+    private static Guid? TryGetGuid(string? s) => Guid.TryParse(s, out var g) ? g : null;
+
     private const string WriteIntent = "WriteRequestDetected";
+    private const string PersonLookupIntent = "PersonLookup";
 
     /// <summary>
     /// The audited Success flag answers "did this query actually return data", which is deliberately
@@ -130,24 +226,32 @@ public sealed class AiSearchService(
     private static string PrimaryRole(IReadOnlyList<string> callerRoles) =>
         callerRoles.Count > 0 ? callerRoles[0] : "";
 
+    /// A refusal that never touches conversation state (Forbidden): audited, returned, nothing more.
     private async Task<AiSearchResponse> TerminalAsync(
         IReadOnlyList<string> callerRoles, string query, string language,
-        string outcomeIntent, string auditedIntent, string answer, CancellationToken ct)
+        string outcomeIntent, string auditedIntent, string answer, string status, CancellationToken ct)
     {
-        // Refusals are audited as unsuccessful searches: they returned no rows, and the audit trail
-        // exists precisely so blocked write attempts and permission failures are reviewable. The
-        // audited intent is the classifier's actual attempted intent (auditedIntent), never the
-        // outcome label (outcomeIntent) — an admin reviewing "WHERE Success = 0" needs to see what
-        // the caller was really trying to reach, not just that it was refused. The response's own
-        // "intent" field still reports the outcome label to the caller, unchanged.
-        await audit.LogAsync(
-            TenantId, UserId, PrimaryRole(callerRoles), query, language, auditedIntent, 0, false, ct);
-        var status = outcomeIntent switch
-        {
-            "Forbidden" => "forbidden",
-            "WriteBlocked" => "write_blocked",
-            _ => "unsupported",
-        };
+        await audit.LogAsync(TenantId, UserId, PrimaryRole(callerRoles), query, language, auditedIntent, 0, false, ct);
         return AiSearchResponse.Terminal(language, outcomeIntent, answer, status);
+    }
+
+    /// A refusal (WriteBlocked/Unsupported) that still renews/creates conversation state when a
+    /// language override needs to persist for the NEXT turn -- e.g. "Hindi mein batao, delete all
+    /// students" should still stick the language override even though this turn itself is WriteBlocked.
+    private async Task<AiSearchResponse> TerminalWithConversationAsync(
+        IReadOnlyList<string> callerRoles, string query, string language,
+        string outcomeIntent, string auditedIntent, string answer, string status,
+        Guid? requestedConversationId, string? languageOverride, CancellationToken ct)
+    {
+        await audit.LogAsync(TenantId, UserId, PrimaryRole(callerRoles), query, language, auditedIntent, 0, false, ct);
+        var response = AiSearchResponse.Terminal(language, outcomeIntent, answer, status);
+
+        if (languageOverride is null || tenant.TenantId is null || tenant.UserId is null)
+            return response;
+
+        var newId = await contextStore.SaveAsync(
+            requestedConversationId, tenant.TenantId.Value, tenant.UserId.Value,
+            new AiConversationContext(null, null, languageOverride, null, auditedIntent), ct);
+        return response with { ConversationId = newId.ToString() };
     }
 }

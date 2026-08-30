@@ -106,6 +106,30 @@ public class AiSearchServiceTests
         }
     }
 
+    /// A no-op conversation store: LoadAsync always returns null (no stored context) and
+    /// SaveAsync/ClearAsync are inert. This is exactly the behaviour every existing (pre-Task-12) test
+    /// in this file depends on -- none of them pass a conversation_id, so the orchestrator's
+    /// conversation-wiring must be a complete no-op for them.
+    private sealed class NullContextStore : IAiConversationContextStore
+    {
+        public Task<AiConversationContext?> LoadAsync(Guid conversationId, Guid tenantId, Guid userId, CancellationToken ct = default) =>
+            Task.FromResult<AiConversationContext?>(null);
+
+        public Task<Guid> SaveAsync(Guid? conversationId, Guid tenantId, Guid userId, AiConversationContext context, CancellationToken ct = default) =>
+            Task.FromResult(conversationId ?? Guid.NewGuid());
+
+        public Task ClearAsync(Guid conversationId, CancellationToken ct = default) => Task.CompletedTask;
+    }
+
+    private sealed class NullPersonResolver : IPersonResolver
+    {
+        public Task<IReadOnlyList<PersonMatch>> ResolveAsync(string name, AiAuthorizationResult auth, CancellationToken ct = default) =>
+            Task.FromResult<IReadOnlyList<PersonMatch>>([]);
+
+        public Task<bool> IsStillInTeacherScopeAsync(Guid studentId, IReadOnlyList<string> allowedClassNames, CancellationToken ct = default) =>
+            Task.FromResult(false);
+    }
+
     private sealed class TestTenant(bool isPlatform = false) : ITenantContext
     {
         public Guid? TenantId { get; private set; } = Guid.NewGuid();
@@ -133,8 +157,11 @@ public class AiSearchServiceTests
         IAiSearchAuditService audit,
         ITenantFeatureSet features,
         ITenantContext? tenant = null,
-        AiSearchOptions? options = null) =>
+        AiSearchOptions? options = null,
+        IAiConversationContextStore? contextStore = null,
+        IPersonResolver? personResolver = null) =>
         new(classifier, authz, handlers, new AiAnswerTemplateService(), audit,
+            contextStore ?? new NullContextStore(), personResolver ?? new NullPersonResolver(),
             tenant ?? new TestTenant(), features, Options.Create(options ?? new AiSearchOptions()));
 
     [Fact]

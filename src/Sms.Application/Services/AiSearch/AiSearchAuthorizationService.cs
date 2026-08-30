@@ -49,6 +49,17 @@ namespace Sms.Application.Services.AiSearch;
 /// (e.g. a parent asking about a child that is not linked to them). False when no name was asked at all.
 /// Lets a handler answer "I couldn't find a child named X" instead of silently listing everything.
 /// </param>
+/// <param name="PreResolvedEntityId">
+/// Task 12 (conversation follow-ups) ONLY: set by <c>AiSearchService</c>, never by
+/// <see cref="AiSearchAuthorizationService"/> itself, via a <c>with</c> expression AFTER a fresh
+/// <see cref="IAiSearchAuthorizationService.AuthorizeAsync"/> call has already re-derived the caller's
+/// CURRENT scope and independently confirmed this id is still inside it. Tells
+/// <c>PersonLookupHandler</c> to skip <see cref="Application.Services.AiSearch.IPersonResolver"/>'s
+/// name search entirely for this turn (there is no name to search for -- the whole point of a
+/// follow-up) and re-fetch this exact entity instead. Never set from raw LLM output or any
+/// unauthenticated source.
+/// </param>
+/// <param name="PreResolvedEntityType">The person-type ("student"/"teacher"/"staff"/"admin"/"owner"/"principal") paired with <see cref="PreResolvedEntityId"/>.</param>
 public sealed record AiAuthorizationResult(
     bool Allowed,
     string ResultIntent,
@@ -57,7 +68,9 @@ public sealed record AiAuthorizationResult(
     IReadOnlyList<string>? AllowedClassNames,
     AiSearchFilters ClampedFilters,
     bool Unrestricted,
-    bool NameUnmatched);
+    bool NameUnmatched,
+    Guid? PreResolvedEntityId = null,
+    string? PreResolvedEntityType = null);
 
 public interface IAiSearchAuthorizationService
 {
@@ -217,11 +230,14 @@ public sealed class AiSearchAuthorizationService(
     }
 
     private static AiAuthorizationResult Denied(string resultIntent, AiSearchFilters filters) =>
-        new(false, resultIntent, null, null, null, filters, Unrestricted: false, NameUnmatched: false);
+        new(false, resultIntent, null, null, null, filters, Unrestricted: false, NameUnmatched: false,
+            PreResolvedEntityId: null, PreResolvedEntityType: null);
 
     private static AiAuthorizationResult Allowed(
         string intent, Guid? studentId, IReadOnlyList<Guid>? childIds,
         IReadOnlyList<string>? classNames, AiSearchFilters filters,
-        bool unrestricted = false, bool nameUnmatched = false) =>
-        new(true, intent, studentId, childIds, classNames, filters, unrestricted, nameUnmatched);
+        bool unrestricted = false, bool nameUnmatched = false,
+        Guid? preResolvedId = null, string? preResolvedType = null) =>
+        new(true, intent, studentId, childIds, classNames, filters, unrestricted, nameUnmatched,
+            preResolvedId, preResolvedType);
 }
