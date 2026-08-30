@@ -190,17 +190,18 @@ public class PersonLookupConversationWorkedExampleTests(SqlServerFixture fx)
         var admin = Admin(app, tenantId);
 
         // Turn 1 in Hindi: "Rahul kaun hai?" classified with language="hi". RenderPersonIsTeacher's
-        // "hi" branch produces exactly: "{name} ek Teacher hain. Ye {subjects} padhate hain."
+        // "hi" branch produces exactly: "{name} एक Teacher हैं। ये {subjects} पढ़ाते हैं।" -- genuine
+        // Devanagari script (final fix wave Finding 4(a); this used to be Romanized text identical to
+        // the "hinglish" branch, which was itself the bug).
         var turn1 = await Search(admin, "Rahul kaun hai?");
         turn1.GetProperty("status").GetString().Should().Be("success");
         turn1.GetProperty("language").GetString().Should().Be("hi");
-        turn1.GetProperty("answer").GetString().Should().Be("Rahul Sharma ek Teacher hain. Ye Mathematics padhate hain.");
+        turn1.GetProperty("answer").GetString().Should().Be("Rahul Sharma एक Teacher हैं। ये Mathematics पढ़ाते हैं।");
         var conversationId = ConversationId(turn1);
         conversationId.Should().NotBeNull();
 
-        // Turns 2-3 in Hinglish per-turn detection. RenderPersonIsTeacher's "hinglish" branch produces
-        // the IDENTICAL string to the "hi" branch (both render Romanized Hindi in the current
-        // implementation) -- confirmed by reading AiAnswerTemplateService.RenderPersonIsTeacher.
+        // Turns 2-3 in Hinglish per-turn detection. RenderPersonIsTeacher's "hinglish" branch stays
+        // Romanized, and is now genuinely DISTINCT from the Devanagari "hi" branch above.
         classifier.Result = new AiClassificationResult("hinglish", "PersonLookup", Filters(studentName: null));
         var turn2 = await Search(admin, "Kya padhate hain?", conversationId);
         turn2.GetProperty("status").GetString().Should().Be("success");
