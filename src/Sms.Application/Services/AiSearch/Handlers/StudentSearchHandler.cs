@@ -35,16 +35,24 @@ public sealed class StudentSearchHandler(ISisService sis, IAiAnswerTemplateServi
         // silently over-filter to zero rows for any class-shaped query. The repository's "q" LIKE
         // already matches Name, AdmissionNo, and ClassLabel, so StudentName alone covers both a name
         // search and a class-label search; grade/status/fee are left unfiltered here.
+        //
+        // ListStudentsAsync itself is unpaged (returns every matching row; NextCursor is always
+        // null — see SisService), so pagination is applied here in memory, the same Skip/Take
+        // pattern TeacherSearchHandler/StaffSearchHandler already use, with pageSize hard-capped at
+        // 100 server-side per the plan's global constraint.
         var result = await sis.ListStudentsAsync(
             auth.ClampedFilters.StudentName, null, null, null, ct);
         if (!result.IsSuccess)
             return AiSearchResponse.Terminal(language, "Forbidden", templates.RenderForbidden(language));
 
         var rows = result.Data!.Data;
-        var answer = rows.Count == 0
+        var clampedPageSize = Math.Clamp(pageSize, 1, 100);
+        var paged = rows.Skip((page - 1) * clampedPageSize).Take(clampedPageSize).ToList();
+        var answer = paged.Count == 0
             ? templates.RenderNoMatch(language)
             : $"Found {rows.Count} student(s) matching \"{auth.ClampedFilters.StudentName}\".";
-        return AiSearchResponse.Ok(language, Intent, answer, rows, page, pageSize, rows.Count, result.Data.NextCursor is not null);
+        return AiSearchResponse.Ok(
+            language, Intent, answer, paged, page, clampedPageSize, rows.Count, rows.Count > page * clampedPageSize);
     }
 }
 
