@@ -17,7 +17,13 @@ public sealed class AiClassificationClient(HttpClient http, IOptions<AiSearchOpt
         Detect the language style as one of: en, hi, hinglish. Support mixed-language questions.
         Known intents: DailyAttendanceSummary, ClassAttendance, SectionAttendance, StudentAttendance,
         TeacherAttendance, StaffAttendance, DashboardSummary, StudentSearch, StudentDetails, TeacherSearch,
-        StaffSearch, UpcomingExamSearch, TestSearch, HomeworkSearch, SubjectSearch, BusLocationSearch.
+        StaffSearch, UpcomingExamSearch, TestSearch, HomeworkSearch, SubjectSearch, BusLocationSearch,
+        GreetById.
+        GreetById: the user has scanned or typed an EXACT admission number (student) or employee code
+        (teacher/staff) and wants that person greeted by name. For this intent ONLY, put the exact
+        scanned/typed code verbatim into filters.studentName — it is an ID, not a person's name, and
+        must not be altered, guessed, or padded. Examples: "who is 4521", "greet student 4521", or a
+        bare scanned code like "EMP-2291" with no other words.
         Always call the classify_query tool with your answer — never respond in plain text.
         """;
 
