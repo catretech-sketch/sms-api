@@ -49,12 +49,18 @@ Non-goals (explicitly out of scope for this iteration):
   (admin/owner/principal — no separate profile table), `Teachers`, `Staff`, `Students`. Each has its
   own repository (`TeacherRepository`, `StaffRepository`, `ISisService`) already used by existing
   intents; `Users` has no dedicated repository used by AI Search today.
-- **Verified gap, not assumed:** `dbo.Users` (`M0001_Foundation_Tables.cs`) has no `Name` column at
-  all — only `Email`, `Phone`, `Status`, `TenantId`, plus roles via `UserRoles`. Neither `Teachers`
-  nor `Staff` carries a `UserId` foreign key back to `Users` either — they are independent directory
-  rows, not profile extensions of a `Users` account. Confirmed via `Users_ListByTenant.sql`, which
-  itself has no name to select. This means there is genuinely no name stored anywhere for a bare
-  admin/owner/principal account today — resolved in §4/§10, not an assumption carried forward.
+- **Correction (this claim was wrong in an earlier revision of this spec):** `dbo.Users` DOES have a
+  `Name` column — added in `M0084_Identity_Link_Foundation.cs` (already merged), which also gave
+  `Teachers`/`Staff` a nullable `UserId` back to `Users` (so a teacher/staff member's account *can*
+  be linked, contradicting an earlier claim here that they're fully independent — the two tables
+  remain the primary directory source for AI purposes regardless; the link exists for other features,
+  e.g. profile-photo write-through). The earlier claim came from reading only `M0001_Foundation_Tables.cs`
+  (the very first migration) without searching for later `ALTER TABLE` migrations against `Users` —
+  fixed here rather than left uncorrected. What's still true and still relevant: **no proc populates
+  `Users.Name` today** (`User_Create.sql` doesn't set it, confirmed by grep), so it's schema-present
+  but effectively unpopulated for most/all existing rows — same practical no-match-on-null outcome as
+  originally designed, just for a different underlying reason (empty data, not a missing column). No
+  index exists on `Users(TenantId, Name)` today — that part of §4/§10's plan stands unchanged.
 - The hard-won invariant from today's work, inherited unchanged: `AiAuthorizationResult`'s scope
   lists (`AllowedChildStudentIds`, `AllowedClassNames`) being null or empty is never "no filter" —
   only `Unrestricted == true` means that. Every new component in this spec must honor it.
@@ -123,13 +129,14 @@ Fans out across the four sources **in parallel**, each query scoped by `auth`:
 - **Admin/Owner/Principal/Staff** (`auth.Unrestricted == true`): all four sources, tenant-scoped via
   the existing RLS/`ITenantContext` guarantee every repository already provides — no manual tenant
   filter is constructed.
-- A new **`IUserDirectoryLookup`** (thin, `Sms.Modules.Identity` or wherever `dbo.Users` already has
-  a home) searches `Users` by name for admin/owner/principal. This requires a small, additive schema
-  change resolved in §10: `dbo.Users` gains a nullable `Name` column (it has none today — verified in
-  §2, not assumed) plus a `(TenantId, Name)` index, the same indexing pattern already used for
-  `Teachers`/`Staff` tenant-scoped search. Existing rows get `Name = NULL` until backfilled or edited;
-  `PersonResolver` simply cannot find an admin/owner/principal account with no name set, which
-  degrades to a clean no-match — never an error, never a partial/misleading result.
+- A new **`IUserDirectoryLookup`** (`Sms.Shared.Kernel/Auth`, alongside the existing
+  `UserProvisioningRepository` which already queries `dbo.Users`) searches `Users` by name for
+  admin/owner/principal. `Users.Name` already exists (§2 correction) but has no supporting index and
+  is effectively unpopulated by any existing proc — this spec adds a `(TenantId, Name)` index (§10),
+  the same indexing pattern already used for `Teachers`/`Staff` tenant-scoped search, and accepts that
+  `PersonResolver` simply cannot find an admin/owner/principal account with no name set today, which
+  degrades to a clean no-match — never an error, never a partial/misleading result. Populating
+  `Users.Name` for existing accounts is out of scope for this feature.
 
 Zero matches → no-match. Exactly one → resolved. Two or more → the `NeedsClarification` outcome
 (§6), and the candidate set (id, type — never sent to the client) is stored server-side against the
@@ -153,11 +160,12 @@ This keeps the new surface area to one handler, not N follow-up-shaped handlers 
 
 ### `IAiConversationContextStore` (`Sms.Modules.AiSearch.Data`)
 
-New table, migration **M0161** (`AiSearchConversation`); a second small migration **M0162** adds the
-`dbo.Users.Name` column + index (kept separate from M0161 since it touches a shared foundational
-table, not an AI-owned one — each migration should be revertible independently). Both assumed
-next-available after M0160 — bump if other work lands first, noted the same way the original AI
-Search spec flagged this risk; check `db/Sms.Migrations/` immediately before implementation.
+New table, migration **M0161** (`AiSearchConversation`); a second small migration **M0162** adds only
+the missing `(TenantId, Name)` index on the already-existing `dbo.Users.Name` column (kept separate
+from M0161 since it touches a shared foundational table, not an AI-owned one — each migration should
+be revertible independently). Both assumed next-available after M0160 — bump if other work lands
+first, noted the same way the original AI Search spec flagged this risk; check `db/Sms.Migrations/`
+immediately before implementation.
 
 ```sql
 -- M0161
@@ -175,8 +183,7 @@ CREATE TABLE dbo.AiSearchConversation (
 );
 CREATE INDEX IX_AiSearchConversation_Expiry ON dbo.AiSearchConversation(ExpiresAt);
 
--- M0162
-ALTER TABLE dbo.Users ADD Name NVARCHAR(200) NULL;
+-- M0162 (Users.Name column already exists since M0084 — index only)
 CREATE INDEX IX_Users_Tenant_Name ON dbo.Users(TenantId, Name);
 ```
 
@@ -365,9 +372,9 @@ explicit absence of the unsafe one, not just "returns 200."
 ## 10. Risks & Open Items
 
 **Resolved (all decisions confirmed):**
-- ~~`Users` search performance~~ → `dbo.Users` gains a `Name` column + `(TenantId, Name)` index
-  (§4/M0162), the same indexing convention `Teachers`/`Staff` already use for tenant-scoped name
-  search. Not a performance-only fix — the column didn't exist at all (§2).
+- ~~`Users` search performance~~ → `dbo.Users.Name` already exists (§2 correction — it was NOT
+  missing, an earlier revision of this spec was wrong about that); this spec adds the missing
+  `(TenantId, Name)` index (§4/M0162), the same indexing convention `Teachers`/`Staff` already use.
 - ~~Ambiguous admin/owner/principal disambiguation~~ → `detail` is the specific role label, falling
   back to a masked-email tie-breaker only when name AND role both collide (§4).
 - ~~Sliding vs. absolute TTL~~ → both — sliding renewal for natural pacing, absolute cap (default
