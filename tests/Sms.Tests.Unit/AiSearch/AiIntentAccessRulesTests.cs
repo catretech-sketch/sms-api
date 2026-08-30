@@ -38,4 +38,49 @@ public class AiIntentAccessRulesTests
     {
         AiIntentAccessRules.IsAllowed("DashboardSummary", ["staff", "school.admin"]).Should().BeTrue();
     }
+
+    [Theory]
+    [InlineData("school.admin")]
+    [InlineData("school.owner")]
+    [InlineData("school.principal")]
+    [InlineData("school.teacher")]
+    [InlineData("staff")]
+    [InlineData("student.parent")]
+    public void PersonLookup_is_allowed_for_every_existing_role(string role)
+    {
+        AiIntentAccessRules.IsAllowed("PersonLookup", [role]).Should().BeTrue();
+    }
+
+    [Fact]
+    public void MyTripStatus_is_allowed_only_for_driver()
+    {
+        AiIntentAccessRules.IsAllowed("MyTripStatus", ["driver"]).Should().BeTrue();
+        AiIntentAccessRules.IsAllowed("MyTripStatus", ["school.admin"]).Should().BeFalse();
+        AiIntentAccessRules.IsAllowed("MyTripStatus", ["school.teacher"]).Should().BeFalse();
+        AiIntentAccessRules.IsAllowed("MyTripStatus", ["staff"]).Should().BeFalse();
+        AiIntentAccessRules.IsAllowed("MyTripStatus", ["student.parent"]).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("DailyAttendanceSummary")]
+    [InlineData("ClassAttendance")]
+    [InlineData("StudentAttendance")]
+    [InlineData("TeacherAttendance")]
+    [InlineData("StaffAttendance")]
+    [InlineData("DashboardSummary")]
+    [InlineData("StudentSearch")]
+    [InlineData("StudentDetails")]
+    [InlineData("TeacherSearch")]
+    [InlineData("StaffSearch")]
+    [InlineData("UpcomingExamSearch")]
+    [InlineData("HomeworkSearch")]
+    [InlineData("SubjectSearch")]
+    [InlineData("BusLocationSearch")]
+    [InlineData("GreetById")]
+    [InlineData("PersonLookup")]
+    public void Driver_is_denied_every_intent_except_MyTripStatus(string intent)
+    {
+        AiIntentAccessRules.IsAllowed(intent, ["driver"]).Should().BeFalse(
+            "driver's AI surface is deliberately the smallest of any role - promoting it into Policies.All must not widen any existing intent");
+    }
 }

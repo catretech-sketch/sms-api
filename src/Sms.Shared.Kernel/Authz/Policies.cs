@@ -10,7 +10,8 @@ public static class Policies
     public const string Teacher = "school.teacher";
     public const string Staff = "staff";
     public const string StudentOrParent = "student.parent";
+    public const string Driver = "driver";
 
     public static readonly string[] All =
-        [PlatformOnly, SchoolAdmin, SchoolOwner, Principal, Teacher, Staff, StudentOrParent];
+        [PlatformOnly, SchoolAdmin, SchoolOwner, Principal, Teacher, Staff, StudentOrParent, Driver];
 }

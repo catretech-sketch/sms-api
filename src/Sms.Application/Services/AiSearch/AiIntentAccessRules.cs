@@ -8,6 +8,7 @@ public static class AiIntentAccessRules
     private const string Teacher = "school.teacher";
     private const string Staff = "staff";
     private const string Parent = "student.parent";
+    private const string Driver = "driver";
 
     private static readonly Dictionary<string, string[]> Rules = new()
     {
@@ -28,6 +29,8 @@ public static class AiIntentAccessRules
         ["SubjectSearch"] = [Admin, Owner, Principal, Teacher, Parent],
         ["BusLocationSearch"] = [Admin, Owner, Principal, Staff, Parent],
         ["GreetById"] = [Admin, Owner, Principal, Teacher, Staff, Parent],
+        ["PersonLookup"] = [Admin, Owner, Principal, Teacher, Staff, Parent],
+        ["MyTripStatus"] = [Driver],
     };
 
     public static IReadOnlySet<string> KnownIntents { get; } = new HashSet<string>(Rules.Keys);
