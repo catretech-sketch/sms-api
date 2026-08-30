@@ -8,5 +8,7 @@ public sealed class AiSearchOptions
     public string BaseUrl { get; set; } = "https://api.anthropic.com";
     public int TimeoutSeconds { get; set; } = 8;
     public int MaxQueryLength { get; set; } = 300;
+    public int ConversationContextTtlMinutes { get; set; } = 10;
+    public int ConversationContextAbsoluteMaxMinutes { get; set; } = 30;
     public bool IsConfigured => !string.IsNullOrWhiteSpace(ApiKey);
 }

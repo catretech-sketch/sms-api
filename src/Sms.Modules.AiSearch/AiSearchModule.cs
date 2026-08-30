@@ -8,6 +8,7 @@ public static class AiSearchModule
     public static IServiceCollection AddAiSearchModule(this IServiceCollection services)
     {
         services.AddScoped<AiSearchLogRepository>();
+        services.AddScoped<AiSearchConversationRepository>();
         return services;
     }
 }
