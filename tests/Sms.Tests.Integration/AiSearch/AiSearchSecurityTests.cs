@@ -456,4 +456,83 @@ public class AiSearchSecurityTests(SqlServerFixture fx)
         body.GetProperty("data").ValueKind.Should().Be(JsonValueKind.Null);
         body.GetProperty("intent").ValueKind.Should().Be(JsonValueKind.Null);
     }
+
+    /// <summary>
+    /// End-to-end GreetById over real HTTP: the classifier puts the scanned admission number into
+    /// filters.studentName (per its updated prompt), and an admin-like caller resolves it to the real
+    /// student's name inside a time-of-day greeting.
+    /// </summary>
+    [Fact]
+    public async Task GreetById_admin_resolves_a_scanned_admission_number_over_real_http()
+    {
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var admissionNo = $"ADM-GBHTTP-{Guid.NewGuid():N}"[..20];
+
+        await using var app = AppClassifying(
+            new AiClassificationResult("en", "GreetById", Filters(studentName: admissionNo, dateExpression: null)));
+
+        var admin = Admin(app, tenantId);
+        await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = admissionNo,
+            name = "Kabir Mehta",
+            grade = "VII",
+            section = "C",
+            roll = 3,
+        }), HttpStatusCode.Created);
+
+        var body = await Search(admin, admissionNo);
+
+        body.GetProperty("success").GetBoolean().Should().BeTrue();
+        body.GetProperty("intent").GetString().Should().Be("GreetById");
+        body.GetProperty("answer").GetString().Should().Contain("Kabir Mehta");
+    }
+
+    /// <summary>
+    /// A parent scans a real student's admission number who is not their own child. GreetById must
+    /// never leak that student's name — the scope re-derived from the parent's own
+    /// ParentStudentLinks contains only their linked children, exactly like every other intent.
+    /// </summary>
+    [Fact]
+    public async Task GreetById_parent_security_cannot_resolve_an_unlinked_students_admission_number()
+    {
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var strangersAdmissionNo = $"ADM-GBH2-{Guid.NewGuid():N}"[..20];
+
+        await using var app = AppClassifying(new AiClassificationResult(
+            "en", "GreetById", Filters(studentName: strangersAdmissionNo, dateExpression: null)));
+
+        var admin = Admin(app, tenantId);
+        var parentEmail = $"dad{Guid.NewGuid():N}@home.test";
+
+        await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = $"ADM-GBH1-{Guid.NewGuid():N}"[..20],
+            name = "Aisha Khan",
+            grade = "IV",
+            section = "B",
+            roll = 1,
+            guardian_email = parentEmail,
+        }), HttpStatusCode.Created);
+
+        var stranger = await Data(await admin.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = strangersAdmissionNo,
+            name = "Rahul Verma",
+            grade = "V",
+            section = "A",
+            roll = 2,
+            guardian_email = $"other{Guid.NewGuid():N}@home.test",
+        }), HttpStatusCode.Created);
+
+        var parentId = await ParentUserId(parentEmail, tenantId);
+        var body = await Search(AsUser(app, tenantId, parentId, Policies.StudentOrParent), strangersAdmissionNo);
+
+        body.GetProperty("intent").GetString().Should().Be("Unsupported");
+        body.GetProperty("data").ValueKind.Should().Be(JsonValueKind.Null);
+        body.GetRawText().Should().NotContain("Rahul");
+        body.GetRawText().Should().NotContain(stranger.GetProperty("id").GetGuid().ToString());
+    }
 }
