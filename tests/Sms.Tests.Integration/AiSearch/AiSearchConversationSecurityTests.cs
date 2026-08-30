@@ -195,6 +195,14 @@ public class AiSearchConversationSecurityTests(SqlServerFixture fx)
         var conversationId = ConversationId(turn1);
         conversationId.Should().NotBeNull();
 
+        // Positive control: an IDENTICAL bare follow-up, still while Rahul is genuinely inside the
+        // teacher's class, must succeed via the pre-resolved short-circuit. Without this, a bug that
+        // always returned no_match for a nameless follow-up (never actually implementing pre-resolution)
+        // would make the final assertion below pass for the wrong reason.
+        classifier.Result = new AiClassificationResult("en", "PersonLookup", Filters(studentName: null));
+        var turn1b = await Search(teacher, "kya padhate hain?", conversationId);
+        turn1b.GetProperty("status").GetString().Should().Be("success");
+
         // Rahul moves to a class this teacher does NOT teach.
         await MoveStudent(rahulId, "9", "B", "9B");
 
@@ -250,6 +258,14 @@ public class AiSearchConversationSecurityTests(SqlServerFixture fx)
         var conversationId = ConversationId(turn1);
         conversationId.Should().NotBeNull();
 
+        // Positive control: an IDENTICAL bare follow-up, still while the link genuinely exists, must
+        // succeed via the pre-resolved short-circuit. Without this, a bug that always returned
+        // no_match for a nameless follow-up (never actually implementing pre-resolution) would make
+        // the final assertion below pass for the wrong reason.
+        classifier.Result = new AiClassificationResult("en", "PersonLookup", Filters(studentName: null));
+        var turn1b = await Search(parent, "kaunsi class mein hai?", conversationId);
+        turn1b.GetProperty("status").GetString().Should().Be("success");
+
         // Sever the parent-child link directly.
         await Seed(conn => conn.ExecuteAsync(
             "DELETE FROM dbo.ParentStudentLinks WHERE ParentUserId = @parentId AND StudentId = @childId",
@@ -297,11 +313,14 @@ public class AiSearchConversationSecurityTests(SqlServerFixture fx)
         var conversationIdFromA = ConversationId(turn1);
         conversationIdFromA.Should().NotBeNull();
 
-        // Tenant B's admin submits tenant A's conversation_id with an unrelated, distinguishing query.
-        classifier.Result = new AiClassificationResult("en", "Unsupported", Filters());
-        var turn2 = await Search(Admin(app, tenantB), "totally unrelated question", conversationIdFromA);
+        // Tenant B's admin submits tenant A's conversation_id with a bare follow-up -- scripted as a
+        // genuine PersonLookup (not "Unsupported") so this turn actually routes through AuthorizeAsync
+        // and the re-authorization-of-stored-entity block, proving LoadAsync's tenant scoping for real
+        // rather than short-circuiting before authorization ever runs.
+        classifier.Result = new AiClassificationResult("en", "PersonLookup", Filters(studentName: null));
+        var turn2 = await Search(Admin(app, tenantB), "kya padhate hain?", conversationIdFromA);
 
-        turn2.GetProperty("intent").GetString().Should().Be("Unsupported");
+        turn2.GetProperty("status").GetString().Should().Be("no_match");
         turn2.GetRawText().Should().NotContain("Rahul");
         turn2.GetRawText().Should().NotContain(teacherIdInA.ToString());
     }
@@ -338,10 +357,14 @@ public class AiSearchConversationSecurityTests(SqlServerFixture fx)
         conversationId.Should().NotBeNull();
 
         var userTwoId = Guid.NewGuid();
-        classifier.Result = new AiClassificationResult("en", "Unsupported", Filters());
-        var turn2 = await Search(AsUser(app, tenantId, userTwoId, Policies.SchoolAdmin), "totally unrelated question", conversationId);
+        // Scripted as a genuine PersonLookup bare follow-up (not "Unsupported") so this turn actually
+        // routes through AuthorizeAsync and the re-authorization-of-stored-entity block, proving
+        // LoadAsync's (tenantId, userId) scoping for real rather than short-circuiting before
+        // authorization ever runs.
+        classifier.Result = new AiClassificationResult("en", "PersonLookup", Filters(studentName: null));
+        var turn2 = await Search(AsUser(app, tenantId, userTwoId, Policies.SchoolAdmin), "kya padhate hain?", conversationId);
 
-        turn2.GetProperty("intent").GetString().Should().Be("Unsupported");
+        turn2.GetProperty("status").GetString().Should().Be("no_match");
         turn2.GetRawText().Should().NotContain("Rahul");
         turn2.GetRawText().Should().NotContain(teacherRowId.ToString());
     }
@@ -466,14 +489,16 @@ public class AiSearchConversationSecurityTests(SqlServerFixture fx)
         var conversationId = ConversationId(turn1);
         conversationId.Should().NotBeNull();
 
-        // A totally unrelated fresh classification -- if the (TTL-expired) old context were reused,
-        // this PersonLookup-shaped follow-up would need a name to resolve; scripting a DIFFERENT
-        // intent instead proves the fresh classification path, not a stale re-resolution, produced
-        // the outcome.
-        client.Result = new AiClassificationResult("en", "Unsupported", Filters());
+        // A bare follow-up on the SAME conversation_id, scripted as a genuine PersonLookup (not
+        // "Unsupported") so this turn actually routes through AuthorizeAsync and the
+        // re-authorization-of-stored-entity block. Because the TTL-expired row was deleted by
+        // LoadAsync, storedContext is null, so there is no pre-resolved entity id to hand the
+        // handler -- a nameless PersonLookup with nothing pre-resolved must report no_match, proving
+        // the old context was genuinely dropped rather than silently reused.
+        client.Result = new AiClassificationResult("en", "PersonLookup", Filters(studentName: null));
         var turn2 = await Search(admin, "something else entirely", conversationId);
 
-        turn2.GetProperty("intent").GetString().Should().Be("Unsupported");
+        turn2.GetProperty("status").GetString().Should().Be("no_match");
         turn2.GetRawText().Should().NotContain("Rahul");
     }
 }
