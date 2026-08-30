@@ -1,6 +1,9 @@
 using Sms.Application.Services.Academics;
 using Sms.Application.Services.Sis;
+using Sms.Modules.Academics.Data;
 using Sms.Modules.Staffing.Data;
+using Sms.Shared.Kernel.Tenancy;
+using Sms.Shared.Kernel.Time;
 
 namespace Sms.Application.Services.AiSearch.Handlers;
 
@@ -31,9 +34,12 @@ namespace Sms.Application.Services.AiSearch.Handlers;
 /// </summary>
 public sealed class GreetByIdHandler(
     ISisService sis, TeacherRepository teachers, StaffRepository staff,
+    ClassRepository classes, ITenantContext tenant,
     IAiAnswerTemplateService templates, TimeProvider clock) : IAiIntentHandler
 {
-    public string Intent => "GreetById";
+    public const string IntentName = "GreetById";
+
+    public string Intent => IntentName;
 
     public async Task<AiSearchResponse> HandleAsync(
         AiAuthorizationResult auth, string language, int page, int pageSize, CancellationToken ct = default)
@@ -83,10 +89,23 @@ public sealed class GreetByIdHandler(
         var result = await sis.ListStudentsAsync(code, null, null, null, ct);
         if (!result.IsSuccess) return NoMatch(language);
 
+        // dbo.Students.ClassLabel is always the compact "Grade-Section" shape, but a teacher's
+        // authorized Classes.Name can be free text (e.g. "Section Eight A") that never compacts
+        // down to match it. Re-resolve the caller's authorized class names back into their actual
+        // Classes rows (with real Grade/Section columns) and reuse the same membership rule the
+        // rest of the codebase already uses for this exact problem: (Grade+Section match) OR
+        // (ClassLabel = Classes.Name) — see AcademicsRepositories.ListForTeacherAsync /
+        // StudentClassScope.ClassMatches.
+        var teacherClasses = tenant.UserId is { } teacherUserId
+            ? await classes.ListForTeacherAsync(teacherUserId, ct)
+            : [];
+        var authorizedClasses = teacherClasses
+            .Where(c => allowedClassNames.Any(cn => string.Equals(c.Name?.Trim(), cn?.Trim(), StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
         var candidate = result.Data!.Data.FirstOrDefault(s =>
             string.Equals(s.AdmissionNo?.Trim(), code, StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(s.ClassLabel)
-            && allowedClassNames.Any(cn => StudentClassScope.LabelsMatch(s.ClassLabel, cn)));
+            && authorizedClasses.Any(c => StudentClassScope.ClassMatches(c, s.Grade, s.Section, s.ClassLabel)));
 
         return candidate is null
             ? NoMatch(language)
@@ -111,7 +130,7 @@ public sealed class GreetByIdHandler(
         var teacherMatch = teacherRows.FirstOrDefault(
             t => string.Equals(t.EmployeeCode?.Trim(), code, StringComparison.OrdinalIgnoreCase));
         if (teacherMatch is not null)
-            return Greet(language, teacherMatch.Id, teacherMatch.Name, "staff", pageSize);
+            return Greet(language, teacherMatch.Id, teacherMatch.Name, "teacher", pageSize);
 
         var staffRows = await staff.ListAsync(code, null, ct);
         var staffMatch = staffRows.FirstOrDefault(
@@ -124,7 +143,7 @@ public sealed class GreetByIdHandler(
 
     private AiSearchResponse Greet(string language, Guid id, string name, string type, int pageSize)
     {
-        var hour = clock.GetUtcNow().UtcDateTime.Hour;
+        var hour = SchoolClock.ToSchoolLocal(clock.GetUtcNow().UtcDateTime).Hour;
         var answer = templates.RenderGreeting(language, name, hour);
         var data = new { id, name, type };
         return AiSearchResponse.Ok(language, Intent, answer, data, 1, pageSize, 1, false);

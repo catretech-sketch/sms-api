@@ -1,4 +1,5 @@
 using Sms.Application.Services.Academics;
+using Sms.Application.Services.AiSearch.Handlers;
 using Sms.Application.Services.Sis;
 using Sms.Modules.Academics.Data;
 using Sms.Shared.Kernel.Tenancy;
@@ -87,7 +88,7 @@ public sealed class AiSearchAuthorizationService(
         // This intent-gated bypass hands back the caller's real scope (childIds/classNames/
         // Unrestricted) with ClampedFilters completely unchanged, and leaves every other intent's
         // behaviour (including TargetSelf) untouched.
-        if (intent == "GreetById")
+        if (string.Equals(intent, GreetByIdHandler.IntentName, StringComparison.OrdinalIgnoreCase))
             return await AuthorizeGreetByIdAsync(filters, isParent, isTeacher, isAdminLike, ct);
 
         // Self-referential ("my attendance") always wins over any LLM-extracted student name.
@@ -186,7 +187,7 @@ public sealed class AiSearchAuthorizationService(
             var childIds = children.IsSuccess
                 ? children.Data!.Select(c => c.Id).ToList()
                 : [];
-            return Allowed("GreetById", null, childIds, null, filters);
+            return Allowed(GreetByIdHandler.IntentName, null, childIds, null, filters);
         }
 
         if (isTeacher && !isAdminLike)
@@ -200,11 +201,11 @@ public sealed class AiSearchAuthorizationService(
                 .Where(n => !string.IsNullOrWhiteSpace(n))
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .ToList();
-            return Allowed("GreetById", null, null, allowedClassNames, filters);
+            return Allowed(GreetByIdHandler.IntentName, null, null, allowedClassNames, filters);
         }
 
         // Admin/principal/owner/staff: whole-tenant scope, exactly as the generic branch below.
-        return Allowed("GreetById", null, null, null, filters, unrestricted: true);
+        return Allowed(GreetByIdHandler.IntentName, null, null, null, filters, unrestricted: true);
     }
 
     private static AiAuthorizationResult Denied(string resultIntent, AiSearchFilters filters) =>
