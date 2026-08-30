@@ -150,5 +150,5 @@ public sealed class GreetByIdHandler(
     }
 
     private AiSearchResponse NoMatch(string language) =>
-        AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language));
+        AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language), "no_match");
 }

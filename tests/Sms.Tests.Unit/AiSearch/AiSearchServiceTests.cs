@@ -411,7 +411,7 @@ public class AiSearchServiceTests
 
         var fromHandler = new RecordingAudit();
         var handler = new FakeHandler("StudentSearch",
-            AiSearchResponse.Terminal("en", "Unsupported", "I couldn't understand that."));
+            AiSearchResponse.Terminal("en", "Unsupported", "I couldn't understand that.", "no_match"));
         var handlerResult = await BuildFor([handler], "StudentSearch", fromHandler)
             .SearchAsync(new AiSearchRequest("who is Rahul", null, null, null), ["school.admin"]);
 

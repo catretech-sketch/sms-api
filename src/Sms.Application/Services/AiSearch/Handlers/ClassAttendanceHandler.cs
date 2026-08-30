@@ -34,7 +34,7 @@ public sealed class ClassAttendanceHandler(
         if (tenant.TenantId is not { } tenantId)
             return AiSearchResponse.Fail("InvalidRequest", "missing tenant context");
         if (string.IsNullOrWhiteSpace(auth.ClampedFilters.ClassName))
-            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderUnsupported(language));
+            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderUnsupported(language), "no_match");
 
         var (from, _) = DateExpressionResolver.Resolve(auth.ClampedFilters.DateExpression,
             DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime));

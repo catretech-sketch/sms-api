@@ -28,7 +28,7 @@ public sealed class StudentSearchHandler(ISisService sis, IAiAnswerTemplateServi
         AiAuthorizationResult auth, string language, int page, int pageSize, CancellationToken ct = default)
     {
         if (!auth.Unrestricted)
-            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language));
+            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language), "no_match");
 
         // ISisService.ListStudentsAsync's "grade" parameter matches dbo.Students.Grade exactly
         // (e.g. "8"), not a class label like "8A" — passing ClampedFilters.ClassName there would
@@ -43,7 +43,7 @@ public sealed class StudentSearchHandler(ISisService sis, IAiAnswerTemplateServi
         var result = await sis.ListStudentsAsync(
             auth.ClampedFilters.StudentName, null, null, null, ct);
         if (!result.IsSuccess)
-            return AiSearchResponse.Terminal(language, "Forbidden", templates.RenderForbidden(language));
+            return AiSearchResponse.Terminal(language, "Forbidden", templates.RenderForbidden(language), "forbidden");
 
         var rows = result.Data!.Data;
         var clampedPageSize = Math.Clamp(pageSize, 1, 100);
@@ -73,11 +73,11 @@ public sealed class StudentDetailsHandler(ISisService sis, IAiAnswerTemplateServ
         AiAuthorizationResult auth, string language, int page, int pageSize, CancellationToken ct = default)
     {
         if (auth.ResolvedStudentId is not { } studentId)
-            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language));
+            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language), "no_match");
 
         var student = await sis.GetStudentAsync(studentId, ct);
         if (!student.IsSuccess)
-            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language));
+            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language), "no_match");
 
         var answer = $"Showing details for {student.Data!.Name}.";
         return AiSearchResponse.Ok(language, Intent, answer, student.Data, 1, pageSize, 1, false);

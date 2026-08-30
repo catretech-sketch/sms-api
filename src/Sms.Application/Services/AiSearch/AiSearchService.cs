@@ -142,6 +142,12 @@ public sealed class AiSearchService(
         // "intent" field still reports the outcome label to the caller, unchanged.
         await audit.LogAsync(
             TenantId, UserId, PrimaryRole(callerRoles), query, language, auditedIntent, 0, false, ct);
-        return AiSearchResponse.Terminal(language, outcomeIntent, answer);
+        var status = outcomeIntent switch
+        {
+            "Forbidden" => "forbidden",
+            "WriteBlocked" => "write_blocked",
+            _ => "unsupported",
+        };
+        return AiSearchResponse.Terminal(language, outcomeIntent, answer, status);
     }
 }

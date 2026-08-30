@@ -18,16 +18,16 @@ public sealed class SubjectSearchHandler(
         AiAuthorizationResult auth, string language, int page, int pageSize, CancellationToken ct = default)
     {
         if (auth.ResolvedStudentId is not { } studentId)
-            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language));
+            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language), "no_match");
 
         var student = await sis.GetStudentAsync(studentId, ct);
         if (!student.IsSuccess)
-            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language));
+            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language), "no_match");
 
         var subjects = await academics.ListSubjectsForStudentAsync(
             student.Data!.Grade, student.Data.Section, student.Data.ClassLabel, ct);
         if (!subjects.IsSuccess)
-            return AiSearchResponse.Terminal(language, "Forbidden", templates.RenderForbidden(language));
+            return AiSearchResponse.Terminal(language, "Forbidden", templates.RenderForbidden(language), "forbidden");
 
         var rows = subjects.Data!;
         var answer = rows.Count == 0

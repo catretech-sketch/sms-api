@@ -20,11 +20,11 @@ public sealed class BusLocationSearchHandler(
     {
         var result = await buses.GetMyChildrenBusAsync(ct);
         if (!result.IsSuccess)
-            return AiSearchResponse.Terminal(language, "Forbidden", templates.RenderForbidden(language));
+            return AiSearchResponse.Terminal(language, "Forbidden", templates.RenderForbidden(language), "forbidden");
 
         var rows = result.Data!;
         if (rows.Count == 0)
-            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language));
+            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language), "no_match");
 
         var bus = rows[0];
         var answer = language switch

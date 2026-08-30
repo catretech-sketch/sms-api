@@ -18,7 +18,7 @@ public sealed class HomeworkSearchHandler(
         AiAuthorizationResult auth, string language, int page, int pageSize, CancellationToken ct = default)
     {
         if (auth.ResolvedStudentId is not { } studentId)
-            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language));
+            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language), "no_match");
 
         var rows = await homework.ListAsync(studentId, null, ct);
         var clampedPageSize = Math.Clamp(pageSize, 1, 100);

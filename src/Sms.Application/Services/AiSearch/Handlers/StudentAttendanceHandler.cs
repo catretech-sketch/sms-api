@@ -18,11 +18,11 @@ public sealed class StudentAttendanceHandler(
         AiAuthorizationResult auth, string language, int page, int pageSize, CancellationToken ct = default)
     {
         if (auth.ResolvedStudentId is not { } studentId)
-            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language));
+            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language), "no_match");
 
         var student = await sis.GetStudentAsync(studentId, ct);
         if (!student.IsSuccess)
-            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language));
+            return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language), "no_match");
 
         var pct = student.Data!.AttendancePct ?? 0m;
         var answer = templates.RenderStudentAttendance(language, student.Data.Name, pct);

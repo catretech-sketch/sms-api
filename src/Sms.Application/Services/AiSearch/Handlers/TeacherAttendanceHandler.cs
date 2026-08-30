@@ -27,7 +27,7 @@ public sealed class TeacherAttendanceHandler(
     {
         var summary = await attendance.GetSummaryAsync(null, null, ct);
         if (!summary.IsSuccess)
-            return AiSearchResponse.Terminal(language, "Forbidden", templates.RenderForbidden(language));
+            return AiSearchResponse.Terminal(language, "Forbidden", templates.RenderForbidden(language), "forbidden");
 
         var data = summary.Data;
         var answer = language switch
