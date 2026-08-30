@@ -697,6 +697,23 @@ public class AiSearchAuthorizationServiceTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Driver_role_is_not_Unrestricted_it_is_self_scoped_like_TargetSelf()
+    {
+        await using var app = App();
+
+        var result = await AsCaller(app, Guid.NewGuid(), Guid.NewGuid(), svc => svc.AuthorizeAsync(
+            "MyTripStatus",
+            new AiSearchFilters(null, null, null, null, false),
+            ["driver"]));
+
+        result.Allowed.Should().BeTrue();
+        result.Unrestricted.Should().BeFalse(
+            "a driver's own-trip lookup is self-scoped, never whole-tenant, even though no per-record clamp list applies");
+        result.AllowedChildStudentIds.Should().BeNull();
+        result.AllowedClassNames.Should().BeNull();
+    }
+
+    [Fact]
     public async Task Admin_filters_pass_through_unclamped()
     {
         await using var app = App();

@@ -81,6 +81,7 @@ public sealed class AiSearchAuthorizationService(
         var isParent = callerRoles.Any(r => ParentRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
         var isTeacher = callerRoles.Any(r => TeacherRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
         var isAdminLike = callerRoles.Any(r => AdminLikeRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
+        var isDriver = callerRoles.Any(r => string.Equals(r, "driver", StringComparison.OrdinalIgnoreCase));
 
         // GreetById repurposes the StudentName filter to carry a scanned admission number/employee
         // code, not a person's name — an exact ID practically never Contains-matches a name, so the
@@ -168,6 +169,13 @@ public sealed class AiSearchAuthorizationService(
             // school.teacher JWT with no matching dbo.Teachers row), never "no filter".
             return Allowed(intent, null, null, allowedClassNames, clamped);
         }
+
+        // Driver: self-scoped like TargetSelf/TeacherAttendance/StaffAttendance -- MyTripStatusHandler
+        // resolves the caller's own current trip via ITenantContext internally, never a request-supplied
+        // id. Explicitly NOT Unrestricted -- a driver's AI surface is the smallest of any role and must
+        // never be mistaken for whole-tenant scope by future code that branches on Unrestricted.
+        if (isDriver)
+            return Allowed(intent, null, null, null, filters);
 
         // Admin/principal/owner/staff: no per-record clamp beyond the role gate already applied above.
         // This is the ONLY branch that may read the whole tenant, so it is the only Unrestricted = true.
