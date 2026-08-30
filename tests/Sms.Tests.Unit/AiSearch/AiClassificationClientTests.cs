@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http;
 using System.Text;
+using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
@@ -31,6 +32,36 @@ public class AiClassificationClientTests
     private static AiClassificationClient MakeClient(string toolInputJson)
     {
         var handler = new FakeHandler(toolInputJson);
+        var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://api.anthropic.com") };
+        var options = Options.Create(new AiSearchOptions { ApiKey = "test-key" });
+        return new AiClassificationClient(httpClient, options);
+    }
+
+    private static string? RecordedSystemPrompt;
+
+    private sealed class CapturingHandler(string jsonToolInput, Action<string?> captureSystemPrompt) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken ct)
+        {
+            var requestBody = await request.Content!.ReadAsStringAsync(ct);
+            using var requestDoc = JsonDocument.Parse(requestBody);
+            captureSystemPrompt(
+                requestDoc.RootElement.TryGetProperty("system", out var sys) ? sys.GetString() : null);
+
+            var body = $$"""
+            {"content":[{"type":"tool_use","name":"classify_query","input":{{jsonToolInput}}}]}
+            """;
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+        }
+    }
+
+    private static AiClassificationClient MakeClientCapturingSystemPrompt(string toolInputJson)
+    {
+        var handler = new CapturingHandler(toolInputJson, prompt => RecordedSystemPrompt = prompt);
         var httpClient = new HttpClient(handler) { BaseAddress = new Uri("https://api.anthropic.com") };
         var options = Options.Create(new AiSearchOptions { ApiKey = "test-key" });
         return new AiClassificationClient(httpClient, options);
@@ -117,5 +148,46 @@ public class AiClassificationClientTests
         var httpClient = provider.GetRequiredService<IHttpClientFactory>().CreateClient("claude");
 
         httpClient.BaseAddress.Should().Be(new Uri("https://api.anthropic.com"));
+    }
+
+    [Fact]
+    public async Task ClassifyAsync_parses_languageDirective_when_present()
+    {
+        var client = MakeClient("""
+            {"language":"hinglish","intent":"DailyAttendanceSummary",
+             "filters":{"studentName":null,"className":null,"section":null,"dateExpression":"aaj","targetSelf":false},
+             "languageDirective":"hi"}
+            """);
+
+        var result = await client.ClassifyAsync("Hindi mein batao, aaj kitne bachche aaye?");
+
+        result.LanguageDirective.Should().Be("hi");
+    }
+
+    [Fact]
+    public async Task ClassifyAsync_defaults_languageDirective_to_null_when_absent()
+    {
+        var client = MakeClient("""
+            {"language":"en","intent":"StudentSearch",
+             "filters":{"studentName":"Rahul","className":null,"section":null,"dateExpression":null,"targetSelf":false}}
+            """);
+
+        var result = await client.ClassifyAsync("who is Rahul");
+
+        result.LanguageDirective.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ClassifyAsync_with_a_hint_sends_the_prior_entity_in_the_system_prompt()
+    {
+        RecordedSystemPrompt = null;
+        var client = MakeClientCapturingSystemPrompt("""
+            {"language":"en","intent":"PersonLookup",
+             "filters":{"studentName":null,"className":null,"section":null,"dateExpression":null,"targetSelf":false}}
+            """);
+
+        await client.ClassifyAsync("Kya padhate hain?", new AiConversationHint("Rahul Sharma", "teacher"));
+
+        RecordedSystemPrompt.Should().Contain("Rahul Sharma").And.Contain("teacher");
     }
 }

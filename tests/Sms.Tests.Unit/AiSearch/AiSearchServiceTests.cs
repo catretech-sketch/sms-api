@@ -24,7 +24,7 @@ public class AiSearchServiceTests
         public int Calls { get; private set; }
         public string? LastQuery { get; private set; }
 
-        public Task<AiClassificationResult> ClassifyAsync(string query, CancellationToken ct = default)
+        public Task<AiClassificationResult> ClassifyAsync(string query, AiConversationHint? hint = null, CancellationToken ct = default)
         {
             Calls++;
             LastQuery = query;

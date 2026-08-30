@@ -56,7 +56,7 @@ public sealed class AiSearchService(
         var page = Math.Max(1, request.Page ?? 1);
         var pageSize = Math.Clamp(request.PageSize ?? 20, 1, 100);
 
-        var classification = await classifier.ClassifyAsync(query, ct);
+        var classification = await classifier.ClassifyAsync(query, ct: ct);
         var language = classification.Language;
 
         // A mutation request is refused before authorization runs: "can this caller read X" is not the

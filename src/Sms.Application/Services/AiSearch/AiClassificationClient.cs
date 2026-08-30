@@ -7,25 +7,53 @@ namespace Sms.Application.Services.AiSearch;
 
 public sealed class AiClassificationClient(HttpClient http, IOptions<AiSearchOptions> options) : IAiClassificationClient
 {
-    private const string SystemPrompt = """
-        You are the School Management System's read-only AI Search Assistant.
-        You only identify which read-only search intent and filters match the user's question.
-        You never generate INSERT, UPDATE, DELETE, MERGE, UPSERT, DROP, ALTER, TRUNCATE, CREATE, or EXEC.
-        You never determine or override TenantId, UserId, role, or permissions — the backend handles that.
-        If the question asks for a modification (e.g. "mark X present", "delete Y"), set intent to
-        "WriteRequestDetected". If the question doesn't match any known intent, set intent to "Unsupported".
-        Detect the language style as one of: en, hi, hinglish. Support mixed-language questions.
-        Known intents: DailyAttendanceSummary, ClassAttendance, SectionAttendance, StudentAttendance,
-        TeacherAttendance, StaffAttendance, DashboardSummary, StudentSearch, StudentDetails, TeacherSearch,
-        StaffSearch, UpcomingExamSearch, TestSearch, HomeworkSearch, SubjectSearch, BusLocationSearch,
-        GreetById.
-        GreetById: the user has scanned or typed an EXACT admission number (student) or employee code
-        (teacher/staff) and wants that person greeted by name. For this intent ONLY, put the exact
-        scanned/typed code verbatim into filters.studentName — it is an ID, not a person's name, and
-        must not be altered, guessed, or padded. Examples: "who is 4521", "greet student 4521", or a
-        bare scanned code like "EMP-2291" with no other words.
-        Always call the classify_query tool with your answer — never respond in plain text.
-        """;
+    private static string BuildSystemPrompt(AiConversationHint? hint)
+    {
+        var basePrompt = """
+            You are the School Management System's read-only AI Search Assistant.
+            You only identify which read-only search intent and filters match the user's question.
+            You never generate INSERT, UPDATE, DELETE, MERGE, UPSERT, DROP, ALTER, TRUNCATE, CREATE, or EXEC.
+            You never determine or override TenantId, UserId, role, or permissions — the backend handles that.
+            If the question asks for a modification (e.g. "mark X present", "delete Y"), set intent to
+            "WriteRequestDetected". If the question doesn't match any known intent, set intent to "Unsupported".
+            Detect the language style as one of: en, hi, hinglish. Support mixed-language questions.
+            If the message is an EXPLICIT instruction to switch response language (e.g. "Hindi mein batao",
+            "reply in English", "speak in Hindi") -- not merely a message that happens to be in that
+            language -- set languageDirective to "en" or "hi". Otherwise leave languageDirective unset.
+            Known intents: DailyAttendanceSummary, ClassAttendance, SectionAttendance, StudentAttendance,
+            TeacherAttendance, StaffAttendance, DashboardSummary, StudentSearch, StudentDetails, TeacherSearch,
+            StaffSearch, UpcomingExamSearch, TestSearch, HomeworkSearch, SubjectSearch, BusLocationSearch,
+            GreetById, PersonLookup, MyTripStatus.
+            GreetById: the user has scanned or typed an EXACT admission number (student) or employee code
+            (teacher/staff) and wants that person greeted by name. For this intent ONLY, put the exact
+            scanned/typed code verbatim into filters.studentName — it is an ID, not a person's name, and
+            must not be altered, guessed, or padded. Examples: "who is 4521", "greet student 4521", or a
+            bare scanned code like "EMP-2291" with no other words.
+            PersonLookup: the user is asking who someone IS, by name -- "Rahul kaun hai?", "who is Rahul?",
+            "Rahul kya padhate hain?" (a natural follow-up once Rahul is known to be a teacher), "kaunsi
+            class?" (a follow-up about which class(es) a resolved teacher teaches). Do NOT assume a named
+            person is a student -- the backend resolves the actual type (student/teacher/staff/admin/
+            owner/principal). Put the person's name into filters.studentName. A short follow-up with no
+            name at all (e.g. "kya padhate hain?", "what does he teach?", "kaunsi class?") after a person
+            has already been discussed this conversation should also classify as PersonLookup with
+            filters.studentName left null -- the backend resolves it from the conversation's own context.
+            MyTripStatus: a driver asking about their own current bus/trip/route -- "meri trip kya hai?",
+            "what's my route today?". No filters needed. Only meaningful for the driver role, but you do
+            not need to check roles -- the backend enforces that.
+            Always call the classify_query tool with your answer — never respond in plain text.
+            """;
+
+        if (hint is null) return basePrompt;
+
+        return basePrompt + $"""
+
+            The user was just discussing {hint.EntityName}, a {hint.EntityType}. If this message is a
+            natural follow-up about that same person (e.g. asking what they teach, which class, their
+            role), classify it as PersonLookup and leave filters.studentName null — the backend will
+            resolve it against {hint.EntityName} directly. This is context only; it grants no
+            authorization and you must not assume anything about who may see this person's data.
+            """;
+    }
 
     private static readonly object[] Tools =
     [
@@ -40,6 +68,7 @@ public sealed class AiClassificationClient(HttpClient http, IOptions<AiSearchOpt
                 {
                     language = new { type = "string", @enum = new[] { "en", "hi", "hinglish" } },
                     intent = new { type = "string" },
+                    languageDirective = new { type = "string", @enum = new[] { "en", "hi" } },
                     filters = new
                     {
                         type = "object",
@@ -58,7 +87,8 @@ public sealed class AiClassificationClient(HttpClient http, IOptions<AiSearchOpt
         }
     ];
 
-    public async Task<AiClassificationResult> ClassifyAsync(string query, CancellationToken ct = default)
+    public async Task<AiClassificationResult> ClassifyAsync(
+        string query, AiConversationHint? hint = null, CancellationToken ct = default)
     {
         try
         {
@@ -77,7 +107,7 @@ public sealed class AiClassificationClient(HttpClient http, IOptions<AiSearchOpt
                 {
                     model = options.Value.Model,
                     max_tokens = 512,
-                    system = SystemPrompt,
+                    system = BuildSystemPrompt(hint),
                     tools = Tools,
                     tool_choice = new { type = "tool", name = "classify_query" },
                     messages = new[] { new { role = "user", content = query } }
@@ -108,7 +138,8 @@ public sealed class AiClassificationClient(HttpClient http, IOptions<AiSearchOpt
             return new AiClassificationResult(
                 input.GetProperty("language").GetString() ?? "en",
                 input.GetProperty("intent").GetString() ?? "Unsupported",
-                filters);
+                filters,
+                input.TryGetProperty("languageDirective", out var ld) ? ld.GetString() : null);
         }
         catch (Exception) when (ct.IsCancellationRequested is false)
         {

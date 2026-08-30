@@ -24,7 +24,7 @@ namespace Sms.Tests.Integration.AiSearch;
 /// </summary>
 public sealed class ScriptedClassificationClient(AiClassificationResult result) : IAiClassificationClient
 {
-    public Task<AiClassificationResult> ClassifyAsync(string query, CancellationToken ct = default) =>
+    public Task<AiClassificationResult> ClassifyAsync(string query, AiConversationHint? hint = null, CancellationToken ct = default) =>
         Task.FromResult(result);
 }
 
