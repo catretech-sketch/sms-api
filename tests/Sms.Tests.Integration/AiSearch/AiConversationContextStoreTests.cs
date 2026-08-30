@@ -111,6 +111,33 @@ public class AiConversationContextStoreTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task SaveAsync_against_an_already_absolute_capped_id_without_a_prior_LoadAsync_mints_a_new_id()
+    {
+        var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);
+        var store = MakeStore(clock, fx.ConnectionString, ttlMin: 10, absMaxMin: 30);
+        var tenantId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var entityId = Guid.NewGuid();
+
+        var originalId = await store.SaveAsync(null, tenantId, userId,
+            new AiConversationContext(entityId, "student", null, null, "PersonLookup"));
+
+        // Advance past the absolute cap WITHOUT calling LoadAsync first (which would have deleted
+        // the row and forced the caller down a "no conversation" path instead).
+        clock.Advance(TimeSpan.FromMinutes(31));
+
+        var renewedId = await store.SaveAsync(originalId, tenantId, userId,
+            new AiConversationContext(entityId, "student", null, null, "PersonLookup"));
+
+        renewedId.Should().NotBe(originalId,
+            "an already absolute-capped conversation must never be resurrected with a renewed ExpiresAt -- " +
+            "SaveAsync must mint a genuinely new conversation instead");
+
+        // The new id is a live, freshly-created conversation.
+        (await store.LoadAsync(renewedId, tenantId, userId)).Should().NotBeNull();
+    }
+
+    [Fact]
     public async Task A_conversation_id_belonging_to_a_different_user_is_never_returned()
     {
         var clock = new FakeTimeProvider(DateTimeOffset.UtcNow);

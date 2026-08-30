@@ -49,10 +49,22 @@ public sealed class AiConversationContextStore(
             row.ResolvedEntityId, row.ResolvedEntityType, row.LanguageOverride, candidates, row.LastIntent);
     }
 
+    /// <summary>
+    /// IMPORTANT -- this method trusts the caller to have already established that
+    /// <paramref name="conversationId"/> (when supplied) is still live, normally by having called
+    /// <see cref="LoadAsync"/> in the same turn (exactly what AiSearchService does). SaveAsync itself
+    /// does re-fetch the existing row to recover <c>CreatedAt</c>, and as a guard it will mint a
+    /// brand-new conversation id (fresh CreatedAt, fresh ExpiresAt) whenever the existing row's
+    /// absolute cap (CreatedAt + ConversationContextAbsoluteMaxMinutes) has already elapsed -- so an
+    /// absolute-capped id can never be resurrected with a renewed-looking ExpiresAt. But a row that is
+    /// merely idle-expired (past ExpiresAt, not yet past the absolute cap) IS renewed by design: its
+    /// ExpiresAt is pushed forward while CreatedAt is preserved. Callers that skip LoadAsync therefore
+    /// still risk silently reviving an idle-expired conversation's context (which LoadAsync would
+    /// otherwise have rejected and deleted) -- only the absolute-cap trap is closed at the source here.
+    /// </summary>
     public async Task<Guid> SaveAsync(
         Guid? conversationId, Guid tenantId, Guid userId, AiConversationContext context, CancellationToken ct = default)
     {
-        var id = conversationId ?? Guid.NewGuid();
         var now = clock.GetUtcNow().UtcDateTime;
 
         // CreatedAt must be preserved across renewals for the absolute cap to mean anything -- only
@@ -60,6 +72,23 @@ public sealed class AiConversationContextStore(
         // from the existing row where possible; falling back to "now" for a caller-supplied id this
         // store has never seen is the safe default (a fresh conversation, not an error).
         var existing = conversationId is { } existingId ? await repo.FindAsync(existingId, tenantId, userId, ct) : null;
+
+        // Guard: if the existing row's absolute deadline has already elapsed, treat it as if no
+        // existing conversation was found at all -- mint a genuinely new id with a fresh CreatedAt,
+        // rather than writing a renewed ExpiresAt onto a row whose CreatedAt is already dead. Without
+        // this, a caller that calls SaveAsync against a truly-expired id without an intervening
+        // LoadAsync would silently produce a row that LoadAsync can never read back (its absolute
+        // deadline check would still fail), leaving a permanently dead row lingering in the table.
+        if (existing is not null)
+        {
+            var absoluteDeadline = existing.CreatedAt.AddMinutes(options.Value.ConversationContextAbsoluteMaxMinutes);
+            if (now >= absoluteDeadline)
+            {
+                existing = null;
+            }
+        }
+
+        var id = existing is null ? Guid.NewGuid() : conversationId!.Value;
         var createdAt = existing?.CreatedAt ?? now;
 
         await repo.UpsertAsync(new AiSearchConversationRow(
