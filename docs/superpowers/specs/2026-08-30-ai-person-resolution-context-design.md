@@ -241,34 +241,23 @@ fired:
 | `needs_clarification`| `PersonLookup` found 2+ candidates                                  | new |
 | `write_blocked`       | A mutation phrasing was detected and refused                       | existing `WriteBlocked`, now also `status` |
 | `unsupported`        | The classifier's intent has no handler, or classification failed   | existing `Unsupported`, now also `status` |
-| `forbidden`          | Role/scope denied the intent                                       | existing `Forbidden`, now also `status` (added beyond your listed 6 — see rationale below) |
+| `forbidden`          | Role/scope denied the intent                                       | existing `Forbidden`, now also `status` (confirmed 7th value, extending your original 6) |
 | `error`              | `success: false` — `FeatureNotEnabled`/`InvalidRequest`/`SearchFailed`/`rate_limited` | existing, now also `status` |
 
-**One addition beyond your recommended list: `forbidden`, distinct from `error`.** A role/scope
-rejection is neither "something went wrong" (infra `error`, which already carries `error.code`) nor
-"I didn't understand you" (`unsupported`) — collapsing it into `error` would make a frontend's
-generic error-toast path fire for an ordinary, expected permission boundary. Flagging this explicitly
-since it extends your list; happy to fold it into `error` instead if you'd rather keep exactly six
-values — say so and I'll adjust before implementation starts.
+**`forbidden`, distinct from `error` — confirmed.** A role/scope rejection is neither "something went
+wrong" (infra `error`, which already carries `error.code`) nor "I didn't understand you"
+(`unsupported`) — collapsing it into `error` would make a frontend's generic error-toast path fire
+for an ordinary, expected permission boundary.
 
-**A real backward-compatibility question, not yet decided — flagging rather than assuming:**
-today, `intent` literally *is* the outcome label for a refusal (`intent: "Forbidden"`, `"Unsupported"`,
-`"WriteBlocked"`) — verified against the shipped `AiSearchSecurityTests.cs`, which asserts on exactly
-these string values, and per this thread's own opening message, `sms-admin`'s AI Mode is **already
-merged and presumably already consuming this contract**. Two ways to resolve "intent = what was
-asked" cleanly without an unflagged breaking change:
-- **(a) Keep `intent` as the outcome label for these three cases (no change), and let the new
-  `status` field be purely additive** — `status` and `intent` both say "Forbidden"-shaped things for
-  these cases today, which is some redundancy, but nothing existing breaks and every consumer keeps
-  working unmodified.
-- **(b) Change `intent` to the classifier's attempted intent for these cases** (matching "what was
-  asked" literally) — cleaner semantics, but breaks `sms-admin`'s existing integration and every
-  existing backend test asserting the current strings, unless those are updated in lockstep.
-
-This spec assumes **(a)** unless you say otherwise, since it's the non-breaking option and matches
-"do not introduce unnecessary infrastructure" — but confirm before the plan locks this in. Every
-other existing field (`success`, `language`, `answer`, `data`, `page`, `page_size`, `count`,
-`has_next_page`, `error`) is unchanged in shape and meaning.
+**Backward compatibility, confirmed:** today, `intent` literally *is* the outcome label for a refusal
+(`intent: "Forbidden"`, `"Unsupported"`, `"WriteBlocked"`) — verified against the shipped
+`AiSearchSecurityTests.cs`, which asserts on exactly these string values, and `sms-admin`'s AI Mode
+is already merged and presumably already consuming this contract. **Decision: `intent` keeps its
+existing meaning unchanged for these three cases — non-breaking.** `status` is purely additive: for
+these three outcomes, `status` and `intent` both carry "Forbidden"-shaped information today (some
+redundancy), but zero existing consumers or tests need to change. Every other existing field
+(`success`, `language`, `answer`, `data`, `page`, `page_size`, `count`, `has_next_page`, `error`) is
+unchanged in shape and meaning.
 
 ## 6. Disambiguation Contract
 
@@ -375,22 +364,18 @@ explicit absence of the unsafe one, not just "returns 200."
 
 ## 10. Risks & Open Items
 
-**Resolved during this revision (previously flagged, now decided):**
-- ~~`Users` search performance~~ → resolved: `dbo.Users` gains a `Name` column + `(TenantId, Name)`
-  index (§4/M0162), the same indexing convention `Teachers`/`Staff` already use for tenant-scoped
-  name search. Not a performance-only fix — the column didn't exist at all (§2).
-- ~~Ambiguous admin/owner/principal disambiguation~~ → resolved: `detail` is the specific role label,
-  falling back to a masked-email tie-breaker only when name AND role both collide (§4).
-- ~~Sliding vs. absolute TTL~~ → resolved: both — sliding renewal for natural pacing, absolute cap
-  (default 30 min) as a hard ceiling on worst-case exposure (§4/§8).
-
-**Still open, needs your call before the plan locks it in:**
-- **§5(a) vs (b)**: whether `intent` changes meaning for the three existing refusal cases
-  (`Forbidden`/`Unsupported`/`WriteBlocked`) or stays exactly as shipped today. This spec assumes (a),
-  the non-breaking option, but it's your decision to confirm given `sms-admin`'s AI Mode may already
-  depend on the current strings.
-- **`forbidden` as a 7th status value**, beyond your listed 6 — flagged in §5, assumed unless you'd
-  rather fold it into `error`.
+**Resolved (all decisions confirmed):**
+- ~~`Users` search performance~~ → `dbo.Users` gains a `Name` column + `(TenantId, Name)` index
+  (§4/M0162), the same indexing convention `Teachers`/`Staff` already use for tenant-scoped name
+  search. Not a performance-only fix — the column didn't exist at all (§2).
+- ~~Ambiguous admin/owner/principal disambiguation~~ → `detail` is the specific role label, falling
+  back to a masked-email tie-breaker only when name AND role both collide (§4).
+- ~~Sliding vs. absolute TTL~~ → both — sliding renewal for natural pacing, absolute cap (default
+  30 min) as a hard ceiling on worst-case exposure (§4/§8).
+- ~~§5(a) vs (b)~~ → **(a)**: `intent` stays exactly as shipped today for `Forbidden`/`Unsupported`/
+  `WriteBlocked` — non-breaking, `sms-admin`'s existing integration is unaffected. `status` is purely
+  additive on top.
+- ~~`forbidden` as a 7th status value~~ → confirmed, added alongside your original 6.
 
 **Noted, not blocking:**
 - **Classifier prompt size growth**: adding `PersonLookup` few-shot examples across three languages,
