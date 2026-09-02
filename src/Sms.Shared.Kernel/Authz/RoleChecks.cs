@@ -16,14 +16,14 @@ public static class RoleChecks
         return false;
     }
 
-    /// Drivers (and staff) may start/own live trips. Parents and students may not.
+    /// Drivers, conductors, and staff may start/own live trips. Parents and students may not.
     public static bool CanOperateTrips(ClaimsPrincipal user)
     {
         if (IsStaff(user)) return true;
         foreach (var claim in user.FindAll("role"))
         {
             var role = claim.Value.ToLowerInvariant();
-            if (role == "driver" || role.Contains("driver"))
+            if (role == "driver" || role.Contains("driver") || role == "conductor" || role.Contains("conductor"))
                 return true;
         }
         return false;

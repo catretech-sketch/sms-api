@@ -29,17 +29,26 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
         QuerySingleProcAsync<TripResponse>("dbo.Trip_Start",
             new { TenantId = tenantId, r.RouteId, r.BusNo, DriverId = driverId, r.Direction }, ct);
 
-    public async Task<TripResponse?> GetCurrentAsync(Guid driverId, CancellationToken ct = default) =>
+    public async Task<TripResponse?> GetCurrentAsync(Guid userId, CancellationToken ct = default) =>
         (await QueryInlineAsync<TripResponse>(
-            $"SELECT TOP 1 {TripCols} FROM dbo.Trips WHERE DriverId = @driverId AND Status = 'live' ORDER BY StartedAt DESC",
-            new { driverId }, ct)).FirstOrDefault();
+            $"SELECT TOP 1 {TripCols} FROM dbo.Trips WHERE (DriverId = @userId OR ConductorId = @userId) AND Status = 'live' ORDER BY StartedAt DESC",
+            new { userId }, ct)).FirstOrDefault();
 
-    /// True when the trip exists in the caller's tenant (RLS) AND is owned by this driver.
+    private sealed record TripParticipantsRow(Guid? DriverId, Guid? ConductorId);
+
+    /// Returns "driver", "conductor", or null if the caller is neither — the trip's driver or
+    /// its assigned conductor may operate it, RLS already scopes the row to the caller's tenant.
     /// Guards driver-app mutations against acting on a peer's trip within the same school.
-    public async Task<bool> IsOwnedByDriverAsync(Guid tripId, Guid driverId, CancellationToken ct = default) =>
-        (await QueryInlineAsync<int>(
-            "SELECT COUNT(1) FROM dbo.Trips WHERE Id = @tripId AND DriverId = @driverId",
-            new { tripId, driverId }, ct)).First() > 0;
+    public async Task<string?> GetParticipantRoleAsync(Guid tripId, Guid userId, CancellationToken ct = default)
+    {
+        var row = (await QueryInlineAsync<TripParticipantsRow>(
+            "SELECT DriverId, ConductorId FROM dbo.Trips WHERE Id = @tripId",
+            new { tripId }, ct)).FirstOrDefault();
+        if (row is null) return null;
+        if (row.DriverId == userId) return "driver";
+        if (row.ConductorId == userId) return "conductor";
+        return null;
+    }
 
     public Task IngestPingsAsync(Guid tenantId, Guid tripId, IReadOnlyList<PingItem> pings, CancellationToken ct = default)
     {

@@ -46,7 +46,7 @@ public sealed class TripService(
     {
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
-        if (!await repo.IsOwnedByDriverAsync(tripId, uid, ct))
+        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
             return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
         await repo.IngestPingsAsync(tid, tripId, req.Pings, ct);
         await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
@@ -58,7 +58,7 @@ public sealed class TripService(
     {
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult<TripSummaryResponse>.Fail(new Error("forbidden", "no tenant/user context"), 403);
-        if (!await repo.IsOwnedByDriverAsync(tripId, uid, ct))
+        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
             return ApiResult<TripSummaryResponse>.Fail(new Error("forbidden", "not your trip"), 403);
         var summary = await repo.EndAsync(tripId, ct);
         await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
@@ -80,7 +80,7 @@ public sealed class TripService(
     {
         if (tenant.UserId is not { } uid)
             return ApiResult<IReadOnlyList<StaffRosterStudentResponse>>.Fail(new Error("forbidden", "no user context"), 403);
-        if (!await repo.IsOwnedByDriverAsync(tripId, uid, ct))
+        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
             return ApiResult<IReadOnlyList<StaffRosterStudentResponse>>.Fail(new Error("forbidden", "not your trip"), 403);
         return ApiResult<IReadOnlyList<StaffRosterStudentResponse>>.Ok(await repo.GetRosterAsync(tripId, ct));
     }
@@ -89,7 +89,7 @@ public sealed class TripService(
     {
         if (tenant.UserId is not { } uid)
             return ApiResult<IReadOnlyList<BoardingResponse>>.Fail(new Error("forbidden", "no user context"), 403);
-        if (!await repo.IsOwnedByDriverAsync(tripId, uid, ct))
+        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
             return ApiResult<IReadOnlyList<BoardingResponse>>.Fail(new Error("forbidden", "not your trip"), 403);
         return ApiResult<IReadOnlyList<BoardingResponse>>.Ok(await repo.ListBoardingAsync(tripId, ct));
     }
@@ -98,7 +98,7 @@ public sealed class TripService(
     {
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
-        if (!await repo.IsOwnedByDriverAsync(tripId, uid, ct))
+        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
             return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
         await repo.UpsertBoardingAsync(tid, tripId, req, ct);
         return ApiResult.NoContent();
