@@ -5,6 +5,7 @@ using Sms.Application.Services.Auth;
 using Sms.Application.Services.Comms;
 using Sms.Application.Services.Finance;
 using Sms.Application.Services.Hostel;
+using Sms.Application.Services.Profile;
 using Sms.Application.Services.Reporting;
 using Sms.Application.Services.Sports;
 using Sms.Application.Services.Sis;
@@ -32,6 +33,7 @@ public static class DependencyInjection
         services.AddScoped<IPayrollService, PayrollService>();
         services.AddScoped<ISisService, SisService>();
         services.AddScoped<IStaffingService, StaffingService>();
+        services.AddScoped<IProfileService, ProfileService>();
         services.AddScoped<IAttendanceViewPermissionService, AttendanceViewPermissionService>();
         services.AddScoped<IAcademicsService, AcademicsService>();
         services.AddScoped<AcademicsCommsNotifier>();
