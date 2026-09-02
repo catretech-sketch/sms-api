@@ -96,6 +96,32 @@ public class BusConductorAssignmentTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task CreateBus_succeeds_and_returns_the_conductor_staff_id()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var conductorStaffId = Guid.NewGuid();
+        var busNo = $"KA-{Guid.NewGuid():N}"[..12];
+
+        // Bus_Create is gated behind the "operations" plan feature (FeatureCatalog.Operations),
+        // so the tenant must be seeded on a tier that has it.
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        await Seed(fx.ConnectionString, tenantId, conn => conn.ExecuteAsync(
+            "INSERT dbo.Staff (Id, TenantId, Name) VALUES (@Id, @TenantId, @Name)",
+            new { Id = conductorStaffId, TenantId = tenantId, Name = "Priya Rao" }));
+
+        var admin = PrincipalClient(app, tenantId);
+        var created = await Data(await admin.PostAsJsonAsync("/v1/transport/buses",
+            new { bus_no = busNo, conductor_staff_id = conductorStaffId }), HttpStatusCode.Created);
+
+        created.GetProperty("bus_no").GetString().Should().Be(busNo);
+        created.GetProperty("conductor_staff_id").GetGuid().Should().Be(conductorStaffId);
+        created.GetProperty("status").GetString().Should().Be("idle");
+        created.GetProperty("stop_count").GetInt32().Should().Be(0);
+        created.GetProperty("students_riding").GetInt32().Should().Be(0);
+    }
+
+    [Fact]
     public async Task GetAssignment_returns_the_conductor_name_for_the_driver()
     {
         await using var app = App();

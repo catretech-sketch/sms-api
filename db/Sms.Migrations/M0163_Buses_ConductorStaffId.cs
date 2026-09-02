@@ -109,11 +109,10 @@ BEGIN
     INSERT dbo.Buses (Id, TenantId, BusNo, RouteName, RouteId, Driver, DriverPhone, DriverStaffId, ConductorStaffId)
     VALUES (@Id, @TenantId, @BusNo, @RouteName, @ResolvedRouteId, @Driver, @DriverPhone, @DriverStaffId, @ConductorStaffId);
 
-    SELECT b.Id AS BusId, b.BusNo, b.RouteId, b.RouteName, b.DriverStaffId, b.Driver, b.DriverPhone,
-        b.ConductorStaffId,
+    SELECT b.Id AS BusId, b.BusNo, b.RouteId, b.RouteName, b.Driver, b.DriverPhone,
         ISNULL((SELECT COUNT(*) FROM dbo.RouteStops s WHERE s.RouteId = b.RouteId),
                (SELECT COUNT(*) FROM dbo.BusStops bs WHERE bs.BusId = b.Id)) AS StopCount,
-        0 AS StudentsRiding, 'idle' AS Status
+        0 AS StudentsRiding, 'idle' AS Status, b.ConductorStaffId
     FROM dbo.Buses b WHERE b.Id = @Id;
 END");
 

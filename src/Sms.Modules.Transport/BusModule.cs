@@ -19,7 +19,7 @@ public sealed record FleetBusResponse(
     Guid BusId, Guid? RouteId, string BusNo, string? RouteName, string? Driver, string? DriverPhone,
     int StopCount, int StudentsRiding, string Status,
     double? Lat, double? Lng, double? SpeedKmh, string? NextStopName, DateTime? LastPingAt,
-    Guid? TeacherUserId = null, string? TeacherName = null);
+    Guid? TeacherUserId = null, string? TeacherName = null, Guid? ConductorStaffId = null);
 
 public sealed record TransportRouteListItem(Guid Id, string Name, int Stops);
 public sealed record RouteStopListItem(Guid Id, Guid RouteId, string Name, int Sequence, double Lat, double Lng);

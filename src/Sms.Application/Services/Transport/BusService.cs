@@ -305,7 +305,8 @@ public sealed class BusService(
     private static FleetBusResponse ToFleetBus(CreatedBusRow r) =>
         new(r.BusId, r.RouteId, r.BusNo, r.RouteName, r.Driver, r.DriverPhone,
             r.StopCount, r.StudentsRiding, r.Status,
-            null, null, null, null, null);
+            null, null, null, null, null,
+            ConductorStaffId: r.ConductorStaffId);
 
     /// Duty teachers may only access the bus they are assigned to via BusAssignments.
     private async Task<ApiResult?> EnsureBusDutyAsync(Guid busId, CancellationToken ct)
