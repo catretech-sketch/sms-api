@@ -54,7 +54,7 @@ public sealed class AuthService(
 
         tenant.Set(null, null, isPlatform: true);
         var forceAdmission = !string.IsNullOrWhiteSpace(req.StudentId);
-        var (user, passwordMatchRoles) = await FindUserByPasswordAsync(identifier, req.Password, ct, forceAdmission, req.Role);
+        var (user, passwordMatchRoles, anyCandidates) = await FindUserByPasswordAsync(identifier, req.Password, ct, forceAdmission, req.Role);
         if (user is null)
         {
             if (passwordMatchRoles is not null
@@ -63,6 +63,8 @@ public sealed class AuthService(
             if (await NeedsPasswordSetupAsync(identifier, ct, forceAdmission))
                 return ApiResult<TokenResponse>.Fail(new Error("password_not_set",
                     "No password yet. Use set up or reset password."), 409);
+            if (!anyCandidates)
+                return ApiResult<TokenResponse>.Fail(NotRegisteredError(identifier), 404);
             return ApiResult<TokenResponse>.Fail(new Error("invalid_credentials", "bad email or password"), 401);
         }
         if (AccessBlockedError(user) is { } blocked)
@@ -666,7 +668,7 @@ public sealed class AuthService(
     /// a fully-active row over a removed/inactive one when several match (so losing
     /// access to one school never blocks signing in to another with the same creds).
     /// </summary>
-    private async Task<(UserRecord? User, IReadOnlyList<string>? PasswordMatchRoles)> FindUserByPasswordAsync(
+    private async Task<(UserRecord? User, IReadOnlyList<string>? PasswordMatchRoles, bool AnyCandidates)> FindUserByPasswordAsync(
         string identifier, string password, CancellationToken ct, bool forceAdmission = false,
         string? requestedRole = null)
     {
@@ -692,7 +694,7 @@ public sealed class AuthService(
         IReadOnlyList<string>? wrongTabRoles = user is null && passwordMatched.Count > 0
             ? passwordMatched[0].Roles
             : null;
-        return (user, wrongTabRoles);
+        return (user, wrongTabRoles, candidates.Count > 0);
     }
 
     private async Task<bool> NeedsPasswordSetupAsync(string identifier, CancellationToken ct, bool forceAdmission)
