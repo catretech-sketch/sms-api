@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.Http.Json;
 using System.Text.Json;
 using Dapper;
 using FluentAssertions;
@@ -96,5 +97,78 @@ public class ChatPresenceTests(SqlServerFixture fx)
             }
         }
         found.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Parent_reply_delivers_to_teacher_inbox_labeled_parent_with_child_context()
+    {
+        var app = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("environment", "Production");
+            b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
+            b.UseSetting("Jwt:SigningKey", Key);
+        });
+        var tenantId = Guid.NewGuid();
+        var teacherUserId = Guid.NewGuid();
+        var parentUserId = Guid.NewGuid();
+        var studentId = Guid.NewGuid();
+        var parentThreadId = Guid.NewGuid();
+
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, Name) VALUES (@teacherUserId, @tenantId, 'Ms. Teacher')",
+                new { teacherUserId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, Name) VALUES (@parentUserId, @tenantId, 'Parent Contact')",
+                new { parentUserId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name, ClassLabel) " +
+                "VALUES (@studentId, @tenantId, 'A1', 'Kid Rahul', 'Grade 5 - A')",
+                new { studentId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.ParentStudentLinks (ParentUserId, StudentId, TenantId) VALUES (@parentUserId, @studentId, @tenantId)",
+                new { parentUserId, studentId, tenantId });
+            // The parent's own thread with the teacher, scoped to their child — mirrors what
+            // the parent app creates when messaging about a specific student.
+            await conn.ExecuteAsync(
+                "INSERT dbo.ChatThreads (Id, TenantId, OwnerUserId, Name, ContactUserId, ChildId) " +
+                "VALUES (@parentThreadId, @tenantId, @parentUserId, 'Ms. Teacher', @teacherUserId, @studentId)",
+                new { parentThreadId, tenantId, parentUserId, teacherUserId, studentId });
+        }
+
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+
+        var parentClient = app.CreateClient();
+        parentClient.DefaultRequestHeaders.Authorization = new(
+            "Bearer", jwt.IssueAccess(parentUserId, tenantId, new[] { Policies.StudentOrParent }, isPlatform: false));
+        var sendRes = await parentClient.PostAsJsonAsync(
+            $"/v1/threads/{parentThreadId}/messages", new { text = "Hello teacher" });
+        sendRes.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var teacherClient = app.CreateClient();
+        teacherClient.DefaultRequestHeaders.Authorization = new(
+            "Bearer", jwt.IssueAccess(teacherUserId, tenantId, new[] { Policies.Teacher }, isPlatform: false));
+        var listRes = await teacherClient.GetAsync("/v1/threads");
+        listRes.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var doc = JsonDocument.Parse(await listRes.Content.ReadAsStringAsync());
+        var rows = doc.RootElement.GetProperty("data");
+        var found = false;
+        foreach (var row in rows.EnumerateArray())
+        {
+            if (row.GetProperty("name").GetString() != "Parent Contact") continue;
+            found = true;
+            // The bug: this used to always resolve to "Teacher" for any sender that wasn't
+            // in the Teachers/Staff tables, mislabeling every parent reply.
+            row.GetProperty("role").GetString().Should().Be("Parent");
+            row.GetProperty("child_name").GetString().Should().Be("Kid Rahul");
+            row.GetProperty("child_class_label").GetString().Should().Be("Grade 5 - A");
+        }
+        found.Should().BeTrue("the parent's reply should have created a mirrored thread in the teacher's inbox");
     }
 }

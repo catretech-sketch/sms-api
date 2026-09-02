@@ -1,3 +1,5 @@
+using System.Data;
+using Dapper;
 using Sms.Modules.Reporting.Contracts;
 using Sms.Shared.Kernel.Data;
 
@@ -19,6 +21,40 @@ SELECT
      WHERE Status = 'upcoming' AND ([Date] IS NULL OR [Date] >= @today))         AS UpcomingExams",
             new { today = today.Date }, ct);
         return row[0];
+    }
+
+    public async Task<CrmPeopleSnapshotResponse> GetCrmPeopleSnapshotAsync(CancellationToken ct = default)
+    {
+        await using var conn = await Factory.OpenAsync(ct);
+        using var multi = await conn.QueryMultipleAsync(new CommandDefinition(@"
+SELECT
+  (SELECT COUNT(*) FROM dbo.Students) AS StudentCount,
+  (SELECT COUNT(*) FROM dbo.Teachers) AS TeacherCount,
+  (SELECT COUNT(*) FROM dbo.Staff) AS StaffCount;
+
+SELECT
+  SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(Gender, N'')))) = N'M' THEN 1 ELSE 0 END) AS Boys,
+  SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(Gender, N'')))) = N'F' THEN 1 ELSE 0 END) AS Girls,
+  SUM(CASE WHEN UPPER(LTRIM(RTRIM(ISNULL(Gender, N'')))) NOT IN (N'M', N'F') THEN 1 ELSE 0 END) AS Unspecified
+FROM dbo.Students;
+
+SELECT LTRIM(RTRIM(Grade)) AS Grade, COUNT(*) AS Count
+FROM dbo.Students
+WHERE Grade IS NOT NULL AND LTRIM(RTRIM(Grade)) <> N'' AND LTRIM(RTRIM(Grade)) NOT IN (N'—', N'-')
+GROUP BY LTRIM(RTRIM(Grade));
+", cancellationToken: ct));
+        var counts = await multi.ReadSingleAsync<(int StudentCount, int TeacherCount, int StaffCount)>();
+        var gender = await multi.ReadSingleAsync<(int Boys, int Girls, int Unspecified)>();
+        var grades = (await multi.ReadAsync<CrmGradeCount>()).AsList();
+        return new CrmPeopleSnapshotResponse(
+            counts.StudentCount,
+            counts.TeacherCount,
+            counts.StaffCount,
+            grades.Count,
+            gender.Boys,
+            gender.Girls,
+            gender.Unspecified,
+            grades);
     }
 
     private sealed record PunchRow(Guid UserId, string Kind, DateTime At, bool Verified);

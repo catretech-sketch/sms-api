@@ -41,7 +41,7 @@ public sealed class StudentSearchHandler(ISisService sis, IAiAnswerTemplateServi
         // pattern TeacherSearchHandler/StaffSearchHandler already use, with pageSize hard-capped at
         // 100 server-side per the plan's global constraint.
         var result = await sis.ListStudentsAsync(
-            auth.ClampedFilters.StudentName, null, null, null, ct);
+            auth.ClampedFilters.StudentName, null, null, null, ct: ct);
         if (!result.IsSuccess)
             return AiSearchResponse.Terminal(language, "Forbidden", templates.RenderForbidden(language), "forbidden");
 

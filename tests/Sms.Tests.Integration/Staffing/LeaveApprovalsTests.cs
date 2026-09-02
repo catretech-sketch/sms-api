@@ -71,5 +71,9 @@ public class LeaveApprovalsTests(SqlServerFixture fx)
         // no longer in pending inbox
         (await Data(await client.GetAsync("/v1/approvals"), HttpStatusCode.OK))
             .EnumerateArray().Select(e => e.GetProperty("id").GetGuid()).Should().NotContain(id);
+
+        // stays in CRM Approved tab
+        (await Data(await client.GetAsync("/v1/approvals?status=approved"), HttpStatusCode.OK))
+            .EnumerateArray().Select(e => e.GetProperty("id").GetGuid()).Should().Contain(id);
     }
 }

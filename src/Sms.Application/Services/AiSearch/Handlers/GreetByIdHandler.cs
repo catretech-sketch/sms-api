@@ -86,7 +86,7 @@ public sealed class GreetByIdHandler(
     private async Task<AiSearchResponse> ResolveForTeacherAsync(
         IReadOnlyList<string> allowedClassNames, string code, string language, int pageSize, CancellationToken ct)
     {
-        var result = await sis.ListStudentsAsync(code, null, null, null, ct);
+        var result = await sis.ListStudentsAsync(code, null, null, null, ct: ct);
         if (!result.IsSuccess) return NoMatch(language);
 
         // dbo.Students.ClassLabel is always the compact "Grade-Section" shape, but a teacher's
@@ -117,7 +117,7 @@ public sealed class GreetByIdHandler(
     {
         // Student admission number takes priority, then teacher employee code, then staff employee
         // code — a defined, documented order in the (shouldn't-happen) case of a shared code.
-        var students = await sis.ListStudentsAsync(code, null, null, null, ct);
+        var students = await sis.ListStudentsAsync(code, null, null, null, ct: ct);
         if (students.IsSuccess)
         {
             var studentMatch = students.Data!.Data.FirstOrDefault(

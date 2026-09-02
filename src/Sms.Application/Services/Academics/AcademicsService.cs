@@ -876,6 +876,14 @@ public sealed class AcademicsService(
         Guid studentId, CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<GradeResponse>>.Ok(await exams.ListGradesForStudentAsync(studentId, ct));
 
+    public async Task<ApiResult<IReadOnlyList<ExamLetterGradeCount>>> CountLetterGradesForExamAsync(
+        Guid examId, CancellationToken ct = default)
+    {
+        if (await exams.GetExamAsync(examId, ct) is null)
+            return ApiResult<IReadOnlyList<ExamLetterGradeCount>>.Fail(new Error("not_found", "resource not found"), 404);
+        return ApiResult<IReadOnlyList<ExamLetterGradeCount>>.Ok(await exams.CountLetterGradesForExamAsync(examId, ct));
+    }
+
     public async Task<ApiResult<GradeResponse>> UpsertGradeAsync(UpsertGradeRequest req, CancellationToken ct = default)
     {
         if (tenant.TenantId is not { } tid)

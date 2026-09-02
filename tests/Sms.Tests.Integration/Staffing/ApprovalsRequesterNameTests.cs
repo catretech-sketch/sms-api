@@ -54,4 +54,97 @@ public class ApprovalsRequesterNameTests(SqlServerFixture fx)
         rows.GetArrayLength().Should().Be(1);
         rows[0].GetProperty("requester_name").GetString().Should().Be("Sam Requester");
     }
+
+    [Fact]
+    public async Task Approved_list_includes_decided_by_name_from_Users()
+    {
+        var app = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("environment", "Production");
+            b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
+            b.UseSetting("Jwt:SigningKey", Key);
+        });
+        var tenantId = Guid.NewGuid();
+        var requesterId = Guid.NewGuid();
+        var principalId = Guid.NewGuid();
+        var leaveId = Guid.NewGuid();
+
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, Name) VALUES (@requesterId, @tenantId, N'Sam Requester')",
+                new { requesterId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, Name) VALUES (@principalId, @tenantId, N'Priya Principal')",
+                new { principalId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.LeaveRequests (Id, TenantId, RequesterId, Type, Status, DecidedBy, DecidedNote) " +
+                "VALUES (@leaveId, @tenantId, @requesterId, 'casual', 'approved', @principalId, N'Covered')",
+                new { leaveId, tenantId, requesterId, principalId });
+        }
+
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(principalId, tenantId, new[] { Policies.Principal }, isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var res = await client.GetAsync("/v1/approvals?status=approved");
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var rows = doc.RootElement.GetProperty("data");
+        rows.GetArrayLength().Should().Be(1);
+        rows[0].GetProperty("id").GetGuid().Should().Be(leaveId);
+        rows[0].GetProperty("decided_by_name").GetString().Should().Be("Priya Principal");
+        rows[0].GetProperty("decided_note").GetString().Should().Be("Covered");
+    }
+
+    [Fact]
+    public async Task Decide_returns_decided_by_name_of_the_principal()
+    {
+        var app = new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("environment", "Production");
+            b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
+            b.UseSetting("Jwt:SigningKey", Key);
+        });
+        var tenantId = Guid.NewGuid();
+        var requesterId = Guid.NewGuid();
+        var principalId = Guid.NewGuid();
+        var leaveId = Guid.NewGuid();
+
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, Name) VALUES (@requesterId, @tenantId, N'Sam Requester')",
+                new { requesterId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, Name) VALUES (@principalId, @tenantId, N'Priya Principal')",
+                new { principalId, tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.LeaveRequests (Id, TenantId, RequesterId, Type, Status) " +
+                "VALUES (@leaveId, @tenantId, @requesterId, 'casual', 'pending')",
+                new { leaveId, tenantId, requesterId });
+        }
+
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(principalId, tenantId, new[] { Policies.Principal }, isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var res = await client.PatchAsJsonAsync($"/v1/approvals/{leaveId}", new { status = "approved", decided_note = "Covered" });
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var row = doc.RootElement.GetProperty("data");
+        row.GetProperty("status").GetString().Should().Be("approved");
+        row.GetProperty("decided_by_name").GetString().Should().Be("Priya Principal");
+        row.GetProperty("decided_note").GetString().Should().Be("Covered");
+    }
 }

@@ -14,8 +14,9 @@ public sealed class StudentController(ISisService sis, IAcademicsService academi
     [HttpGet("students")]
     public async Task<IActionResult> List(
         [FromQuery] string? q, [FromQuery] string? grade, [FromQuery] string? status, [FromQuery] string? fee,
+        [FromQuery] int? limit, [FromQuery] string? cursor,
         CancellationToken ct) =>
-        FromCursorResult(await sis.ListStudentsAsync(q, grade, status, fee, ct));
+        FromCursorResult(await sis.ListStudentsAsync(q, grade, status, fee, limit, cursor, ct));
 
     [HttpGet("students/me")]
     public async Task<IActionResult> Me(CancellationToken ct) =>

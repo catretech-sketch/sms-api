@@ -11,7 +11,8 @@ namespace Sms.Application.Services.Sis;
 public interface ISisService
 {
     Task<ApiResult<CursorPage<StudentResponse>>> ListStudentsAsync(
-        string? q, string? grade, string? status, string? fee, CancellationToken ct = default);
+        string? q, string? grade, string? status, string? fee,
+        int? limit = null, string? cursor = null, CancellationToken ct = default);
     Task<ApiResult<StudentResponse>> GetStudentAsync(Guid id, CancellationToken ct = default);
     /// <summary>Roster row for the authenticated user (Users.StudentId = admission number, not Users.Id).</summary>
     Task<ApiResult<StudentResponse>> GetMyStudentAsync(CancellationToken ct = default);
@@ -41,10 +42,11 @@ public sealed class SisService(
     ITenantContext tenant) : ISisService
 {
     public async Task<ApiResult<CursorPage<StudentResponse>>> ListStudentsAsync(
-        string? q, string? grade, string? status, string? fee, CancellationToken ct = default)
+        string? q, string? grade, string? status, string? fee,
+        int? limit = null, string? cursor = null, CancellationToken ct = default)
     {
-        var rows = await repo.ListAsync(q, grade, status, fee, ct);
-        return ApiResult<CursorPage<StudentResponse>>.Ok(new CursorPage<StudentResponse>(rows, null));
+        var (rows, next) = await repo.ListPagedAsync(q, grade, status, fee, ct, tenant.TenantId, limit, cursor);
+        return ApiResult<CursorPage<StudentResponse>>.Ok(new CursorPage<StudentResponse>(rows, next));
     }
 
     public async Task<ApiResult<StudentResponse>> GetStudentAsync(Guid id, CancellationToken ct = default)
@@ -224,7 +226,7 @@ public sealed class SisService(
         Guid classId, int? limit, string? cursor, CancellationToken ct = default)
     {
         var page = new PageRequest(limit ?? 50, cursor);
-        var (rows, next) = await repo.ListByClassPagedAsync(classId, page.SafeLimit, page.Cursor, ct);
+        var (rows, next) = await repo.ListByClassPagedAsync(classId, page.SafeLimit, page.Cursor, ct, tenant.TenantId);
         return ApiResult<CursorPage<StudentResponse>>.Ok(new CursorPage<StudentResponse>(rows, next));
     }
 }

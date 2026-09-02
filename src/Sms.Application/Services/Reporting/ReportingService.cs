@@ -9,6 +9,7 @@ namespace Sms.Application.Services.Reporting;
 public interface IReportingService
 {
     Task<ApiResult<DashboardStatsResponse>> GetDashboardStatsAsync(CancellationToken ct = default);
+    Task<ApiResult<CrmPeopleSnapshotResponse>> GetCrmPeopleSnapshotAsync(CancellationToken ct = default);
     Task<ApiResult<PrincipalOverviewResponse>> GetPrincipalOverviewAsync(int? offsetMinutes = null, CancellationToken ct = default);
     Task<ApiResult<PrincipalAttendanceResponse>> GetPrincipalAttendanceAsync(
         DateTime? date = null, int? offsetMinutes = null, CancellationToken ct = default);
@@ -36,6 +37,9 @@ public sealed class ReportingService(ReportingRepository repo, ITenantFeatureSet
 
     public async Task<ApiResult<DashboardStatsResponse>> GetDashboardStatsAsync(CancellationToken ct = default) =>
         ApiResult<DashboardStatsResponse>.Ok(await repo.GetDashboardStatsAsync(clock.UtcNow, ct));
+
+    public async Task<ApiResult<CrmPeopleSnapshotResponse>> GetCrmPeopleSnapshotAsync(CancellationToken ct = default) =>
+        ApiResult<CrmPeopleSnapshotResponse>.Ok(await repo.GetCrmPeopleSnapshotAsync(ct));
 
     public async Task<ApiResult<PrincipalOverviewResponse>> GetPrincipalOverviewAsync(
         int? offsetMinutes = null, CancellationToken ct = default)

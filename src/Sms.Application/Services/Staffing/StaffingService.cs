@@ -26,6 +26,7 @@ public interface IStaffingService
     Task<ApiResult<StaffResponse>> UpdateStaffAsync(Guid id, UpdateStaffRequest req, CancellationToken ct = default);
 
     Task<ApiResult<IReadOnlyList<LeaveResponse>>> ListMyLeaveAsync(CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<LeaveBalanceResponse>>> GetMyLeaveBalancesAsync(CancellationToken ct = default);
     Task<ApiResult<LeaveResponse>> CreateLeaveAsync(CreateLeaveRequest req, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<LeaveResponse>>> ListApprovalsAsync(string? status, CancellationToken ct = default);
     Task<ApiResult<LeaveResponse>> DecideLeaveAsync(Guid id, DecideLeaveRequest req, CancellationToken ct = default);
@@ -177,6 +178,26 @@ public sealed class StaffingService(
     {
         var rows = await leave.ListMineAsync(tenant.UserId, ct);
         return ApiResult<IReadOnlyList<LeaveResponse>>.Ok(rows);
+    }
+
+    // Canonical leave types this app knows how to show a balance for. A requester with no
+    // entitlement row yet (added after the one-time seed migration, or in a later calendar
+    // year with no admin UI to configure new entitlements) simply gets {total:0, used:0} for
+    // that type rather than a missing/erroring balance.
+    private static readonly string[] CanonicalLeaveTypes = ["casual", "sick", "earned"];
+
+    public async Task<ApiResult<IReadOnlyList<LeaveBalanceResponse>>> GetMyLeaveBalancesAsync(CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<IReadOnlyList<LeaveBalanceResponse>>.Fail(new Error("forbidden", "no tenant context"), 403);
+
+        var year = DateTime.UtcNow.Year;
+        var rows = await leave.GetBalancesAsync(tid, tenant.UserId, year, ct);
+        var byType = rows.ToDictionary(r => r.Type, StringComparer.OrdinalIgnoreCase);
+        var result = CanonicalLeaveTypes
+            .Select(t => byType.TryGetValue(t, out var existing) ? existing : new LeaveBalanceResponse(t, 0, 0))
+            .ToList();
+        return ApiResult<IReadOnlyList<LeaveBalanceResponse>>.Ok(result);
     }
 
     public async Task<ApiResult<LeaveResponse>> CreateLeaveAsync(CreateLeaveRequest req, CancellationToken ct = default)

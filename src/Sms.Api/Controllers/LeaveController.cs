@@ -14,6 +14,10 @@ public sealed class LeaveController(IStaffingService staffing) : ApiControllerBa
     public async Task<IActionResult> ListMine(CancellationToken ct) =>
         FromResult(await staffing.ListMyLeaveAsync(ct));
 
+    [HttpGet("leave/balances")]
+    public async Task<IActionResult> Balances(CancellationToken ct) =>
+        FromResult(await staffing.GetMyLeaveBalancesAsync(ct));
+
     [HttpPost("leave")]
     public async Task<IActionResult> Create([FromBody] CreateLeaveRequest req, CancellationToken ct) =>
         FromResult(await staffing.CreateLeaveAsync(req, ct));

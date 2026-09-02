@@ -14,6 +14,17 @@ public sealed class TeacherRepository(IDbConnectionFactory factory) : BaseReposi
     private const string PhoneExpr =
         "COALESCE(NULLIF(LTRIM(RTRIM(t.Phone)), ''), NULLIF(LTRIM(RTRIM(u.Phone)), ''), NULLIF(LTRIM(RTRIM(peer.Phone)), '')) AS Phone";
 
+    private const string PhoneExprList =
+        "COALESCE(NULLIF(LTRIM(RTRIM(t.Phone)), ''), NULLIF(LTRIM(RTRIM(u.Phone)), '')) AS Phone";
+
+    private const string PhotoExprList = "u.PhotoUrl AS PhotoUrl";
+
+    private const string FromJoinList =
+        """
+        FROM dbo.Teachers t
+        LEFT JOIN dbo.Users u ON u.Id = t.UserId
+        """;
+
     private static string TeacherSelectCols => $"{ColsBeforePhone}{PhoneExpr}, {ColsAfterPhone}";
 
     private const string PhotoExpr =
@@ -120,7 +131,7 @@ public sealed class TeacherRepository(IDbConnectionFactory factory) : BaseReposi
         string? q, string? dept, string? status, CancellationToken ct = default)
     {
         var rows = await QueryInlineAsync<TeacherRow>(
-            $"SELECT {TeacherSelectCols}, {PhotoExpr} {FromJoin} WHERE " +
+            $"SELECT {ColsBeforePhone}{PhoneExprList}, {ColsAfterPhone}, {PhotoExprList} {FromJoinList} WHERE " +
             "(@q IS NULL OR t.Name LIKE '%' + @q + '%' OR t.Department LIKE '%' + @q + '%' OR t.EmployeeCode LIKE '%' + @q + '%') " +
             "AND (@dept IS NULL OR t.Department = @dept) AND (@status IS NULL OR t.Status = @status) ORDER BY t.Name",
             new { q, dept, status }, ct);
@@ -139,10 +150,15 @@ public sealed class StaffRepository(IDbConnectionFactory factory) : BaseReposito
     private const string PhoneExpr =
         "COALESCE(NULLIF(LTRIM(RTRIM(s.Phone)), ''), NULLIF(LTRIM(RTRIM(u.Phone)), ''), NULLIF(LTRIM(RTRIM(peer.Phone)), '')) AS Phone";
 
+    private const string PhoneExprList =
+        "COALESCE(NULLIF(LTRIM(RTRIM(s.Phone)), ''), NULLIF(LTRIM(RTRIM(u.Phone)), '')) AS Phone";
+
     private static string StaffSelectCols => $"{ColsBeforePhone}{PhoneExpr}, {ColsAfterPhone}";
 
     private const string PhotoExpr =
         "COALESCE(u.PhotoUrl, peer.PhotoUrl) AS PhotoUrl";
+
+    private const string PhotoExprList = "u.PhotoUrl AS PhotoUrl";
 
     private const string FromJoin =
         """
@@ -155,6 +171,12 @@ public sealed class StaffRepository(IDbConnectionFactory factory) : BaseReposito
               AND s.Email IS NOT NULL AND u2.Email = s.Email
             ORDER BY CASE WHEN u2.TenantId = s.TenantId THEN 0 ELSE 1 END, u2.CreatedAt
         ) peer
+        """;
+
+    private const string FromJoinList =
+        """
+        FROM dbo.Staff s
+        LEFT JOIN dbo.Users u ON u.Id = s.UserId
         """;
 
     public Task<StaffResponse?> CreateAsync(Guid tenantId, CreateStaffRequest r, CancellationToken ct = default) =>
@@ -221,7 +243,7 @@ public sealed class StaffRepository(IDbConnectionFactory factory) : BaseReposito
 
     public Task<IReadOnlyList<StaffResponse>> ListAsync(string? q, string? cat, CancellationToken ct = default) =>
         QueryInlineAsync<StaffResponse>(
-            $"SELECT {StaffSelectCols}, {PhotoExpr} {FromJoin} WHERE " +
+            $"SELECT {ColsBeforePhone}{PhoneExprList}, {ColsAfterPhone}, {PhotoExprList} {FromJoinList} WHERE " +
             "(@q IS NULL OR s.Name LIKE '%' + @q + '%' OR s.Role LIKE '%' + @q + '%' OR s.EmployeeCode LIKE '%' + @q + '%') " +
             "AND (@cat IS NULL OR s.Category = @cat) ORDER BY s.Name",
             new { q, cat }, ct);

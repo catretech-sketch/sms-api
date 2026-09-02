@@ -14,6 +14,11 @@ public sealed class ReportingController(IReportingService reporting) : ApiContro
     public async Task<IActionResult> GetDashboardStats(CancellationToken ct) =>
         FromResult(await reporting.GetDashboardStatsAsync(ct));
 
+    [HttpGet("crm/dashboard/people")]
+    [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
+    public async Task<IActionResult> GetCrmPeopleSnapshot(CancellationToken ct) =>
+        FromResult(await reporting.GetCrmPeopleSnapshotAsync(ct));
+
     [HttpGet("principal/overview")]
     [Authorize(Policy = Policies.Principal)]
     public async Task<IActionResult> GetPrincipalOverview(

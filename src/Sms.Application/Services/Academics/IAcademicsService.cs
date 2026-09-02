@@ -128,6 +128,7 @@ public interface IAcademicsService
 
     Task<ApiResult<IReadOnlyList<GradeResponse>>> ListGradesAsync(Guid examPaperId, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<GradeResponse>>> ListGradesForStudentAsync(Guid studentId, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<ExamLetterGradeCount>>> CountLetterGradesForExamAsync(Guid examId, CancellationToken ct = default);
     Task<ApiResult<GradeResponse>> UpsertGradeAsync(UpsertGradeRequest req, CancellationToken ct = default);
 
     Task<ApiResult<IReadOnlyList<ExamAttendanceRecordResponse>>> ListExamAttendanceAsync(

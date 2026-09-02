@@ -77,6 +77,9 @@ public sealed class AuthDao(IDbConnectionFactory factory, ITenantContext tenant)
     public Task<UserRecord?> EnsureParentLoginAsync(string admissionId, CancellationToken ct = default) =>
         QuerySingleProcAsync<UserRecord>(AuthQueries.EnsureParentLogin, new { AdmissionId = admissionId }, ct);
 
+    public Task<UserRecord?> EnsureStaffLoginAsync(string email, CancellationToken ct = default) =>
+        QuerySingleProcAsync<UserRecord>(AuthQueries.EnsureStaffLogin, new { Email = email }, ct);
+
     public async Task<UserRecord?> GetByEmailAndTenantAsync(string email, Guid tenantId, CancellationToken ct = default) =>
         (await QueryInlineAsync<UserRecord>(
             "SELECT Id, TenantId, Email, StudentId, Phone, PasswordHash, IsPlatform, Status, Name, MustSetPassword, CreatedAt, PhotoUrl " +

@@ -17,6 +17,10 @@ public sealed class ExamController(IAcademicsService academics) : ApiControllerB
     public async Task<IActionResult> Get(Guid id, CancellationToken ct) =>
         FromResult(await academics.GetExamAsync(id, ct));
 
+    [HttpGet("exams/{id:guid}/letter-grades")]
+    public async Task<IActionResult> LetterGrades(Guid id, CancellationToken ct) =>
+        FromResult(await academics.CountLetterGradesForExamAsync(id, ct));
+
     [HttpPost("exams")]
     [Authorize(Policy = Sms.Shared.Kernel.Authz.Policies.SchoolAdmin)]
     public async Task<IActionResult> Create([FromBody] CreateExamRequest req, CancellationToken ct) =>

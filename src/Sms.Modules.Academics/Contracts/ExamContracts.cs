@@ -58,4 +58,5 @@ public sealed class GradeResponse
     public string? PaperName { get; init; }
     public bool ExamPublished { get; init; }
 }
+public sealed record ExamLetterGradeCount(string Grade, int Count);
 public sealed record UpsertGradeRequest(Guid StudentId, string? StudentName, Guid ExamPaperId, decimal Marks);

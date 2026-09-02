@@ -100,6 +100,16 @@ WHERE g.StudentId = @studentId
 ORDER BY g.[Date] DESC, p.Subject",
             new { studentId }, ct);
 
+    /// <summary>Letter-grade histogram for every paper in an exam (one round-trip for CRM dashboard).</summary>
+    public Task<IReadOnlyList<ExamLetterGradeCount>> CountLetterGradesForExamAsync(Guid examId, CancellationToken ct = default) =>
+        QueryInlineAsync<ExamLetterGradeCount>(@"
+SELECT LTRIM(RTRIM(g.Grade)) AS Grade, COUNT(*) AS Count
+FROM dbo.Grades g
+INNER JOIN dbo.ExamPapers p ON p.Id = g.ExamPaperId
+WHERE p.ExamId = @examId AND g.Grade IS NOT NULL AND LTRIM(RTRIM(g.Grade)) <> N''
+GROUP BY LTRIM(RTRIM(g.Grade))",
+            new { examId }, ct);
+
     // Exam attendance — admin roll-call for one paper, distinct from Grades (marks/scores).
     public Task BulkUpsertExamAttendanceAsync(Guid tenantId, Guid examPaperId, Guid? markedBy,
         IReadOnlyList<ExamAttendanceUpsertRow> rows, CancellationToken ct = default)

@@ -74,6 +74,12 @@ VALUES
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         doc.RootElement.GetProperty("data").GetProperty("attendance_pct").GetDecimal().Should().Be(81.82m);
 
+        var list = await client.GetAsync("/v1/students");
+        list.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var listDoc = JsonDocument.Parse(await list.Content.ReadAsStringAsync());
+        var listed = listDoc.RootElement.GetProperty("data").EnumerateArray().First(e => e.GetProperty("id").GetGuid() == studentId);
+        listed.GetProperty("attendance_pct").GetDecimal().Should().Be(81.82m);
+
         var summary = await client.GetAsync($"/v1/students/{studentId}/attendance/summary");
         summary.StatusCode.Should().Be(HttpStatusCode.OK);
         using var sumDoc = JsonDocument.Parse(await summary.Content.ReadAsStringAsync());

@@ -3,6 +3,18 @@ namespace Sms.Modules.Reporting.Contracts;
 public sealed record DashboardStatsResponse(
     int TotalStudents, int TotalClasses, int AttendanceToday, int PendingAssignments, int UpcomingExams);
 
+public sealed record CrmGradeCount(string Grade, int Count);
+
+public sealed record CrmPeopleSnapshotResponse(
+    int StudentCount,
+    int TeacherCount,
+    int StaffCount,
+    int UniqueGrades,
+    int Boys,
+    int Girls,
+    int Unspecified,
+    IReadOnlyList<CrmGradeCount> Grades);
+
 public sealed record PrincipalKpis(
     decimal StudentsPresentPct, int StaffPresent, int StaffTotal, int PendingApprovals);
 

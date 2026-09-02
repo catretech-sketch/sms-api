@@ -344,7 +344,9 @@ public sealed class MeSchoolsService(
     public async Task<FeeSummaryResponse> FeeSummaryAsync(DateOnly? from, DateOnly? to, CancellationToken ct = default)
     {
         var today = DateOnly.FromDateTime(DateTime.UtcNow);
-        var periodFrom = from ?? new DateOnly(today.Year, today.Month, 1);
+        // Rolling trailing window, not calendar month-to-date — MTD collapses to a single
+        // empty day right after month rollover and hides real recent collections.
+        var periodFrom = from ?? today.AddDays(-30);
         var periodTo = to ?? today;
         if (periodTo < periodFrom)
             (periodFrom, periodTo) = (periodTo, periodFrom);
