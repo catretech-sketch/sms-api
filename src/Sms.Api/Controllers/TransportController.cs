@@ -12,10 +12,12 @@ public sealed record AssignStudentBusRequest(Guid? StopId);
 public sealed record AssignBusTeacherRequest(Guid TeacherUserId);
 
 public sealed record CreateBusRequest(
-    string BusNo, string? RouteName, Guid? RouteId, string? Driver, string? DriverPhone, Guid? DriverStaffId);
+    string BusNo, string? RouteName, Guid? RouteId, string? Driver, string? DriverPhone, Guid? DriverStaffId,
+    Guid? ConductorStaffId = null);
 
 public sealed record UpdateBusRequest(
-    string? BusNo, Guid? RouteId, Guid? DriverStaffId, bool ClearDriver = false);
+    string? BusNo, Guid? RouteId, Guid? DriverStaffId, bool ClearDriver = false,
+    Guid? ConductorStaffId = null, bool ClearConductor = false);
 
 public sealed record CreateRouteRequest(string Name, int? Stops);
 
@@ -46,12 +48,12 @@ public sealed class TransportController(IBusService bus, IStudentBusService stud
 
     [HttpPost("buses")]
     public async Task<IActionResult> CreateBus([FromBody] CreateBusRequest req, CancellationToken ct) =>
-        FromResult(await bus.CreateBusAsync(req.BusNo, req.RouteName, req.RouteId, req.Driver, req.DriverPhone, req.DriverStaffId));
+        FromResult(await bus.CreateBusAsync(req.BusNo, req.RouteName, req.RouteId, req.Driver, req.DriverPhone, req.DriverStaffId, req.ConductorStaffId, ct));
 
     [HttpPut("buses/{busId:guid}")]
     public async Task<IActionResult> UpdateBus(
         Guid busId, [FromBody] UpdateBusRequest req, CancellationToken ct) =>
-        FromResult(await bus.UpdateBusAsync(busId, req.BusNo, req.RouteId, req.DriverStaffId, req.ClearDriver, ct));
+        FromResult(await bus.UpdateBusAsync(busId, req.BusNo, req.RouteId, req.DriverStaffId, req.ClearDriver, req.ConductorStaffId, req.ClearConductor, ct));
 
     [HttpPut("buses/{busId:guid}/teacher")]
     public async Task<IActionResult> AssignTeacher(

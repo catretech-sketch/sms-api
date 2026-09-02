@@ -25,17 +25,18 @@ public sealed record TransportRouteListItem(Guid Id, string Name, int Stops);
 public sealed record RouteStopListItem(Guid Id, Guid RouteId, string Name, int Sequence, double Lat, double Lng);
 public sealed record CreatedBusRow(
     Guid BusId, string BusNo, Guid? RouteId, string? RouteName, string? Driver, string? DriverPhone,
-    int StopCount, int StudentsRiding, string Status);
+    int StopCount, int StudentsRiding, string Status, Guid? ConductorStaffId = null);
 public sealed record UpdatedBusRow(
     Guid BusId, string BusNo, Guid? RouteId, string? RouteName, Guid? DriverStaffId,
-    string? Driver, string? DriverPhone, int StopCount, int StudentsAssigned);
+    string? Driver, string? DriverPhone, int StopCount, int StudentsAssigned, Guid? ConductorStaffId = null);
 public sealed record BusTripContext(Guid BusId, string BusNo, Guid? RouteId);
 
 /// Admin bus list row with optional duty teacher.
 public sealed record TransportBusResponse(
     Guid BusId, string BusNo, Guid? RouteId, string? RouteName, Guid? DriverStaffId,
     string? Driver, string? DriverPhone,
-    int StopCount, int StudentsAssigned, Guid? TeacherUserId, string? TeacherName);
+    int StopCount, int StudentsAssigned, Guid? TeacherUserId, string? TeacherName,
+    Guid? ConductorStaffId = null);
 
 public sealed record BusTeacherAssignmentResponse(
     Guid BusId, string BusNo, Guid? TeacherUserId, string? TeacherName);
@@ -95,22 +96,25 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
 
     public async Task<CreatedBusRow?> CreateBusAsync(
         Guid tenantId, string busNo, string? routeName, Guid? routeId, string? driver, string? driverPhone,
-        Guid? driverStaffId, CancellationToken ct = default) =>
+        Guid? driverStaffId, Guid? conductorStaffId = null, CancellationToken ct = default) =>
         await QuerySingleProcAsync<CreatedBusRow>("dbo.Bus_Create",
             new
             {
                 TenantId = tenantId, BusNo = busNo, RouteName = routeName, RouteId = routeId,
-                Driver = driver, DriverPhone = driverPhone, DriverStaffId = driverStaffId
+                Driver = driver, DriverPhone = driverPhone, DriverStaffId = driverStaffId,
+                ConductorStaffId = conductorStaffId
             }, ct);
 
     public async Task<UpdatedBusRow?> UpdateBusAsync(
         Guid tenantId, Guid busId, string? busNo, Guid? routeId, Guid? driverStaffId, bool clearDriver,
+        Guid? conductorStaffId = null, bool clearConductor = false,
         CancellationToken ct = default) =>
         await QuerySingleProcAsync<UpdatedBusRow>("dbo.Bus_Update",
             new
             {
                 TenantId = tenantId, BusId = busId, BusNo = busNo, RouteId = routeId,
-                DriverStaffId = driverStaffId, ClearDriver = clearDriver
+                DriverStaffId = driverStaffId, ClearDriver = clearDriver,
+                ConductorStaffId = conductorStaffId, ClearConductor = clearConductor
             }, ct);
 
     public async Task<bool> StaffExistsAsync(Guid staffId, CancellationToken ct = default) =>

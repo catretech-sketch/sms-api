@@ -78,7 +78,7 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
         return new TripSummaryResponse(tripId, durationMin, Math.Round(metres / 1000, 2), stops, boarded);
     }
 
-    private sealed record AssignedBusRow(string BusNo, Guid? RouteId);
+    private sealed record AssignedBusRow(string BusNo, Guid? RouteId, string? ConductorName);
     private sealed record RouteRow(Guid Id, string Name);
 
     /// Resolved by the driver's own identity (Staff.UserId -> Buses.DriverStaffId), never by a
@@ -86,8 +86,10 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
     public async Task<StaffTripAssignmentResponse?> GetAssignmentAsync(Guid driverUserId, CancellationToken ct = default)
     {
         var bus = (await QueryInlineAsync<AssignedBusRow>(
-            @"SELECT b.BusNo, b.RouteId FROM dbo.Buses b
+            @"SELECT b.BusNo, b.RouteId, cs.Name AS ConductorName
+              FROM dbo.Buses b
               JOIN dbo.Staff s ON s.Id = b.DriverStaffId
+              LEFT JOIN dbo.Staff cs ON cs.Id = b.ConductorStaffId
               WHERE s.UserId = @driverUserId", new { driverUserId }, ct)).FirstOrDefault();
         if (bus?.RouteId is not { } routeId) return null;
 
@@ -99,7 +101,8 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
             "SELECT Id, Name, Lat, Lng, Seq, CAST(NULL AS int) AS EtaMin FROM dbo.RouteStops WHERE RouteId = @routeId ORDER BY Seq",
             new { routeId }, ct);
 
-        return new StaffTripAssignmentResponse(new StaffRouteResponse(route.Id, route.Name, bus.BusNo, stops), bus.BusNo, null);
+        return new StaffTripAssignmentResponse(
+            new StaffRouteResponse(route.Id, route.Name, bus.BusNo, stops), bus.BusNo, bus.ConductorName);
     }
 
     public async Task<IReadOnlyList<StaffRosterStudentResponse>> GetRosterAsync(Guid tripId, CancellationToken ct = default)
