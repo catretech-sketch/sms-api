@@ -14,9 +14,18 @@ BEGIN
         (SELECT TOP 1 Id FROM dbo.Buses
          WHERE TenantId = @TenantId AND BusNo = @BusNo ORDER BY Id);
 
-    INSERT dbo.Trips (Id, TenantId, RouteId, BusId, BusNo, DriverId, Direction, Status, StartedAt)
-    VALUES (@Id, @TenantId, @RouteId, @BusId, @BusNo, @DriverId, ISNULL(@Direction, 'pickup'), 'live', SYSUTCDATETIME());
+    -- Auto-assign the trip's conductor from the bus's ConductorStaffId, resolved to their
+    -- login identity (Staff.UserId) — ConductorId is a user id, same as DriverId, not a
+    -- Staff.Id, so trip-ownership checks can compare it directly against the caller's uid.
+    DECLARE @ConductorId uniqueidentifier =
+        (SELECT s.UserId FROM dbo.Buses b
+         JOIN dbo.Staff s ON s.Id = b.ConductorStaffId
+         WHERE b.Id = @BusId);
 
-    SELECT Id, TenantId, RouteId, BusNo, DriverId, ConductorId, Direction, Status, StartedAt, EndedAt
+    INSERT dbo.Trips (Id, TenantId, RouteId, BusId, BusNo, DriverId, ConductorId, Direction, Status, StartedAt)
+    VALUES (@Id, @TenantId, @RouteId, @BusId, @BusNo, @DriverId, @ConductorId, ISNULL(@Direction, 'pickup'), 'live', SYSUTCDATETIME());
+
+    SELECT Id, TenantId, RouteId, BusNo, DriverId, ConductorId, Direction, Status, StartedAt, EndedAt,
+        DriverLastPingAt, ConductorLastPingAt
     FROM dbo.Trips WHERE Id = @Id;
 END

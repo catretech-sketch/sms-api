@@ -11,6 +11,14 @@ public sealed record PunchRequest(string Kind, DateTime At, double Lat, double L
 public sealed record TeacherAttendanceDayResponse(DateOnly Date, CheckEventResponse? CheckIn, CheckEventResponse? CheckOut);
 public sealed record TeacherAttendanceSummaryResponse(int DaysPresent, int DaysFlagged, double TotalHours);
 
+// Staff self-service shape (sms-staff app) — composed from the same TeacherAttendanceDayResponse
+// and SchoolLocationResponse the teacher-app endpoints already return, not a new data model.
+public sealed record StaffAttendanceLogEntry(string Kind, DateTime At, bool InZone);
+public sealed record StaffAttendanceResponse(
+    bool CheckedIn, DateTime? CheckInAt, IReadOnlyList<StaffAttendanceLogEntry> LastLog,
+    string DutyPost, int GeofenceRadiusM);
+public sealed record StaffCheckRequest(DateTime At, double Lat, double Lng, double AccuracyMeters, int? OffsetMinutes = null);
+
 /// Raised when a geo punch cannot be recorded (school location missing or outside geofence).
 public sealed class GeofencePunchRejectedException : Exception
 {
@@ -174,6 +182,36 @@ public sealed class CheckInRepository(IDbConnectionFactory factory) : BaseReposi
             return firstIn is { } i && lastOut is { } o && o > i ? (o - i).TotalHours : 0;
         });
         return new TeacherAttendanceSummaryResponse(daysPresent, daysFlagged, Math.Round(totalHours, 2));
+    }
+
+    /// Total hours worked in the current ISO week (Monday-Sunday, in the caller's local time),
+    /// same first-in/last-out-per-day logic as GetSummaryAsync's month scan, just windowed
+    /// differently. Used by the staff dashboard's "hours this week" figure.
+    public async Task<double> GetWeekSummaryAsync(Guid userId, TimeSpan utcOffset, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<CheckInRow>(
+            "SELECT Kind, At, Lat, Lng, AccuracyMeters, DistanceMeters, Verified FROM dbo.CheckIns " +
+            "WHERE UserId = @userId", new { userId }, ct);
+
+        var todayLocal = DateOnly.FromDateTime(DateTime.UtcNow.Add(utcOffset));
+        var daysSinceMonday = ((int)todayLocal.DayOfWeek + 6) % 7;
+        var weekStart = todayLocal.AddDays(-daysSinceMonday);
+        var weekEnd = weekStart.AddDays(6);
+
+        var inWeek = rows.Where(r =>
+        {
+            var local = DateOnly.FromDateTime(r.At.Add(utcOffset));
+            return local >= weekStart && local <= weekEnd;
+        }).ToList();
+
+        var byDay = inWeek.GroupBy(r => DateOnly.FromDateTime(r.At.Add(utcOffset)));
+        double totalHours = byDay.Sum(g =>
+        {
+            var firstIn = g.Where(x => x.Kind == "in").OrderBy(x => x.At).Select(x => (DateTime?)x.At).FirstOrDefault();
+            var lastOut = g.Where(x => x.Kind == "out").OrderBy(x => x.At).Select(x => (DateTime?)x.At).LastOrDefault();
+            return firstIn is { } i && lastOut is { } o && o > i ? (o - i).TotalHours : 0;
+        });
+        return Math.Round(totalHours, 2);
     }
 
     private static CheckEventResponse ToEvent(CheckInRow x) =>

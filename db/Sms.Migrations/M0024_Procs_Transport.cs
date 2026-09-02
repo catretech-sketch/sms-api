@@ -17,6 +17,16 @@ IF COL_LENGTH('dbo.Trips', 'BusId') IS NULL
     ALTER TABLE dbo.Trips ADD BusId uniqueidentifier NULL;
 ");
 
+        // Same reasoning as BusId above: Trip_Start.sql now also references
+        // DriverLastPingAt/ConductorLastPingAt (added formally in M0163), so those columns
+        // must exist before this guarded, currently-live-file-sourced CREATE PROCEDURE runs.
+        Execute.Sql(@"
+IF COL_LENGTH('dbo.Trips', 'DriverLastPingAt') IS NULL
+    ALTER TABLE dbo.Trips ADD DriverLastPingAt datetime2 NULL;
+IF COL_LENGTH('dbo.Trips', 'ConductorLastPingAt') IS NULL
+    ALTER TABLE dbo.Trips ADD ConductorLastPingAt datetime2 NULL;
+");
+
         foreach (var sql in M0003_Procs_Auth.EmbeddedProcs("procs.transport."))
             Execute.Sql(sql);
     }

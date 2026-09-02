@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Dapper;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
@@ -72,5 +73,72 @@ public class TripOwnershipTests(SqlServerFixture fx)
         // Owner can still end their own trip.
         (await driver1.PostAsync($"/v1/staff/trips/{tripId}/end", null))
             .StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    private static HttpClient ConductorClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId)
+    {
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(userId, tenantId, ["conductor"], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+        return client;
+    }
+
+    [Fact]
+    public async Task Assigned_conductor_can_ping_board_and_end_the_trip()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var conductorUserId = Guid.NewGuid();
+        var conductorStaffId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var busNo = $"KA-{Guid.NewGuid():N}"[..12];
+
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Staff (Id, TenantId, Name, UserId) VALUES (@Id, @TenantId, @Name, @UserId)",
+                new { Id = conductorStaffId, TenantId = tenantId, Name = "Priya Rao", UserId = conductorUserId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Buses (Id, TenantId, BusNo, ConductorStaffId) VALUES (@Id, @TenantId, @BusNo, @ConductorStaffId)",
+                new { Id = busId, TenantId = tenantId, BusNo = busNo, ConductorStaffId = conductorStaffId });
+        }
+
+        var driver = StaffClient(app, tenantId, Guid.NewGuid());
+        var trip = await Data(await driver.PostAsJsonAsync("/v1/staff/trips",
+            new { direction = "pickup", bus_no = busNo }), HttpStatusCode.Created);
+        var tripId = trip.GetProperty("id").GetGuid();
+
+        var conductor = ConductorClient(app, tenantId, conductorUserId);
+        var now = DateTime.UtcNow;
+        (await conductor.PostAsJsonAsync($"/v1/staff/trips/{tripId}/pings", new
+        {
+            pings = new[] { new { lat = 12.9, lng = 77.5, speed_kmh = 20, heading = 10, at = now } },
+        })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await conductor.PostAsJsonAsync($"/v1/staff/trips/{tripId}/boarding",
+            new { student_id = Guid.NewGuid(), state = "boarded", at = now }))
+            .StatusCode.Should().Be(HttpStatusCode.NoContent);
+        (await conductor.PostAsync($"/v1/staff/trips/{tripId}/end", null))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+    }
+
+    [Fact]
+    public async Task Peer_conductor_not_assigned_to_the_trip_cannot_mutate_it()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var driver = StaffClient(app, tenantId, Guid.NewGuid());
+        var peerConductor = ConductorClient(app, tenantId, Guid.NewGuid());
+
+        var trip = await Data(await driver.PostAsJsonAsync("/v1/staff/trips",
+            new { direction = "pickup", bus_no = "KA-01-F-7701" }), HttpStatusCode.Created);
+        var tripId = trip.GetProperty("id").GetGuid();
+
+        (await peerConductor.PostAsync($"/v1/staff/trips/{tripId}/end", null))
+            .StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 }

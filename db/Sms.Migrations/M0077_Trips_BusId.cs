@@ -35,9 +35,34 @@ JOIN dbo.Buses b ON b.TenantId = t.TenantId AND b.BusNo = t.BusNo
 WHERE t.BusId IS NULL AND t.BusNo IS NOT NULL;
 ");
 
-        // Redeploy Trip_Start so new trips populate BusId (resolved per-tenant).
-        foreach (var sql in M0003_Procs_Auth.EmbeddedProcs("procs.transport.Trip_Start"))
-            Execute.Sql(sql);
+        // Redeploy Trip_Start so new trips populate BusId (resolved per-tenant). Frozen inline
+        // (not sourced from the shared procs/transport/Trip_Start.sql resource) because that file
+        // was later edited (M0163) to reference Buses.ConductorStaffId, a column that does not
+        // exist yet at this point in migration history — a fresh-DB replay must see the proc as it
+        // actually looked when this migration ran, not the file's current-tip content.
+        Execute.Sql(@"
+CREATE OR ALTER PROCEDURE dbo.Trip_Start
+    @TenantId uniqueidentifier, @RouteId uniqueidentifier, @BusNo nvarchar(40),
+    @DriverId uniqueidentifier, @Direction nvarchar(10)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Id uniqueidentifier = NEWID();
+
+    -- Bind the trip to a concrete BusId resolved WITHIN THIS TENANT. Never trust the
+    -- bus number alone: a bus number can repeat across schools, so we scope the lookup
+    -- by @TenantId (belt-and-suspenders on top of RLS) so a trip can only ever point at
+    -- this tenant's bus. Live tracking then matches on BusId, not the number.
+    DECLARE @BusId uniqueidentifier =
+        (SELECT TOP 1 Id FROM dbo.Buses
+         WHERE TenantId = @TenantId AND BusNo = @BusNo ORDER BY Id);
+
+    INSERT dbo.Trips (Id, TenantId, RouteId, BusId, BusNo, DriverId, Direction, Status, StartedAt)
+    VALUES (@Id, @TenantId, @RouteId, @BusId, @BusNo, @DriverId, ISNULL(@Direction, 'pickup'), 'live', SYSUTCDATETIME());
+
+    SELECT Id, TenantId, RouteId, BusNo, DriverId, ConductorId, Direction, Status, StartedAt, EndedAt
+    FROM dbo.Trips WHERE Id = @Id;
+END");
     }
 
     public override void Down()

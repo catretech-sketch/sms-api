@@ -5,9 +5,17 @@ using Sms.Shared.Kernel.Data;
 
 namespace Sms.Modules.Transport;
 
+// ActiveBroadcaster is deliberately NOT a primary-constructor parameter: Dapper's record
+// materialization requires an exact positional match between the constructor and the
+// selected columns, so a computed-only field (never selected from the DB) must live outside
+// the constructor as an init-only property instead, set afterwards via `with`.
 public sealed record TripResponse(
     Guid Id, Guid TenantId, Guid? RouteId, string? BusNo, Guid? DriverId, Guid? ConductorId,
-    string Direction, string Status, DateTime? StartedAt, DateTime? EndedAt);
+    string Direction, string Status, DateTime? StartedAt, DateTime? EndedAt,
+    DateTime? DriverLastPingAt = null, DateTime? ConductorLastPingAt = null)
+{
+    public string? ActiveBroadcaster { get; init; }
+}
 public sealed record StartTripRequest(Guid? RouteId, string? BusNo, string Direction);
 public sealed record PingItem(double Lat, double Lng, double SpeedKmh, double Heading, DateTime At);
 public sealed record BulkPingRequest(IReadOnlyList<PingItem> Pings);
@@ -18,28 +26,39 @@ public sealed record StaffStopResponse(Guid Id, string Name, double Lat, double 
 public sealed record StaffRouteResponse(Guid Id, string Name, string BusNo, IReadOnlyList<StaffStopResponse> Stops);
 public sealed record StaffTripAssignmentResponse(StaffRouteResponse Route, string BusNo, string? ConductorName);
 public sealed record StaffRosterStudentResponse(Guid Id, string Name, Guid? StopId, string? PhotoUrl);
+public sealed record StaffBusRouteSummaryResponse(string BusNo, string RouteName);
 
 public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
     private const string TripCols =
-        "Id, TenantId, RouteId, BusNo, DriverId, ConductorId, Direction, Status, StartedAt, EndedAt";
+        "Id, TenantId, RouteId, BusNo, DriverId, ConductorId, Direction, Status, StartedAt, EndedAt, " +
+        "DriverLastPingAt, ConductorLastPingAt";
     private sealed record PingRow(double Lat, double Lng);
 
     public Task<TripResponse?> StartAsync(Guid tenantId, Guid driverId, StartTripRequest r, CancellationToken ct = default) =>
         QuerySingleProcAsync<TripResponse>("dbo.Trip_Start",
             new { TenantId = tenantId, r.RouteId, r.BusNo, DriverId = driverId, r.Direction }, ct);
 
-    public async Task<TripResponse?> GetCurrentAsync(Guid driverId, CancellationToken ct = default) =>
+    public async Task<TripResponse?> GetCurrentAsync(Guid userId, CancellationToken ct = default) =>
         (await QueryInlineAsync<TripResponse>(
-            $"SELECT TOP 1 {TripCols} FROM dbo.Trips WHERE DriverId = @driverId AND Status = 'live' ORDER BY StartedAt DESC",
-            new { driverId }, ct)).FirstOrDefault();
+            $"SELECT TOP 1 {TripCols} FROM dbo.Trips WHERE (DriverId = @userId OR ConductorId = @userId) AND Status = 'live' ORDER BY StartedAt DESC",
+            new { userId }, ct)).FirstOrDefault();
 
-    /// True when the trip exists in the caller's tenant (RLS) AND is owned by this driver.
+    private sealed record TripParticipantsRow(Guid? DriverId, Guid? ConductorId);
+
+    /// Returns "driver", "conductor", or null if the caller is neither — the trip's driver or
+    /// its assigned conductor may operate it, RLS already scopes the row to the caller's tenant.
     /// Guards driver-app mutations against acting on a peer's trip within the same school.
-    public async Task<bool> IsOwnedByDriverAsync(Guid tripId, Guid driverId, CancellationToken ct = default) =>
-        (await QueryInlineAsync<int>(
-            "SELECT COUNT(1) FROM dbo.Trips WHERE Id = @tripId AND DriverId = @driverId",
-            new { tripId, driverId }, ct)).First() > 0;
+    public async Task<string?> GetParticipantRoleAsync(Guid tripId, Guid userId, CancellationToken ct = default)
+    {
+        var row = (await QueryInlineAsync<TripParticipantsRow>(
+            "SELECT DriverId, ConductorId FROM dbo.Trips WHERE Id = @tripId",
+            new { tripId }, ct)).FirstOrDefault();
+        if (row is null) return null;
+        if (row.DriverId == userId) return "driver";
+        if (row.ConductorId == userId) return "conductor";
+        return null;
+    }
 
     public Task IngestPingsAsync(Guid tenantId, Guid tripId, IReadOnlyList<PingItem> pings, CancellationToken ct = default)
     {
@@ -56,6 +75,13 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
         args.Add("@TripId", tripId);
         args.Add("@Rows", table.AsTableValuedParameter("dbo.TripPingTvp"));
         return ExecuteProcAsync("dbo.TripPing_BulkInsert", args, ct);
+    }
+
+    public Task MarkPingAsync(Guid tripId, string role, CancellationToken ct = default)
+    {
+        var column = role == "driver" ? "DriverLastPingAt" : "ConductorLastPingAt";
+        return ExecuteInlineAsync(
+            $"UPDATE dbo.Trips SET {column} = SYSUTCDATETIME() WHERE Id = @tripId", new { tripId }, ct);
     }
 
     public async Task<TripSummaryResponse> EndAsync(Guid tripId, CancellationToken ct = default)
@@ -78,7 +104,7 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
         return new TripSummaryResponse(tripId, durationMin, Math.Round(metres / 1000, 2), stops, boarded);
     }
 
-    private sealed record AssignedBusRow(string BusNo, Guid? RouteId);
+    private sealed record AssignedBusRow(string BusNo, Guid? RouteId, string? ConductorName);
     private sealed record RouteRow(Guid Id, string Name);
 
     /// Resolved by the driver's own identity (Staff.UserId -> Buses.DriverStaffId), never by a
@@ -86,8 +112,10 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
     public async Task<StaffTripAssignmentResponse?> GetAssignmentAsync(Guid driverUserId, CancellationToken ct = default)
     {
         var bus = (await QueryInlineAsync<AssignedBusRow>(
-            @"SELECT b.BusNo, b.RouteId FROM dbo.Buses b
+            @"SELECT b.BusNo, b.RouteId, cs.Name AS ConductorName
+              FROM dbo.Buses b
               JOIN dbo.Staff s ON s.Id = b.DriverStaffId
+              LEFT JOIN dbo.Staff cs ON cs.Id = b.ConductorStaffId
               WHERE s.UserId = @driverUserId", new { driverUserId }, ct)).FirstOrDefault();
         if (bus?.RouteId is not { } routeId) return null;
 
@@ -99,8 +127,28 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
             "SELECT Id, Name, Lat, Lng, Seq, CAST(NULL AS int) AS EtaMin FROM dbo.RouteStops WHERE RouteId = @routeId ORDER BY Seq",
             new { routeId }, ct);
 
-        return new StaffTripAssignmentResponse(new StaffRouteResponse(route.Id, route.Name, bus.BusNo, stops), bus.BusNo, null);
+        return new StaffTripAssignmentResponse(
+            new StaffRouteResponse(route.Id, route.Name, bus.BusNo, stops), bus.BusNo, bus.ConductorName);
     }
+
+    /// Lightweight bus+route lookup for the staff dashboard's role card — driver/conductor
+    /// resolved from their own identity, matching whichever of DriverStaffId/ConductorStaffId
+    /// applies. Unlike GetAssignmentAsync, doesn't need stops or the peer's name.
+    public async Task<StaffBusRouteSummaryResponse?> GetDriverBusRouteAsync(Guid driverUserId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<StaffBusRouteSummaryResponse>(
+            @"SELECT b.BusNo, r.Name AS RouteName
+              FROM dbo.Buses b
+              JOIN dbo.Staff s ON s.Id = b.DriverStaffId
+              JOIN dbo.TransportRoutes r ON r.Id = b.RouteId
+              WHERE s.UserId = @driverUserId", new { driverUserId }, ct)).FirstOrDefault();
+
+    public async Task<StaffBusRouteSummaryResponse?> GetConductorBusRouteAsync(Guid conductorUserId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<StaffBusRouteSummaryResponse>(
+            @"SELECT b.BusNo, r.Name AS RouteName
+              FROM dbo.Buses b
+              JOIN dbo.Staff s ON s.Id = b.ConductorStaffId
+              JOIN dbo.TransportRoutes r ON r.Id = b.RouteId
+              WHERE s.UserId = @conductorUserId", new { conductorUserId }, ct)).FirstOrDefault();
 
     public async Task<IReadOnlyList<StaffRosterStudentResponse>> GetRosterAsync(Guid tripId, CancellationToken ct = default)
     {

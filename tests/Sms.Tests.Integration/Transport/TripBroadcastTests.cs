@@ -1,7 +1,10 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
+using Dapper;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using FluentAssertions;
 using Sms.Application.Services.Realtime;
@@ -68,6 +71,13 @@ public class TripBroadcastTests(SqlServerFixture fx)
         return client;
     }
 
+    private static async Task<JsonElement> Data(HttpResponseMessage res, HttpStatusCode expected)
+    {
+        res.StatusCode.Should().Be(expected);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        return doc.RootElement.GetProperty("data").Clone();
+    }
+
     [Fact]
     public async Task Starting_pinging_and_ending_a_trip_each_broadcast_live_updates()
     {
@@ -100,5 +110,43 @@ public class TripBroadcastTests(SqlServerFixture fx)
         fleet.Calls.Should().HaveCount(3);
         live.Calls.Should().HaveCount(3);
         fleet.Calls.Should().AllSatisfy(t => t.Should().Be(tenantId));
+    }
+
+    [Fact]
+    public async Task ActiveBroadcaster_reflects_the_most_recently_pinging_role()
+    {
+        var (app, _, _) = App();
+        await using var _dispose = app;
+        var tenantId = Guid.NewGuid();
+        var driverUserId = Guid.NewGuid();
+        var conductorUserId = Guid.NewGuid();
+        var conductorStaffId = Guid.NewGuid();
+        var busNo = $"KA-{Guid.NewGuid():N}"[..12];
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Staff (Id, TenantId, Name, UserId) VALUES (@Id, @TenantId, @Name, @UserId)",
+                new { Id = conductorStaffId, TenantId = tenantId, Name = "Priya Rao", UserId = conductorUserId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Buses (Id, TenantId, BusNo, ConductorStaffId) VALUES (@Id, @TenantId, @BusNo, @ConductorStaffId)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, BusNo = busNo, ConductorStaffId = conductorStaffId });
+        }
+
+        var driver = StaffClient(app, tenantId, driverUserId);
+        var trip = await Data(await driver.PostAsJsonAsync("/v1/staff/trips",
+            new { direction = "pickup", bus_no = busNo }), HttpStatusCode.Created);
+        var tripId = trip.GetProperty("id").GetGuid();
+
+        var now = DateTime.UtcNow;
+        (await driver.PostAsJsonAsync($"/v1/staff/trips/{tripId}/pings", new
+        {
+            pings = new[] { new { lat = 1.0, lng = 1.0, speed_kmh = 10, heading = 0, at = now } },
+        })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var current = await Data(await driver.GetAsync("/v1/staff/trip/current"), HttpStatusCode.OK);
+        current.GetProperty("active_broadcaster").GetString().Should().Be("driver");
     }
 }
