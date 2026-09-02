@@ -2,8 +2,8 @@ using FluentMigrator;
 
 namespace Sms.Migrations;
 
-[Migration(165, "Staff documents admin CRUD: StaffDocument_Create/Update procs")]
-public sealed class M0165_StaffDocument_CreateUpdate_Procs : Migration
+[Migration(168, "Staff documents admin CRUD: StaffDocument_Create/Update procs")]
+public sealed class M0168_StaffDocument_CreateUpdate_Procs : Migration
 {
     public override void Up()
     {

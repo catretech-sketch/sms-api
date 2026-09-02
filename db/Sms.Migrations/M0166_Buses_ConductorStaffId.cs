@@ -2,8 +2,8 @@ using FluentMigrator;
 
 namespace Sms.Migrations;
 
-[Migration(163, "Transport: Buses.ConductorStaffId + conductor-aware Bus_Update/Bus_Create + Trip_Start auto-assigns ConductorId")]
-public sealed class M0163_Buses_ConductorStaffId : Migration
+[Migration(166, "Transport: Buses.ConductorStaffId + conductor-aware Bus_Update/Bus_Create + Trip_Start auto-assigns ConductorId")]
+public sealed class M0166_Buses_ConductorStaffId : Migration
 {
     public override void Up()
     {

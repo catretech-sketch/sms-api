@@ -2,8 +2,8 @@ using FluentMigrator;
 
 namespace Sms.Migrations;
 
-[Migration(164, "Staff self-service profile: StaffDocuments table + StaffDocuments_ListForUser proc")]
-public sealed class M0164_StaffDocuments_Table : Migration
+[Migration(167, "Staff self-service profile: StaffDocuments table + StaffDocuments_ListForUser proc")]
+public sealed class M0167_StaffDocuments_Table : Migration
 {
     public override void Up()
     {
