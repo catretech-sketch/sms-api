@@ -225,4 +225,10 @@ public sealed class StaffRepository(IDbConnectionFactory factory) : BaseReposito
             "(@q IS NULL OR s.Name LIKE '%' + @q + '%' OR s.Role LIKE '%' + @q + '%' OR s.EmployeeCode LIKE '%' + @q + '%') " +
             "AND (@cat IS NULL OR s.Category = @cat) ORDER BY s.Name",
             new { q, cat }, ct);
+
+    /// The caller's own Category (e.g. "driver"/"conductor") for the staff dashboard's role
+    /// card — resolved from Staff.UserId, same identity join as everywhere else self-service.
+    public async Task<string?> GetCategoryByUserIdAsync(Guid userId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<string?>(
+            "SELECT Category FROM dbo.Staff WHERE UserId = @userId", new { userId }, ct)).FirstOrDefault();
 }

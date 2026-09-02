@@ -17,6 +17,7 @@ public interface IAttendanceService
     Task<ApiResult<TeacherAttendanceDayResponse>> GetTodayAsync(string? date, int? offsetMinutes, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<TeacherAttendanceDayResponse>>> GetHistoryAsync(int? limit, int? offsetMinutes, CancellationToken ct = default);
     Task<ApiResult<TeacherAttendanceSummaryResponse>> GetSummaryAsync(string? month, int? offsetMinutes, CancellationToken ct = default);
+    Task<ApiResult<double>> GetWeekSummaryAsync(int? offsetMinutes, CancellationToken ct = default);
 }
 
 public sealed class AttendanceService(
@@ -159,5 +160,14 @@ public sealed class AttendanceService(
         }
         var offset = ParseUtcOffset(offsetMinutes);
         return ApiResult<TeacherAttendanceSummaryResponse>.Ok(await repo.GetSummaryAsync(uid, year, m, offset, ct));
+    }
+
+    public async Task<ApiResult<double>> GetWeekSummaryAsync(int? offsetMinutes, CancellationToken ct = default)
+    {
+        if (!StaffCheckInAllowed) return StaffCheckInLocked<double>();
+        if (tenant.UserId is not { } uid)
+            return ApiResult<double>.Fail(new Error("forbidden", "no user context"), 403);
+        var offset = ParseUtcOffset(offsetMinutes);
+        return ApiResult<double>.Ok(await repo.GetWeekSummaryAsync(uid, offset, ct));
     }
 }

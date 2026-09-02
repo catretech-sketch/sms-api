@@ -26,6 +26,7 @@ public sealed record StaffStopResponse(Guid Id, string Name, double Lat, double 
 public sealed record StaffRouteResponse(Guid Id, string Name, string BusNo, IReadOnlyList<StaffStopResponse> Stops);
 public sealed record StaffTripAssignmentResponse(StaffRouteResponse Route, string BusNo, string? ConductorName);
 public sealed record StaffRosterStudentResponse(Guid Id, string Name, Guid? StopId, string? PhotoUrl);
+public sealed record StaffBusRouteSummaryResponse(string BusNo, string RouteName);
 
 public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
@@ -129,6 +130,25 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
         return new StaffTripAssignmentResponse(
             new StaffRouteResponse(route.Id, route.Name, bus.BusNo, stops), bus.BusNo, bus.ConductorName);
     }
+
+    /// Lightweight bus+route lookup for the staff dashboard's role card — driver/conductor
+    /// resolved from their own identity, matching whichever of DriverStaffId/ConductorStaffId
+    /// applies. Unlike GetAssignmentAsync, doesn't need stops or the peer's name.
+    public async Task<StaffBusRouteSummaryResponse?> GetDriverBusRouteAsync(Guid driverUserId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<StaffBusRouteSummaryResponse>(
+            @"SELECT b.BusNo, r.Name AS RouteName
+              FROM dbo.Buses b
+              JOIN dbo.Staff s ON s.Id = b.DriverStaffId
+              JOIN dbo.TransportRoutes r ON r.Id = b.RouteId
+              WHERE s.UserId = @driverUserId", new { driverUserId }, ct)).FirstOrDefault();
+
+    public async Task<StaffBusRouteSummaryResponse?> GetConductorBusRouteAsync(Guid conductorUserId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<StaffBusRouteSummaryResponse>(
+            @"SELECT b.BusNo, r.Name AS RouteName
+              FROM dbo.Buses b
+              JOIN dbo.Staff s ON s.Id = b.ConductorStaffId
+              JOIN dbo.TransportRoutes r ON r.Id = b.RouteId
+              WHERE s.UserId = @conductorUserId", new { conductorUserId }, ct)).FirstOrDefault();
 
     public async Task<IReadOnlyList<StaffRosterStudentResponse>> GetRosterAsync(Guid tripId, CancellationToken ct = default)
     {

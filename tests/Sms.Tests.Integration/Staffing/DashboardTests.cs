@@ -1,0 +1,200 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json;
+using Dapper;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.Data.SqlClient;
+using FluentAssertions;
+using Sms.Shared.Kernel.Auth;
+using Sms.Shared.Kernel.Time;
+using Xunit;
+
+namespace Sms.Tests.Integration.Staffing;
+
+/// GET /v1/staff/dashboard — hoursThisWeek (real, from CheckIns) + roleCard (real for
+/// driver/conductor only, omitted for every other category — see the 2026-09-02 design).
+[Collection("sql")]
+public class DashboardTests(SqlServerFixture fx)
+{
+    private const string Key = "integration-test-signing-key-32-bytes-min!!";
+
+    private WebApplicationFactory<Program> App() =>
+        new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
+        {
+            b.UseSetting("environment", "Production");
+            b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
+            b.UseSetting("Jwt:SigningKey", Key);
+        });
+
+    private static HttpClient StaffClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId)
+    {
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(userId, tenantId, ["driver"], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+        return client;
+    }
+
+    private static async Task<JsonElement> Data(HttpResponseMessage res, HttpStatusCode expected)
+    {
+        res.StatusCode.Should().Be(expected);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        return doc.RootElement.GetProperty("data").Clone();
+    }
+
+    private async Task<SqlConnection> OpenAsync(Guid tenantId)
+    {
+        var conn = new SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+        return conn;
+    }
+
+    [Fact]
+    public async Task No_staff_row_means_no_role_card_but_hours_still_present()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = StaffClient(app, tenantId, Guid.NewGuid());
+
+        var data = await Data(await client.GetAsync("/v1/staff/dashboard"), HttpStatusCode.OK);
+
+        data.GetProperty("hours_this_week").GetDouble().Should().Be(0);
+        data.TryGetProperty("role_card", out var card).Should().BeTrue();
+        card.ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task Non_transport_category_gets_no_role_card()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var userId = Guid.NewGuid();
+        await using (var conn = await OpenAsync(tenantId))
+            await conn.ExecuteAsync(
+                "INSERT dbo.Staff (Id, TenantId, Name, Category, UserId) VALUES (NEWID(), @TenantId, 'Guard Gopal', 'guard', @UserId)",
+                new { TenantId = tenantId, UserId = userId });
+        var client = StaffClient(app, tenantId, userId);
+
+        var data = await Data(await client.GetAsync("/v1/staff/dashboard"), HttpStatusCode.OK);
+
+        data.GetProperty("role_card").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task Driver_with_no_bus_assignment_gets_no_role_card()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var userId = Guid.NewGuid();
+        await using (var conn = await OpenAsync(tenantId))
+            await conn.ExecuteAsync(
+                "INSERT dbo.Staff (Id, TenantId, Name, Category, UserId) VALUES (NEWID(), @TenantId, 'Driver Dan', 'driver', @UserId)",
+                new { TenantId = tenantId, UserId = userId });
+        var client = StaffClient(app, tenantId, userId);
+
+        var data = await Data(await client.GetAsync("/v1/staff/dashboard"), HttpStatusCode.OK);
+
+        data.GetProperty("role_card").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task Driver_with_a_bus_gets_a_real_role_card()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var userId = Guid.NewGuid();
+        var staffId = Guid.NewGuid();
+        var routeId = Guid.NewGuid();
+        await using (var conn = await OpenAsync(tenantId))
+        {
+            await conn.ExecuteAsync(
+                "INSERT dbo.Staff (Id, TenantId, Name, Category, UserId) VALUES (@Id, @TenantId, 'Driver Dan', 'driver', @UserId)",
+                new { Id = staffId, TenantId = tenantId, UserId = userId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.TransportRoutes (Id, TenantId, Name) VALUES (@Id, @TenantId, 'Route 7')",
+                new { Id = routeId, TenantId = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Buses (Id, TenantId, BusNo, RouteId, DriverStaffId) VALUES (NEWID(), @TenantId, 'KA-01-F-3301', @RouteId, @StaffId)",
+                new { TenantId = tenantId, RouteId = routeId, StaffId = staffId });
+        }
+        var client = StaffClient(app, tenantId, userId);
+
+        var data = await Data(await client.GetAsync("/v1/staff/dashboard"), HttpStatusCode.OK);
+        var card = data.GetProperty("role_card");
+
+        card.GetProperty("kind").GetString().Should().Be("driver");
+        card.GetProperty("bus_no").GetString().Should().Be("KA-01-F-3301");
+        card.GetProperty("route_name").GetString().Should().Be("Route 7");
+        card.GetProperty("license_expires_in_days").ValueKind.Should().Be(JsonValueKind.Null);
+        card.GetProperty("fitness_ok").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task Conductor_with_a_bus_gets_a_real_role_card()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var userId = Guid.NewGuid();
+        var staffId = Guid.NewGuid();
+        var routeId = Guid.NewGuid();
+        await using (var conn = await OpenAsync(tenantId))
+        {
+            await conn.ExecuteAsync(
+                "INSERT dbo.Staff (Id, TenantId, Name, Category, UserId) VALUES (@Id, @TenantId, 'Conductor Cathy', 'conductor', @UserId)",
+                new { Id = staffId, TenantId = tenantId, UserId = userId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.TransportRoutes (Id, TenantId, Name) VALUES (@Id, @TenantId, 'Route 9')",
+                new { Id = routeId, TenantId = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Buses (Id, TenantId, BusNo, RouteId, ConductorStaffId) VALUES (NEWID(), @TenantId, 'KA-02-G-1180', @RouteId, @StaffId)",
+                new { TenantId = tenantId, RouteId = routeId, StaffId = staffId });
+        }
+        var client = StaffClient(app, tenantId, userId);
+
+        var data = await Data(await client.GetAsync("/v1/staff/dashboard"), HttpStatusCode.OK);
+        var card = data.GetProperty("role_card");
+
+        card.GetProperty("kind").GetString().Should().Be("conductor");
+        card.GetProperty("bus_no").GetString().Should().Be("KA-02-G-1180");
+        card.GetProperty("route_name").GetString().Should().Be("Route 9");
+    }
+
+    [Fact]
+    public async Task Hours_this_week_reflects_a_completed_punch_pair()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var userId = Guid.NewGuid();
+        var client = StaffClient(app, tenantId, userId);
+
+        var now = DateTime.UtcNow;
+        (await client.PostAsJsonAsync("/v1/staff/attendance/check-in",
+            new { at = now.AddHours(-3), lat = 0.0, lng = 0.0, accuracy_meters = 0 }))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+        (await client.PostAsJsonAsync("/v1/staff/attendance/check-out",
+            new { at = now, lat = 0.0, lng = 0.0, accuracy_meters = 0 }))
+            .StatusCode.Should().Be(HttpStatusCode.Created);
+
+        var data = await Data(await client.GetAsync("/v1/staff/dashboard"), HttpStatusCode.OK);
+
+        data.GetProperty("hours_this_week").GetDouble().Should().BeApproximately(3, 0.05);
+    }
+
+    [Fact]
+    public async Task Anonymous_request_is_unauthorized()
+    {
+        await using var app = App();
+        var client = app.CreateClient();
+
+        (await client.GetAsync("/v1/staff/dashboard")).StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+}
