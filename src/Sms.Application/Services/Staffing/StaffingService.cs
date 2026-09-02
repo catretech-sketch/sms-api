@@ -3,6 +3,7 @@ using Sms.Application.Common;
 using Sms.Application.Interfaces.DAO;
 using Sms.Modules.Staffing.Contracts;
 using Sms.Modules.Staffing.Data;
+using Sms.Modules.Staffing.Profile;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Http;
 using Sms.Shared.Kernel.Results;
@@ -29,12 +30,20 @@ public interface IStaffingService
     Task<ApiResult<LeaveResponse>> CreateLeaveAsync(CreateLeaveRequest req, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<LeaveResponse>>> ListApprovalsAsync(string? status, CancellationToken ct = default);
     Task<ApiResult<LeaveResponse>> DecideLeaveAsync(Guid id, DecideLeaveRequest req, CancellationToken ct = default);
+
+    // Admin/principal document management for a specific staff member — distinct from
+    // GET /v1/staff/profile, which is the self-service read for the CALLER's own documents.
+    Task<ApiResult<IReadOnlyList<StaffDocumentResponse>>> ListStaffDocumentsAsync(Guid staffId, CancellationToken ct = default);
+    Task<ApiResult<StaffDocumentResponse>> CreateStaffDocumentAsync(Guid staffId, CreateStaffDocumentRequest req, CancellationToken ct = default);
+    Task<ApiResult<StaffDocumentResponse>> UpdateStaffDocumentAsync(Guid staffId, Guid docId, UpdateStaffDocumentRequest req, CancellationToken ct = default);
+    Task<ApiResult> DeleteStaffDocumentAsync(Guid staffId, Guid docId, CancellationToken ct = default);
 }
 
 public sealed class StaffingService(
     TeacherRepository teachers,
     StaffRepository staff,
     LeaveRepository leave,
+    ProfileRepository profile,
     IAuthDao users,
     ITenantContext tenant,
     ITenantFeatureSet features,
@@ -225,5 +234,62 @@ public sealed class StaffingService(
         if (tenant.TenantId is { } tid)
             await live.PublishAsync(tid, LiveEventTypes.Leave, ct: ct);
         return ApiResult<LeaveResponse>.Ok(decided);
+    }
+
+    public async Task<ApiResult<IReadOnlyList<StaffDocumentResponse>>> ListStaffDocumentsAsync(
+        Guid staffId, CancellationToken ct = default)
+    {
+        if (!StaffSupportAllowed)
+            return FeatureGate.Locked<IReadOnlyList<StaffDocumentResponse>>(FeatureCatalog.StaffSupport);
+        if (await staff.GetAsync(staffId, ct) is null)
+            return ApiResult<IReadOnlyList<StaffDocumentResponse>>.Fail(new Error("not_found", "resource not found"), 404);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<IReadOnlyList<StaffDocumentResponse>>.Fail(new Error("forbidden", "no tenant context"), 403);
+        var docs = await profile.ListForStaffAsync(tid, staffId, ct);
+        return ApiResult<IReadOnlyList<StaffDocumentResponse>>.Ok(docs);
+    }
+
+    public async Task<ApiResult<StaffDocumentResponse>> CreateStaffDocumentAsync(
+        Guid staffId, CreateStaffDocumentRequest req, CancellationToken ct = default)
+    {
+        if (!StaffSupportAllowed)
+            return FeatureGate.Locked<StaffDocumentResponse>(FeatureCatalog.StaffSupport);
+        if (await staff.GetAsync(staffId, ct) is null)
+            return ApiResult<StaffDocumentResponse>.Fail(new Error("not_found", "resource not found"), 404);
+        if (string.IsNullOrWhiteSpace(req.Label) || string.IsNullOrWhiteSpace(req.Value))
+            return ApiResult<StaffDocumentResponse>.Fail(new Error("invalid_request", "label and value are required"), 422);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<StaffDocumentResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
+        var created = (await profile.CreateAsync(tid, staffId, req, ct))!;
+        return ApiResult<StaffDocumentResponse>.Ok(created, 201);
+    }
+
+    public async Task<ApiResult<StaffDocumentResponse>> UpdateStaffDocumentAsync(
+        Guid staffId, Guid docId, UpdateStaffDocumentRequest req, CancellationToken ct = default)
+    {
+        if (!StaffSupportAllowed)
+            return FeatureGate.Locked<StaffDocumentResponse>(FeatureCatalog.StaffSupport);
+        if (string.IsNullOrWhiteSpace(req.Label) || string.IsNullOrWhiteSpace(req.Value))
+            return ApiResult<StaffDocumentResponse>.Fail(new Error("invalid_request", "label and value are required"), 422);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<StaffDocumentResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
+        // Guarded by StaffId + TenantId inside the proc itself, not pre-checked here — a
+        // cross-tenant or cross-staff docId simply matches zero rows and comes back null,
+        // same as TeamRepository.DeleteDocumentAsync's guarded-WHERE-clause approach.
+        var updated = await profile.UpdateAsync(tid, staffId, docId, req, ct);
+        return updated is null
+            ? ApiResult<StaffDocumentResponse>.Fail(new Error("not_found", "resource not found"), 404)
+            : ApiResult<StaffDocumentResponse>.Ok(updated);
+    }
+
+    public async Task<ApiResult> DeleteStaffDocumentAsync(Guid staffId, Guid docId, CancellationToken ct = default)
+    {
+        if (!StaffSupportAllowed)
+            return FeatureGate.Locked(FeatureCatalog.StaffSupport);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+        if (!await profile.DeleteAsync(tid, staffId, docId, ct))
+            return ApiResult.Fail(new Error("not_found", "resource not found"), 404);
+        return ApiResult.NoContent();
     }
 }
