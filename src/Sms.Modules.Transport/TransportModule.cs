@@ -14,6 +14,10 @@ public sealed record BulkPingRequest(IReadOnlyList<PingItem> Pings);
 public sealed record TripSummaryResponse(Guid TripId, int DurationMin, double DistanceKm, int StopsCovered, int BoardedCount);
 public sealed record BoardingResponse(Guid TripId, Guid StudentId, Guid? StopId, string State, DateTime At);
 public sealed record BoardingRequest(Guid StudentId, Guid? StopId, string State, DateTime At);
+public sealed record StaffStopResponse(Guid Id, string Name, double Lat, double Lng, int Seq, int? EtaMin);
+public sealed record StaffRouteResponse(Guid Id, string Name, string BusNo, IReadOnlyList<StaffStopResponse> Stops);
+public sealed record StaffTripAssignmentResponse(StaffRouteResponse Route, string BusNo, string? ConductorName);
+public sealed record StaffRosterStudentResponse(Guid Id, string Name, Guid? StopId, string? PhotoUrl);
 
 public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
@@ -72,6 +76,44 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
             new { tripId }, ct)).First();
 
         return new TripSummaryResponse(tripId, durationMin, Math.Round(metres / 1000, 2), stops, boarded);
+    }
+
+    private sealed record AssignedBusRow(string BusNo, Guid? RouteId);
+    private sealed record RouteRow(Guid Id, string Name);
+
+    /// Resolved by the driver's own identity (Staff.UserId -> Buses.DriverStaffId), never by a
+    /// client-supplied id, so the Trip screen's first load needs nothing but the caller's JWT.
+    public async Task<StaffTripAssignmentResponse?> GetAssignmentAsync(Guid driverUserId, CancellationToken ct = default)
+    {
+        var bus = (await QueryInlineAsync<AssignedBusRow>(
+            @"SELECT b.BusNo, b.RouteId FROM dbo.Buses b
+              JOIN dbo.Staff s ON s.Id = b.DriverStaffId
+              WHERE s.UserId = @driverUserId", new { driverUserId }, ct)).FirstOrDefault();
+        if (bus?.RouteId is not { } routeId) return null;
+
+        var route = (await QueryInlineAsync<RouteRow>(
+            "SELECT Id, Name FROM dbo.TransportRoutes WHERE Id = @routeId", new { routeId }, ct)).FirstOrDefault();
+        if (route is null) return null;
+
+        var stops = await QueryInlineAsync<StaffStopResponse>(
+            "SELECT Id, Name, Lat, Lng, Seq, CAST(NULL AS int) AS EtaMin FROM dbo.RouteStops WHERE RouteId = @routeId ORDER BY Seq",
+            new { routeId }, ct);
+
+        return new StaffTripAssignmentResponse(new StaffRouteResponse(route.Id, route.Name, bus.BusNo, stops), bus.BusNo, null);
+    }
+
+    public async Task<IReadOnlyList<StaffRosterStudentResponse>> GetRosterAsync(Guid tripId, CancellationToken ct = default)
+    {
+        var busId = (await QueryInlineAsync<Guid?>(
+            "SELECT BusId FROM dbo.Trips WHERE Id = @tripId", new { tripId }, ct)).FirstOrDefault();
+        if (busId is null) return [];
+
+        return await QueryInlineAsync<StaffRosterStudentResponse>(
+            @"SELECT s.Id, s.Name, sba.StopId, s.PhotoUrl
+              FROM dbo.StudentBusAssignments sba
+              JOIN dbo.Students s ON s.Id = sba.StudentId
+              WHERE sba.BusId = @busId
+              ORDER BY s.Name", new { busId }, ct);
     }
 
     public Task<IReadOnlyList<BoardingResponse>> ListBoardingAsync(Guid tripId, CancellationToken ct = default) =>

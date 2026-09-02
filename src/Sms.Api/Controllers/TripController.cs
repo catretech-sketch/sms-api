@@ -22,6 +22,14 @@ public sealed class TripController(ITripService trips) : ApiControllerBase
     public async Task<IActionResult> GetCurrent(CancellationToken ct) =>
         FromResult(await trips.GetCurrentAsync(ct));
 
+    [HttpGet("trip/assignment")]
+    public async Task<IActionResult> GetAssignment(CancellationToken ct) =>
+        FromResult(await trips.GetAssignmentAsync(ct));
+
+    [HttpGet("trips/{tripId:guid}/roster")]
+    public async Task<IActionResult> GetRoster(Guid tripId, CancellationToken ct) =>
+        FromResult(await trips.GetRosterAsync(tripId, ct));
+
     [HttpPost("trips/{tripId:guid}/pings")]
     public async Task<IActionResult> IngestPings(Guid tripId, [FromBody] BulkPingRequest req, CancellationToken ct) =>
         FromResult(await trips.IngestPingsAsync(tripId, req, ct));
