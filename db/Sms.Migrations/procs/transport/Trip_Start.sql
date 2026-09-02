@@ -25,6 +25,7 @@ BEGIN
     INSERT dbo.Trips (Id, TenantId, RouteId, BusId, BusNo, DriverId, ConductorId, Direction, Status, StartedAt)
     VALUES (@Id, @TenantId, @RouteId, @BusId, @BusNo, @DriverId, @ConductorId, ISNULL(@Direction, 'pickup'), 'live', SYSUTCDATETIME());
 
-    SELECT Id, TenantId, RouteId, BusNo, DriverId, ConductorId, Direction, Status, StartedAt, EndedAt
+    SELECT Id, TenantId, RouteId, BusNo, DriverId, ConductorId, Direction, Status, StartedAt, EndedAt,
+        DriverLastPingAt, ConductorLastPingAt
     FROM dbo.Trips WHERE Id = @Id;
 END

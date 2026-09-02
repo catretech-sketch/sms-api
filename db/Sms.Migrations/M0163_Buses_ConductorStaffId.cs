@@ -12,6 +12,12 @@ IF COL_LENGTH('dbo.Buses', 'ConductorStaffId') IS NULL
     ALTER TABLE dbo.Buses ADD ConductorStaffId uniqueidentifier NULL;");
 
         Execute.Sql(@"
+IF COL_LENGTH('dbo.Trips', 'DriverLastPingAt') IS NULL
+    ALTER TABLE dbo.Trips ADD DriverLastPingAt datetime2 NULL;
+IF COL_LENGTH('dbo.Trips', 'ConductorLastPingAt') IS NULL
+    ALTER TABLE dbo.Trips ADD ConductorLastPingAt datetime2 NULL;");
+
+        Execute.Sql(@"
 CREATE OR ALTER PROCEDURE dbo.Bus_Update
     @TenantId uniqueidentifier,
     @BusId uniqueidentifier,
@@ -125,5 +131,11 @@ END");
         Execute.Sql(@"
 IF COL_LENGTH('dbo.Buses', 'ConductorStaffId') IS NOT NULL
     ALTER TABLE dbo.Buses DROP COLUMN ConductorStaffId;");
+
+        Execute.Sql(@"
+IF COL_LENGTH('dbo.Trips', 'DriverLastPingAt') IS NOT NULL
+    ALTER TABLE dbo.Trips DROP COLUMN DriverLastPingAt;
+IF COL_LENGTH('dbo.Trips', 'ConductorLastPingAt') IS NOT NULL
+    ALTER TABLE dbo.Trips DROP COLUMN ConductorLastPingAt;");
     }
 }

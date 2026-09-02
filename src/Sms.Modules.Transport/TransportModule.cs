@@ -5,9 +5,17 @@ using Sms.Shared.Kernel.Data;
 
 namespace Sms.Modules.Transport;
 
+// ActiveBroadcaster is deliberately NOT a primary-constructor parameter: Dapper's record
+// materialization requires an exact positional match between the constructor and the
+// selected columns, so a computed-only field (never selected from the DB) must live outside
+// the constructor as an init-only property instead, set afterwards via `with`.
 public sealed record TripResponse(
     Guid Id, Guid TenantId, Guid? RouteId, string? BusNo, Guid? DriverId, Guid? ConductorId,
-    string Direction, string Status, DateTime? StartedAt, DateTime? EndedAt);
+    string Direction, string Status, DateTime? StartedAt, DateTime? EndedAt,
+    DateTime? DriverLastPingAt = null, DateTime? ConductorLastPingAt = null)
+{
+    public string? ActiveBroadcaster { get; init; }
+}
 public sealed record StartTripRequest(Guid? RouteId, string? BusNo, string Direction);
 public sealed record PingItem(double Lat, double Lng, double SpeedKmh, double Heading, DateTime At);
 public sealed record BulkPingRequest(IReadOnlyList<PingItem> Pings);
@@ -22,7 +30,8 @@ public sealed record StaffRosterStudentResponse(Guid Id, string Name, Guid? Stop
 public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
     private const string TripCols =
-        "Id, TenantId, RouteId, BusNo, DriverId, ConductorId, Direction, Status, StartedAt, EndedAt";
+        "Id, TenantId, RouteId, BusNo, DriverId, ConductorId, Direction, Status, StartedAt, EndedAt, " +
+        "DriverLastPingAt, ConductorLastPingAt";
     private sealed record PingRow(double Lat, double Lng);
 
     public Task<TripResponse?> StartAsync(Guid tenantId, Guid driverId, StartTripRequest r, CancellationToken ct = default) =>
@@ -65,6 +74,13 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
         args.Add("@TripId", tripId);
         args.Add("@Rows", table.AsTableValuedParameter("dbo.TripPingTvp"));
         return ExecuteProcAsync("dbo.TripPing_BulkInsert", args, ct);
+    }
+
+    public Task MarkPingAsync(Guid tripId, string role, CancellationToken ct = default)
+    {
+        var column = role == "driver" ? "DriverLastPingAt" : "ConductorLastPingAt";
+        return ExecuteInlineAsync(
+            $"UPDATE dbo.Trips SET {column} = SYSUTCDATETIME() WHERE Id = @tripId", new { tripId }, ct);
     }
 
     public async Task<TripSummaryResponse> EndAsync(Guid tripId, CancellationToken ct = default)
