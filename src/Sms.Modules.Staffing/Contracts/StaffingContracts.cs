@@ -45,9 +45,7 @@ public sealed record CreateStaffRequest(
 public sealed record UpdateStaffRequest(
     string? Name, string? Role, string? Category, string? Department, string? Phone, string? Shift,
     string? Route, string? Status, string? PhotoUrl = null, bool SetPhoto = false, string? Email = null,
-    string? Gender = null, string? EmployeeCode = null,
-    string? LicenseNumber = null, DateTime? LicenseExpiry = null,
-    string? EmergencyContactName = null, string? EmergencyContactPhone = null);
+    string? Gender = null, string? EmployeeCode = null);
 
 public static class StaffingMappers
 {

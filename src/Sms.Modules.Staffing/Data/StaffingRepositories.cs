@@ -191,7 +191,7 @@ public sealed class StaffRepository(IDbConnectionFactory factory) : BaseReposito
         await ExecuteProcAsync("dbo.Staff_Update", new
         {
             Id = id, r.Name, r.Role, r.Category, r.Department, r.Phone, r.Shift, r.Route, r.Status, r.Email,
-            r.Gender, r.EmployeeCode, r.LicenseNumber, r.LicenseExpiry, r.EmergencyContactName, r.EmergencyContactPhone
+            r.Gender, r.EmployeeCode
         }, ct);
         return null;
     }

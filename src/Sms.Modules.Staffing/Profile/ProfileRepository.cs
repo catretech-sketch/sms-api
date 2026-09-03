@@ -10,10 +10,13 @@ public sealed class ProfileRepository(IDbConnectionFactory factory) : BaseReposi
         QueryProcAsync<StaffDocumentResponse>(
             "dbo.StaffDocuments_ListForUser", new { TenantId = tenantId, UserId = userId }, ct);
 
-    public Task<StaffProfileFieldsRow?> GetProfileFieldsAsync(
+    /// Resolves the caller's own Staff.Id from their login identity — needed to look up
+    /// dbo.PersonExtras, which is keyed by Staff.Id (personType "staff"), not UserId.
+    public async Task<Guid?> GetStaffIdByUserIdAsync(
         Guid tenantId, Guid userId, CancellationToken ct = default) =>
-        QuerySingleProcAsync<StaffProfileFieldsRow>(
-            "dbo.Staff_GetProfileFields", new { TenantId = tenantId, UserId = userId }, ct);
+        (await QueryInlineAsync<Guid?>(
+            "SELECT Id FROM dbo.Staff WHERE UserId = @userId AND TenantId = @tenantId",
+            new { userId, tenantId }, ct)).FirstOrDefault();
 
     public Task<IReadOnlyList<StaffDocumentResponse>> ListForStaffAsync(
         Guid tenantId, Guid staffId, CancellationToken ct = default) =>
