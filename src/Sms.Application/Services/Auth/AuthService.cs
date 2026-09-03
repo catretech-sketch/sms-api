@@ -6,6 +6,7 @@ using Sms.Application.Common;
 using Sms.Application.Interfaces.DAO;
 using Sms.Modules.Tenancy.Data;
 using Sms.Shared.Kernel.Auth;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
 
@@ -67,7 +68,8 @@ public sealed class AuthService(
                 return ApiResult<TokenResponse>.Fail(NotRegisteredError(identifier), 404);
             return ApiResult<TokenResponse>.Fail(new Error("invalid_credentials", "bad email or password"), 401);
         }
-        if (AccessBlockedError(user) is { } blocked)
+        var userRoles = await users.GetRolesAsync(user.Id, ct);
+        if (AccessBlockedError(user, userRoles) is { } blocked)
             return ApiResult<TokenResponse>.Fail(blocked, 403);
 
         return await IssueTokensAsync(user, ct);
@@ -75,12 +77,21 @@ public sealed class AuthService(
 
     /// Null when the row is free to sign in; an Error when it's "removed" or "inactive"
     /// (paused/removed by the school admin) — same wording either path (password/OTP).
-    private static Error? AccessBlockedError(UserRecord user) => user.Status switch
+    /// "inactive" for a teacher/staff account uses the suspension wording; every other
+    /// role keeps the original "deactivated" wording unchanged. `roles` is omitted by
+    /// the two candidate-ordering call sites, which only need the null/non-null result.
+    private static Error? AccessBlockedError(UserRecord user, IReadOnlyList<string>? roles = null) => user.Status switch
     {
         "removed" => new Error("access_removed", "Your access to this school has been removed by the admin."),
+        "inactive" when roles is not null && IsTeacherOrStaffRole(roles) =>
+            new Error("access_suspended", "Your account has been suspended by your school. Please contact your school administrator."),
         "inactive" => new Error("access_inactive", "Your access to this school has been deactivated by the admin."),
         _ => null,
     };
+
+    private static bool IsTeacherOrStaffRole(IReadOnlyList<string> roles) =>
+        roles.Any(r => string.Equals(r, Policies.Teacher, StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(r, Policies.Staff, StringComparison.OrdinalIgnoreCase));
 
     public async Task<ApiResult<TokenResponse>> RefreshAsync(RefreshRequest req, CancellationToken ct = default)
     {
@@ -117,7 +128,8 @@ public sealed class AuthService(
         var user = await FindUserByIdentifierAsync(req.Identifier, ct);
         if (user is null)
             return ApiResult<TokenResponse>.Fail(new Error("invalid_code", "user not found"), 401);
-        if (AccessBlockedError(user) is { } blocked)
+        var otpUserRoles = await users.GetRolesAsync(user.Id, ct);
+        if (AccessBlockedError(user, otpUserRoles) is { } blocked)
             return ApiResult<TokenResponse>.Fail(blocked, 403);
 
         return await IssueTokensAsync(user, ct);
