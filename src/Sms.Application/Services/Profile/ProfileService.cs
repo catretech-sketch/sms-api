@@ -18,6 +18,9 @@ public sealed class ProfileService(ProfileRepository repo, ITenantContext tenant
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult<ProfileResponse>.Fail(new Error("forbidden", "no tenant/user context"), 403);
         var documents = await repo.ListForUserAsync(tid, uid, ct);
-        return ApiResult<ProfileResponse>.Ok(new ProfileResponse(documents));
+        var fields = await repo.GetProfileFieldsAsync(tid, uid, ct);
+        return ApiResult<ProfileResponse>.Ok(new ProfileResponse(
+            documents, fields?.LicenseNumber, fields?.LicenseExpiry,
+            fields?.EmergencyContactName, fields?.EmergencyContactPhone));
     }
 }

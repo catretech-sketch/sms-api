@@ -41,6 +41,10 @@ public sealed record TransportBusResponse(
 public sealed record BusTeacherAssignmentResponse(
     Guid BusId, string BusNo, Guid? TeacherUserId, string? TeacherName);
 
+/// One row of a bus's driver/conductor assignment history — UnassignedAt is null while open.
+public sealed record BusDriverAssignmentResponse(
+    Guid Id, Guid StaffId, string StaffName, string Role, DateTime AssignedAt, DateTime? UnassignedAt);
+
 /// Raw per-bus fleet row before status / next-stop derivation.
 public sealed record FleetBusRow(
     Guid BusId, Guid? RouteId, string BusNo, string? RouteName, string? Driver, string? DriverPhone,
@@ -96,26 +100,33 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
 
     public async Task<CreatedBusRow?> CreateBusAsync(
         Guid tenantId, string busNo, string? routeName, Guid? routeId, string? driver, string? driverPhone,
-        Guid? driverStaffId, Guid? conductorStaffId = null, CancellationToken ct = default) =>
+        Guid? driverStaffId, Guid? conductorStaffId = null, Guid? assignedByUserId = null,
+        CancellationToken ct = default) =>
         await QuerySingleProcAsync<CreatedBusRow>("dbo.Bus_Create",
             new
             {
                 TenantId = tenantId, BusNo = busNo, RouteName = routeName, RouteId = routeId,
                 Driver = driver, DriverPhone = driverPhone, DriverStaffId = driverStaffId,
-                ConductorStaffId = conductorStaffId
+                ConductorStaffId = conductorStaffId, AssignedByUserId = assignedByUserId
             }, ct);
 
     public async Task<UpdatedBusRow?> UpdateBusAsync(
         Guid tenantId, Guid busId, string? busNo, Guid? routeId, Guid? driverStaffId, bool clearDriver,
-        Guid? conductorStaffId = null, bool clearConductor = false,
+        Guid? conductorStaffId = null, bool clearConductor = false, Guid? assignedByUserId = null,
         CancellationToken ct = default) =>
         await QuerySingleProcAsync<UpdatedBusRow>("dbo.Bus_Update",
             new
             {
                 TenantId = tenantId, BusId = busId, BusNo = busNo, RouteId = routeId,
                 DriverStaffId = driverStaffId, ClearDriver = clearDriver,
-                ConductorStaffId = conductorStaffId, ClearConductor = clearConductor
+                ConductorStaffId = conductorStaffId, ClearConductor = clearConductor,
+                AssignedByUserId = assignedByUserId
             }, ct);
+
+    public async Task<IReadOnlyList<BusDriverAssignmentResponse>> ListAssignmentHistoryAsync(
+        Guid tenantId, Guid busId, CancellationToken ct = default) =>
+        await QueryProcAsync<BusDriverAssignmentResponse>(
+            "dbo.BusDriverAssignments_ListForBus", new { TenantId = tenantId, BusId = busId }, ct);
 
     public async Task<bool> StaffExistsAsync(Guid staffId, CancellationToken ct = default) =>
         (await QueryInlineAsync<int>(

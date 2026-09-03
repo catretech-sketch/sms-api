@@ -10,6 +10,11 @@ public sealed class ProfileRepository(IDbConnectionFactory factory) : BaseReposi
         QueryProcAsync<StaffDocumentResponse>(
             "dbo.StaffDocuments_ListForUser", new { TenantId = tenantId, UserId = userId }, ct);
 
+    public Task<StaffProfileFieldsRow?> GetProfileFieldsAsync(
+        Guid tenantId, Guid userId, CancellationToken ct = default) =>
+        QuerySingleProcAsync<StaffProfileFieldsRow>(
+            "dbo.Staff_GetProfileFields", new { TenantId = tenantId, UserId = userId }, ct);
+
     public Task<IReadOnlyList<StaffDocumentResponse>> ListForStaffAsync(
         Guid tenantId, Guid staffId, CancellationToken ct = default) =>
         QueryInlineAsync<StaffDocumentResponse>(

@@ -55,6 +55,10 @@ public sealed class TransportController(IBusService bus, IStudentBusService stud
         Guid busId, [FromBody] UpdateBusRequest req, CancellationToken ct) =>
         FromResult(await bus.UpdateBusAsync(busId, req.BusNo, req.RouteId, req.DriverStaffId, req.ClearDriver, req.ConductorStaffId, req.ClearConductor, ct));
 
+    [HttpGet("buses/{busId:guid}/assignment-history")]
+    public async Task<IActionResult> AssignmentHistory(Guid busId, CancellationToken ct) =>
+        FromResult(await bus.GetAssignmentHistoryAsync(busId, ct));
+
     [HttpPut("buses/{busId:guid}/teacher")]
     public async Task<IActionResult> AssignTeacher(
         Guid busId, [FromBody] AssignBusTeacherRequest req, CancellationToken ct) =>
