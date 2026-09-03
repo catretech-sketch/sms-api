@@ -50,7 +50,7 @@ public sealed class FleetSnapshotBuilder(BusRepository repo, ITenantContext tena
                 r.BusId, r.RouteId, r.BusNo, r.RouteName, r.Driver, r.DriverPhone,
                 r.StopCount, r.StudentsRiding, status,
                 lat, lng, speed, nextStop, lastPing,
-                teacherRow?.TeacherUserId, teacherRow?.TeacherName));
+                teacherRow?.TeacherUserId, teacherRow?.TeacherName, Capacity: r.Capacity));
         }
 
         return list;

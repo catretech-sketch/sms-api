@@ -34,6 +34,11 @@ public sealed class StudentBusService(
             return ApiResult.Fail(new Error("not_found", "bus not found"), 404);
         if (!await repo.StudentExistsAsync(studentId, ct))
             return ApiResult.Fail(new Error("not_found", "student not found"), 404);
+
+        var (capacity, occupied) = await busRepo.GetCapacityAndOccupancyAsync(busId, ct);
+        if (capacity is int cap && occupied >= cap && !await repo.IsStudentOnBusAsync(studentId, busId, ct))
+            return ApiResult.Fail(new Error("capacity_reached", $"Bus capacity reached ({occupied}/{cap})"), 409);
+
         await repo.AssignAsync(tid, studentId, busId, stopId, ct);
         return ApiResult.NoContent();
     }
