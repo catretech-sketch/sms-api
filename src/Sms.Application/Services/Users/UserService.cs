@@ -152,7 +152,7 @@ public sealed class UserService(
     public async Task<ApiResult<IReadOnlyList<SchoolUserResponse>>> ListAsync(bool isSchoolAdmin, bool isPrincipal, CancellationToken ct = default)
     {
         if (!isSchoolAdmin && !isPrincipal)
-            return ApiResult<IReadOnlyList<SchoolUserResponse>>.Fail(new Error("forbidden", "school admin only"), 403);
+            return ApiResult<IReadOnlyList<SchoolUserResponse>>.Fail(new Error("forbidden", "school admin or principal only"), 403);
         if (tenant.TenantId is not { } tid)
             return ApiResult<IReadOnlyList<SchoolUserResponse>>.Fail(new Error("forbidden", "no tenant context"), 403);
 
@@ -160,7 +160,7 @@ public sealed class UserService(
         // A Principal (not Admin/Owner) may only see teacher/staff accounts here —
         // never Admin/Owner/other-Principal accounts.
         if (!isSchoolAdmin)
-            rows = rows.Where(IsTeacherOrStaffRow).ToList();
+            rows = rows.Where(r => IsTeacherOrStaffRow(r) && !IsElevatedRow(r)).ToList();
         var list = rows.Select(MapUser).ToList();
         return ApiResult<IReadOnlyList<SchoolUserResponse>>.Ok(list);
     }
@@ -194,6 +194,12 @@ public sealed class UserService(
             .Any(r => string.Equals(r, Policies.Teacher, StringComparison.OrdinalIgnoreCase)
                    || string.Equals(r, Policies.Staff, StringComparison.OrdinalIgnoreCase));
 
+    private static bool IsElevatedRow(SchoolUserListRow row) =>
+        row.Roles.Split(',', StringSplitOptions.RemoveEmptyEntries)
+            .Any(r => string.Equals(r, Policies.SchoolOwner, StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(r, Policies.SchoolAdmin, StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(r, Policies.Principal, StringComparison.OrdinalIgnoreCase));
+
     /// Reversible pause/resume of a person's access to THIS school — unlike
     /// DeactivateAsync ("removed"), this can be flipped back with the same call,
     /// no re-invite needed. Only valid for someone who has already accepted
@@ -203,7 +209,7 @@ public sealed class UserService(
         Guid userId, bool active, bool isSchoolAdmin, bool isPrincipal, CancellationToken ct = default)
     {
         if (!isSchoolAdmin && !isPrincipal)
-            return ApiResult<SchoolUserResponse>.Fail(new Error("forbidden", "school admin only"), 403);
+            return ApiResult<SchoolUserResponse>.Fail(new Error("forbidden", "school admin or principal only"), 403);
         if (tenant.TenantId is not { } tid)
             return ApiResult<SchoolUserResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
         var rows = await dao.ListByTenantAsync(tid, ct);
@@ -218,7 +224,7 @@ public sealed class UserService(
         if (IsOwnerRow(row))
             return ApiResult<SchoolUserResponse>.Fail(new Error("conflict", "An owner's access can't be paused here."), 409);
         // A Principal (not Admin/Owner) may only suspend/unsuspend a teacher or staff account.
-        if (!isSchoolAdmin && !IsTeacherOrStaffRow(row))
+        if (!isSchoolAdmin && (!IsTeacherOrStaffRow(row) || IsElevatedRow(row)))
             return ApiResult<SchoolUserResponse>.Fail(
                 new Error("forbidden", "Principals can only suspend teacher or staff accounts."), 403);
 

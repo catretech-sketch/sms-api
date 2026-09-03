@@ -37,7 +37,7 @@ public class SuspensionLoginTests(SqlServerFixture fx)
         var email = $"u{Guid.NewGuid():N}@x.com";
         var factory = PlatformFactory();
         await using var c = await factory.OpenAsync();
-        await c.ExecuteAsync("INSERT dbo.Tenants (Id, Name, Slug) VALUES (@t,'T',@s)",
+        await c.ExecuteAsync("INSERT dbo.Tenants (Id, Name, Slug, Status) VALUES (@t,'T',@s,'active')",
             new { t = tenantId, s = "t-" + tenantId.ToString("N") });
         var userId = await c.QuerySingleAsync<Guid>(
             "INSERT dbo.Users (Id, TenantId, Email, PasswordHash, Status, IsPlatform) OUTPUT inserted.Id VALUES (NEWID(),@t,@e,@h,'inactive',0)",

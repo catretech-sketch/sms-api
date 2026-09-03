@@ -63,6 +63,18 @@ public class PrincipalSuspensionTests(SqlServerFixture fx)
         return userId;
     }
 
+    private async Task<Guid> SeedUserAsync(Guid tenantId, string[] roles, string status = "active")
+    {
+        var factory = PlatformFactory();
+        await using var c = await factory.OpenAsync();
+        var userId = await c.QuerySingleAsync<Guid>(
+            "INSERT dbo.Users (Id, TenantId, Email, Status, IsPlatform) OUTPUT inserted.Id VALUES (NEWID(),@t,@e,@st,0)",
+            new { t = tenantId, e = $"u{Guid.NewGuid():N}@x.com", st = status });
+        foreach (var role in roles)
+            await c.ExecuteAsync("INSERT dbo.UserRoles (UserId, Role) VALUES (@u,@r)", new { u = userId, r = role });
+        return userId;
+    }
+
     [Fact]
     public async Task Principal_can_suspend_a_teacher()
     {
@@ -154,5 +166,55 @@ public class PrincipalSuspensionTests(SqlServerFixture fx)
         var ids = doc.RootElement.GetProperty("data").EnumerateArray()
             .Select(e => e.GetProperty("id").GetString()).ToArray();
         ids.Should().BeEquivalentTo([adminId.ToString(), teacherId.ToString()]);
+    }
+
+    [Fact]
+    public async Task Principal_cannot_suspend_a_teacher_who_is_also_admin()
+    {
+        var tenantId = Guid.NewGuid();
+        await EnsureTenantAsync(tenantId);
+        var targetId = await SeedUserAsync(tenantId, [Policies.SchoolAdmin, Policies.Teacher]);
+
+        await using var app = App();
+        var client = TenantClient(app, tenantId, [Policies.Principal]);
+        var resp = await client.PutAsJsonAsync($"/v1/users/{targetId}/status", new { active = false });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task Principal_listing_excludes_a_teacher_who_is_also_admin()
+    {
+        var tenantId = Guid.NewGuid();
+        await EnsureTenantAsync(tenantId);
+        await SeedUserAsync(tenantId, [Policies.SchoolAdmin, Policies.Teacher]);
+        var teacherId = await SeedUserAsync(tenantId, Policies.Teacher);
+
+        await using var app = App();
+        var client = TenantClient(app, tenantId, [Policies.Principal]);
+        var resp = await client.GetAsync("/v1/users");
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync());
+        var ids = doc.RootElement.GetProperty("data").EnumerateArray()
+            .Select(e => e.GetProperty("id").GetString()).ToArray();
+        ids.Should().BeEquivalentTo([teacherId.ToString()]);
+    }
+
+    [Fact]
+    public async Task Teacher_actor_cannot_call_suspend_or_list_endpoints()
+    {
+        var tenantId = Guid.NewGuid();
+        await EnsureTenantAsync(tenantId);
+        var targetId = await SeedUserAsync(tenantId, Policies.Teacher);
+
+        await using var app = App();
+        var client = TenantClient(app, tenantId, [Policies.Teacher]);
+
+        var statusResp = await client.PutAsJsonAsync($"/v1/users/{targetId}/status", new { active = false });
+        statusResp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        var listResp = await client.GetAsync("/v1/users");
+        listResp.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 }

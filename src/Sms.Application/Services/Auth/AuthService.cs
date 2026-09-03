@@ -68,7 +68,7 @@ public sealed class AuthService(
                 return ApiResult<TokenResponse>.Fail(NotRegisteredError(identifier), 404);
             return ApiResult<TokenResponse>.Fail(new Error("invalid_credentials", "bad email or password"), 401);
         }
-        var userRoles = await users.GetRolesAsync(user.Id, ct);
+        var userRoles = user.Status == "inactive" ? await users.GetRolesAsync(user.Id, ct) : null;
         if (AccessBlockedError(user, userRoles) is { } blocked)
             return ApiResult<TokenResponse>.Fail(blocked, 403);
 
@@ -83,7 +83,7 @@ public sealed class AuthService(
     private static Error? AccessBlockedError(UserRecord user, IReadOnlyList<string>? roles = null) => user.Status switch
     {
         "removed" => new Error("access_removed", "Your access to this school has been removed by the admin."),
-        "inactive" when roles is not null && IsTeacherOrStaffRole(roles) =>
+        "inactive" when roles is not null && IsTeacherOrStaffRole(roles) && !IsElevatedRole(roles) =>
             new Error("access_suspended", "Your account has been suspended by your school. Please contact your school administrator."),
         "inactive" => new Error("access_inactive", "Your access to this school has been deactivated by the admin."),
         _ => null,
@@ -92,6 +92,11 @@ public sealed class AuthService(
     private static bool IsTeacherOrStaffRole(IReadOnlyList<string> roles) =>
         roles.Any(r => string.Equals(r, Policies.Teacher, StringComparison.OrdinalIgnoreCase)
                      || string.Equals(r, Policies.Staff, StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsElevatedRole(IReadOnlyList<string> roles) =>
+        roles.Any(r => string.Equals(r, Policies.SchoolOwner, StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(r, Policies.SchoolAdmin, StringComparison.OrdinalIgnoreCase)
+                     || string.Equals(r, Policies.Principal, StringComparison.OrdinalIgnoreCase));
 
     public async Task<ApiResult<TokenResponse>> RefreshAsync(RefreshRequest req, CancellationToken ct = default)
     {
@@ -128,7 +133,7 @@ public sealed class AuthService(
         var user = await FindUserByIdentifierAsync(req.Identifier, ct);
         if (user is null)
             return ApiResult<TokenResponse>.Fail(new Error("invalid_code", "user not found"), 401);
-        var otpUserRoles = await users.GetRolesAsync(user.Id, ct);
+        var otpUserRoles = user.Status == "inactive" ? await users.GetRolesAsync(user.Id, ct) : null;
         if (AccessBlockedError(user, otpUserRoles) is { } blocked)
             return ApiResult<TokenResponse>.Fail(blocked, 403);
 
