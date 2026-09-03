@@ -131,6 +131,8 @@ public sealed class BusService(
             return ApiResult<FleetBusResponse>.Fail(new Error("not_found", "driver staff not found"), 404);
         if (conductorStaffId is Guid cid && !await repo.StaffExistsAsync(cid, ct))
             return ApiResult<FleetBusResponse>.Fail(new Error("not_found", "conductor staff not found"), 404);
+        if (capacity is int c && c < 1)
+            return ApiResult<FleetBusResponse>.Fail(new Error("validation", "capacity must be a positive number"), 400);
         var row = await repo.CreateBusAsync(tid, trimmed, routeName?.Trim(), routeId, driver?.Trim(), driverPhone?.Trim(), driverStaffId, conductorStaffId, capacity, tenant.UserId, ct);
         if (row is null)
             return ApiResult<FleetBusResponse>.Fail(new Error("server_error", "could not create bus"), 500);
@@ -156,6 +158,8 @@ public sealed class BusService(
         var trimmed = busNo?.Trim();
         if (trimmed is { Length: 0 })
             return ApiResult<TransportBusResponse>.Fail(new Error("validation", "bus number is required"), 400);
+        if (capacity is int c && c < 1)
+            return ApiResult<TransportBusResponse>.Fail(new Error("validation", "capacity must be a positive number"), 400);
         var row = await repo.UpdateBusAsync(tid, busId, trimmed, routeId, driverStaffId, clearDriver, conductorStaffId, clearConductor, capacity, clearCapacity, tenant.UserId, ct);
         if (row is null)
             return ApiResult<TransportBusResponse>.Fail(new Error("not_found", "bus not found"), 404);

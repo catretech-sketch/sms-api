@@ -139,4 +139,37 @@ public class BusCapacityTests(SqlServerFixture fx)
 
         res.StatusCode.Should().Be(HttpStatusCode.NoContent);
     }
+
+    [Fact]
+    public async Task CreateBus_with_capacity_returns_the_capacity_via_Bus_Create_proc()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var busNo = $"KA-{Guid.NewGuid():N}"[..12];
+
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+
+        var admin = PrincipalClient(app, tenantId, Guid.NewGuid());
+        var res = await admin.PostAsJsonAsync("/v1/transport/buses", new { bus_no = busNo, capacity = 25 });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Created);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("data").GetProperty("capacity").GetInt32().Should().Be(25);
+    }
+
+    [Fact]
+    public async Task UpdateBus_with_clear_capacity_nulls_out_the_capacity_via_Bus_Update_proc()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var busId = await SeedBusAsync(fx.ConnectionString, tenantId, capacity: 40);
+
+        var admin = PrincipalClient(app, tenantId, Guid.NewGuid());
+        var res = await admin.PutAsJsonAsync($"/v1/transport/buses/{busId}", new { clear_capacity = true });
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("data").GetProperty("capacity").ValueKind.Should().Be(JsonValueKind.Null);
+    }
 }
