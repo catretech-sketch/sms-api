@@ -12,7 +12,7 @@ public sealed class UserController(IUserService users) : ApiControllerBase
 {
     [HttpGet("users")]
     public async Task<IActionResult> List(CancellationToken ct) =>
-        FromResult(await users.ListAsync(IsSchoolAdmin(), ct));
+        FromResult(await users.ListAsync(IsSchoolAdmin(), IsPrincipal(), ct));
 
     [HttpPost("users")]
     public async Task<IActionResult> Invite([FromBody] InviteUserRequest req, CancellationToken ct) =>
@@ -28,7 +28,7 @@ public sealed class UserController(IUserService users) : ApiControllerBase
 
     [HttpPut("users/{id:guid}/status")]
     public async Task<IActionResult> SetActive(Guid id, [FromBody] SetUserActiveRequest req, CancellationToken ct) =>
-        FromResult(await users.SetActiveAsync(id, req.Active, IsSchoolAdmin(), ct));
+        FromResult(await users.SetActiveAsync(id, req.Active, IsSchoolAdmin(), IsPrincipal(), ct));
 
     [HttpPut("users/{id:guid}/roles")]
     public async Task<IActionResult> SetRoles(Guid id, [FromBody] SetUserRolesRequest req, CancellationToken ct) =>
@@ -55,4 +55,7 @@ public sealed class UserController(IUserService users) : ApiControllerBase
 
     private bool IsSchoolOwner() =>
         User.FindAll("role").Any(c => c.Value == Policies.SchoolOwner);
+
+    private bool IsPrincipal() =>
+        User.FindAll("role").Any(c => c.Value == Policies.Principal);
 }
