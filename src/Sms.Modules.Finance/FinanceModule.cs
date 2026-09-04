@@ -19,6 +19,14 @@ public sealed record CreateFeePaymentRequest(
     Guid? InvoiceId = null, string? HeadId = null, string? HeadName = null, string? Mode = null, string? Cls = null,
     Guid? IdempotencyKey = null);
 
+/// <summary>
+/// Thrown when a client-supplied IdempotencyKey matches an existing FeePayments row whose
+/// Amount/InvoiceId differ from the current request. Signals a genuine conflict — not a safe
+/// replay — so callers must surface a 409 rather than returning the (different) stored payment.
+/// </summary>
+public sealed class IdempotencyKeyConflictException()
+    : Exception("This idempotency key was already used for a different payment");
+
 public sealed class FeeRepository(IDbConnectionFactory factory, IAuditLogger auditLogger) : BaseRepository(factory)
 {
     private const string Cols =
@@ -57,6 +65,15 @@ public sealed class FeeRepository(IDbConnectionFactory factory, IAuditLogger aud
         {
             await tx.RollbackAsync(ct);
             return null;
+        }
+
+        if (!row.WasCreated && (row.Amount != r.Amount || (r.InvoiceId is { } reqInvoiceId && row.InvoiceId != reqInvoiceId)))
+        {
+            /* IdempotencyKey matched an existing row, but the request's Amount/InvoiceId don't —
+               a stale-replay/reuse, not a safe retry. Reject instead of silently returning the
+               (different) stored payment. */
+            await tx.RollbackAsync(ct);
+            throw new IdempotencyKeyConflictException();
         }
 
         if (row.WasCreated)
@@ -260,6 +277,12 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
                     new { tenantId, key }, tx, cancellationToken: ct));
                 if (existing is not null)
                 {
+                    if (existing.InvoiceId != invoiceId || existing.Amount != amount)
+                    {
+                        /* Same IdempotencyKey, different invoice/amount — reject instead of
+                           returning the (different) payment that was already recorded under it. */
+                        throw new IdempotencyKeyConflictException();
+                    }
                     await tx.CommitAsync(ct);
                     return existing;
                 }
@@ -325,6 +348,12 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
                     FROM dbo.FeePayments WHERE TenantId = @tenantId AND IdempotencyKey = @key
                     """,
                     new { tenantId, key = req.IdempotencyKey }, tx, cancellationToken: ct));
+                if (raced is not null && (raced.InvoiceId != invoiceId || raced.Amount != amount))
+                {
+                    /* Concurrent request won the race, but for a different invoice/amount —
+                       reject rather than returning that (different) payment as if it were ours. */
+                    throw new IdempotencyKeyConflictException();
+                }
                 await tx.CommitAsync(ct);
                 return raced;
             }

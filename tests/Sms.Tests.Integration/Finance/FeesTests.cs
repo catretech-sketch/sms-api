@@ -41,6 +41,14 @@ public class FeesTests(SqlServerFixture fx)
         return doc.RootElement.GetProperty("data").Clone();
     }
 
+    private static async Task<JsonElement> Error(HttpResponseMessage res, HttpStatusCode expected)
+    {
+        var body = await res.Content.ReadAsStringAsync();
+        res.StatusCode.Should().Be(expected, because: body);
+        using var doc = JsonDocument.Parse(body);
+        return doc.RootElement.GetProperty("error").Clone();
+    }
+
     [Fact]
     public async Task Fee_invoice_generate_from_structure()
     {
@@ -528,5 +536,100 @@ public class FeesTests(SqlServerFixture fx)
             "SELECT COUNT(*) FROM dbo.AuditLogs WHERE EntityType = 'FeePayment' AND EntityId = @id",
             new { id = first.GetProperty("id").GetString() });
         auditCount.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Pay_invoice_reusing_idempotency_key_with_different_amount_returns_409_not_stale_payment()
+    {
+        await using var app = App();
+        var tenant = Guid.NewGuid();
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenant, ["school.principal"], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var student = await Data(await client.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "ADM-IDEMP-CONFLICT-1", name = "Conflict Kid", grade = "V", section = "A", roll = 12,
+        }), HttpStatusCode.Created);
+        var studentId = student.GetProperty("id").GetGuid();
+
+        var invoice = await Data(await client.PostAsJsonAsync("/v1/fees/invoices", new
+        {
+            student_id = studentId, period = "Term 1", due_date = "2026-06-01", amount = 5000,
+        }), HttpStatusCode.Created);
+        var invoiceId = invoice.GetProperty("id").GetGuid();
+
+        var idempotencyKey = Guid.NewGuid();
+        var first = await Data(await client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", new
+        {
+            amount = 2000, mode = "Cash", student_name = "Conflict Kid", cls = "V-A",
+            fee_type = "academic", idempotency_key = idempotencyKey,
+        }), HttpStatusCode.OK);
+
+        /* Same key, but the amount was edited before resubmitting (e.g. after the first response
+           was lost to a network blip). Must be rejected — never silently return the 2000 payment
+           as though it satisfied the new 1500 request. */
+        var err = await Error(await client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", new
+        {
+            amount = 1500, mode = "Cash", student_name = "Conflict Kid", cls = "V-A",
+            fee_type = "academic", idempotency_key = idempotencyKey,
+        }), HttpStatusCode.Conflict);
+        err.GetProperty("code").GetString().Should().Be("idempotency_key_reused");
+
+        var payments = await Data(await client.GetAsync($"/v1/fees/payments?student_id={studentId}"), HttpStatusCode.OK);
+        payments.EnumerateArray().Should().ContainSingle();
+        payments.EnumerateArray().First().GetProperty("id").GetGuid().Should().Be(first.GetProperty("id").GetGuid());
+        payments.EnumerateArray().First().GetProperty("amount").GetDecimal().Should().Be(2000);
+
+        var invoiceAfter = await Data(await client.GetAsync("/v1/fees/invoices"), HttpStatusCode.OK);
+        invoiceAfter.EnumerateArray().First(i => i.GetProperty("id").GetGuid() == invoiceId)
+            .GetProperty("paid_amount").GetDecimal().Should().Be(2000);
+    }
+
+    [Fact]
+    public async Task Create_manual_payment_reusing_idempotency_key_with_different_amount_returns_409_not_stale_payment()
+    {
+        await using var app = App();
+        var tenant = Guid.NewGuid();
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenant, ["school.principal"], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var student = await Data(await client.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "ADM-MANUAL-CONFLICT-1", name = "Manual Conflict Kid", grade = "VI", section = "A", roll = 5,
+        }), HttpStatusCode.Created);
+        var studentId = student.GetProperty("id").GetGuid();
+
+        var idempotencyKey = Guid.NewGuid();
+        var first = await Data(await client.PostAsJsonAsync("/v1/fees/payments", new
+        {
+            student_id = studentId, student_name = "Manual Conflict Kid", class_label = "VI-A",
+            fee_type = "academic", amount = 1500, method = "Cash", idempotency_key = idempotencyKey,
+        }), HttpStatusCode.Created);
+
+        var err = await Error(await client.PostAsJsonAsync("/v1/fees/payments", new
+        {
+            student_id = studentId, student_name = "Manual Conflict Kid", class_label = "VI-A",
+            fee_type = "academic", amount = 900, method = "Cash", idempotency_key = idempotencyKey,
+        }), HttpStatusCode.Conflict);
+        err.GetProperty("code").GetString().Should().Be("idempotency_key_reused");
+
+        await using var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenant", new { tenant });
+        var paymentCount = await conn.QuerySingleAsync<int>(
+            "SELECT COUNT(*) FROM dbo.FeePayments WHERE TenantId = @tenant AND IdempotencyKey = @idempotencyKey",
+            new { tenant, idempotencyKey });
+        paymentCount.Should().Be(1);
+        var amount = await conn.QuerySingleAsync<decimal>(
+            "SELECT Amount FROM dbo.FeePayments WHERE Id = @id", new { id = first.GetProperty("id").GetGuid() });
+        amount.Should().Be(1500);
     }
 }
