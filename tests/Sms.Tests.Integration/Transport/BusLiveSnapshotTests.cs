@@ -82,6 +82,37 @@ public class BusLiveSnapshotTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Status_is_stopped_when_speed_is_exactly_at_the_moving_cutoff()
+    {
+        // Cutoff is `SpeedKmh > 3` -> "moving"; exactly 3 must NOT cross into "moving".
+        var (tenantId, busId, _) = await SeedBusWithLastPing(DateTime.UtcNow.AddSeconds(-5), speedKmh: 3);
+        await using var app = App();
+        using var scope = app.Services.CreateScope();
+        scope.ServiceProvider.GetRequiredService<ITenantContext>().Set(tenantId, null, isPlatform: false);
+        var repo = scope.ServiceProvider.GetRequiredService<BusRepository>();
+
+        (await repo.GetLiveSnapshotAsync(busId, default)).Status.Should().Be("stopped");
+    }
+
+    [Fact]
+    public async Task Status_is_offline_when_the_last_ping_is_exactly_at_the_staleness_cutoff()
+    {
+        // Cutoff is `ageSeconds > 60` -> "offline". We seed a ping exactly 60.0s old;
+        // by the time GetLiveSnapshotAsync computes DateTime.UtcNow a few milliseconds
+        // will have elapsed, so the observed age is at-or-just-past 60s, not exactly
+        // 60.000s. This still exercises the real boundary: an off-by-one flip to
+        // `>= 60` would report "offline" here too, but a bug that used `> 60` on a
+        // wrongly-scaled unit (e.g. minutes) or inverted the comparison would fail it.
+        var (tenantId, busId, _) = await SeedBusWithLastPing(DateTime.UtcNow.AddSeconds(-60), speedKmh: 25);
+        await using var app = App();
+        using var scope = app.Services.CreateScope();
+        scope.ServiceProvider.GetRequiredService<ITenantContext>().Set(tenantId, null, isPlatform: false);
+        var repo = scope.ServiceProvider.GetRequiredService<BusRepository>();
+
+        (await repo.GetLiveSnapshotAsync(busId, default)).Status.Should().Be("offline");
+    }
+
+    [Fact]
     public async Task Status_is_offline_when_the_bus_has_never_pinged()
     {
         var tenantId = Guid.NewGuid();
