@@ -27,6 +27,7 @@ public sealed record StaffRouteResponse(Guid Id, string Name, string BusNo, IRea
 public sealed record StaffTripAssignmentResponse(StaffRouteResponse Route, string BusNo, string? ConductorName);
 public sealed record StaffRosterStudentResponse(Guid Id, string Name, Guid? StopId, string? PhotoUrl);
 public sealed record StaffBusRouteSummaryResponse(string BusNo, string RouteName);
+public sealed record StaleTripRow(Guid TripId, Guid BusId, Guid TenantId, DateTime? LastPingAt);
 
 public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
@@ -194,6 +195,24 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
     public Task UpsertBoardingAsync(Guid tenantId, Guid tripId, BoardingRequest r, CancellationToken ct = default) =>
         ExecuteProcAsync("dbo.Boarding_Upsert",
             new { TenantId = tenantId, TripId = tripId, r.StudentId, r.StopId, r.State, r.At }, ct);
+
+    /// Every currently-live trip whose most recent driver-or-conductor ping is
+    /// older than staleAfter (or has never pinged at all). Runs under a
+    /// platform-level ITenantContext (IsPlatform = true) since this must scan
+    /// across every tenant, mirroring AbsenceAlertWorker's cross-tenant sweep
+    /// pattern — verify against src/Sms.Api/Workers/AbsenceAlertWorker.cs that
+    /// rls.fn_tenant_predicate actually bypasses RLS filtering when IsPlatform
+    /// is true before relying on this in production.
+    public async Task<IReadOnlyList<StaleTripRow>> GetStaleActiveTripsAsync(TimeSpan staleAfter, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<StaleTripRow>(
+            @"SELECT Id AS TripId, BusId, TenantId,
+                     (SELECT MAX(v) FROM (VALUES (DriverLastPingAt), (ConductorLastPingAt)) AS x(v)) AS LastPingAt
+              FROM dbo.Trips
+              WHERE Status = 'live' AND BusId IS NOT NULL", null, ct);
+        var cutoff = DateTime.UtcNow - staleAfter;
+        return rows.Where(r => r.LastPingAt is null || r.LastPingAt < cutoff).ToList();
+    }
 
     private static double Haversine(double lat1, double lng1, double lat2, double lng2)
     {

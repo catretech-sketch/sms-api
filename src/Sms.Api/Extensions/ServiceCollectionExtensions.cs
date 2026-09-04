@@ -103,6 +103,7 @@ public static class ServiceCollectionExtensions
         builder.Services.AddSingleton<ConsoleOtpSender>();
         builder.Services.AddSingleton<IOtpSender, ChannelOtpSender>();
         builder.Services.AddHostedService<EmailDispatchWorker>();
+        builder.Services.AddHostedService<Sms.Api.Workers.TransportOfflineSweepWorker>();
         builder.Services.AddSingleton<IPaymentGateway, StubPaymentGateway>();
         builder.Services.Configure<RazorpayOptions>(builder.Configuration.GetSection(RazorpayOptions.SectionName));
         builder.Services.AddHttpClient("razorpay");
