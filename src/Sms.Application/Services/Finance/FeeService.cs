@@ -82,6 +82,13 @@ public sealed class FeeService(
         if (inv is null)
             return ApiResult<FeePaymentResponse>.Fail(new Error("not_found", "resource not found"), 404);
 
+        if (req?.IdempotencyKey is { } idemKey)
+        {
+            var existing = await invoices.GetPaymentByIdempotencyKeyAsync(tid, idemKey, ct);
+            if (existing is not null)
+                return ApiResult<FeePaymentResponse>.Ok(existing);
+        }
+
         var alreadyPaid = inv.PaidAmount;
         var remaining = Math.Max(0, inv.Amount - alreadyPaid);
         if (remaining <= 0 || string.Equals(inv.Status, "paid", StringComparison.OrdinalIgnoreCase))

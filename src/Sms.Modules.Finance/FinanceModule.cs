@@ -2,6 +2,7 @@ using System.Data;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Shared.Kernel.Audit;
 using Sms.Shared.Kernel.Data;
@@ -197,6 +198,16 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
         return await GetAsync(id, ct);
     }
 
+    /// <summary>Fast-path lookup used by callers to short-circuit before any invoice-state checks.</summary>
+    public async Task<FeePaymentResponse?> GetPaymentByIdempotencyKeyAsync(
+        Guid tenantId, Guid key, CancellationToken ct = default) =>
+        (await QueryInlineAsync<FeePaymentResponse>(
+            """
+            SELECT Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId
+            FROM dbo.FeePayments WHERE TenantId = @tenantId AND IdempotencyKey = @key
+            """,
+            new { tenantId, key }, ct)).FirstOrDefault();
+
     public async Task<FeePaymentResponse?> RecordInvoicePaymentAsync(
         Guid tenantId, Guid invoiceId, CreateFeePaymentRequest req, decimal amount, string method,
         Guid? actorUserId, CancellationToken ct = default)
@@ -247,26 +258,43 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
             var feeType = string.IsNullOrWhiteSpace(req.FeeType)
                 ? (string.IsNullOrWhiteSpace(req.HeadName) ? "academic" : req.HeadName)
                 : req.FeeType;
-            await conn.ExecuteAsync(new CommandDefinition(
-                """
-                INSERT dbo.FeePayments (Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId, IdempotencyKey, CreatedAt)
-                VALUES (@payId, @tenantId, @StudentId, @StudentName, @classLabel, @feeType, @amount, @method, @Ref, CAST(SYSUTCDATETIME() AS date), @invoiceId, @HeadId, @IdempotencyKey, SYSUTCDATETIME())
-                """,
-                new
-                {
-                    payId,
-                    tenantId,
-                    inv.StudentId,
-                    req.StudentName,
-                    classLabel,
-                    feeType,
-                    amount,
-                    method,
-                    req.Ref,
-                    invoiceId,
-                    req.HeadId,
-                    req.IdempotencyKey,
-                }, tx, cancellationToken: ct));
+            try
+            {
+                await conn.ExecuteAsync(new CommandDefinition(
+                    """
+                    INSERT dbo.FeePayments (Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId, IdempotencyKey, CreatedAt)
+                    VALUES (@payId, @tenantId, @StudentId, @StudentName, @classLabel, @feeType, @amount, @method, @Ref, CAST(SYSUTCDATETIME() AS date), @invoiceId, @HeadId, @IdempotencyKey, SYSUTCDATETIME())
+                    """,
+                    new
+                    {
+                        payId,
+                        tenantId,
+                        inv.StudentId,
+                        req.StudentName,
+                        classLabel,
+                        feeType,
+                        amount,
+                        method,
+                        req.Ref,
+                        invoiceId,
+                        req.HeadId,
+                        req.IdempotencyKey,
+                    }, tx, cancellationToken: ct));
+            }
+            catch (SqlException sqlEx) when (
+                req.IdempotencyKey is not null && (sqlEx.Number == 2601 || sqlEx.Number == 2627))
+            {
+                /* Concurrent request with the same IdempotencyKey won the race and inserted first —
+                   fall back to returning that row instead of surfacing the unique-index violation. */
+                var raced = await conn.QuerySingleOrDefaultAsync<FeePaymentResponse>(new CommandDefinition(
+                    """
+                    SELECT Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId
+                    FROM dbo.FeePayments WHERE TenantId = @tenantId AND IdempotencyKey = @key
+                    """,
+                    new { tenantId, key = req.IdempotencyKey }, tx, cancellationToken: ct));
+                await tx.CommitAsync(ct);
+                return raced;
+            }
 
             await conn.ExecuteAsync(new CommandDefinition(
                 """

@@ -389,4 +389,102 @@ public class FeesTests(SqlServerFixture fx)
             new { paymentId });
         count.Should().Be(1);
     }
+
+    [Fact]
+    public async Task Pay_invoice_retry_after_completing_payment_returns_same_payment_not_conflict()
+    {
+        await using var app = App();
+        var tenant = Guid.NewGuid();
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenant, ["school.principal"], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var student = await Data(await client.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "ADM-IDEMP-2", name = "Idem Full Kid", grade = "V", section = "A", roll = 10,
+        }), HttpStatusCode.Created);
+        var studentId = student.GetProperty("id").GetGuid();
+
+        var invoice = await Data(await client.PostAsJsonAsync("/v1/fees/invoices", new
+        {
+            student_id = studentId, period = "Term 1", due_date = "2026-06-01", amount = 2000,
+        }), HttpStatusCode.Created);
+        var invoiceId = invoice.GetProperty("id").GetGuid();
+
+        var idempotencyKey = Guid.NewGuid();
+        var body = new
+        {
+            amount = 2000, mode = "Cash", student_name = "Idem Full Kid", cls = "V-A",
+            fee_type = "academic", idempotency_key = idempotencyKey,
+        };
+
+        /* First call fully pays the invoice off (Status becomes "paid"). */
+        var first = await Data(await client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", body), HttpStatusCode.OK);
+
+        var invoiceAfter = await Data(await client.GetAsync("/v1/fees/invoices"), HttpStatusCode.OK);
+        invoiceAfter.EnumerateArray().First(i => i.GetProperty("id").GetGuid() == invoiceId)
+            .GetProperty("status").GetString().Should().Be("paid");
+
+        /* Retry with the same idempotency key against a now-fully-paid invoice must still return
+           the original payment (200), never the generic "invoice already paid" 409. */
+        var retryResponse = await client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", body);
+        var second = await Data(retryResponse, HttpStatusCode.OK);
+        second.GetProperty("id").GetGuid().Should().Be(first.GetProperty("id").GetGuid());
+
+        var payments = await Data(await client.GetAsync($"/v1/fees/payments?student_id={studentId}"), HttpStatusCode.OK);
+        payments.EnumerateArray().Count(p => p.GetProperty("id").GetGuid() == first.GetProperty("id").GetGuid())
+            .Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Pay_invoice_concurrent_requests_with_same_idempotency_key_record_payment_once()
+    {
+        await using var app = App();
+        var tenant = Guid.NewGuid();
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenant, ["school.principal"], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var student = await Data(await client.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "ADM-IDEMP-RACE-1", name = "Race Kid", grade = "V", section = "C", roll = 11,
+        }), HttpStatusCode.Created);
+        var studentId = student.GetProperty("id").GetGuid();
+
+        var invoice = await Data(await client.PostAsJsonAsync("/v1/fees/invoices", new
+        {
+            student_id = studentId, period = "Term 1", due_date = "2026-06-01", amount = 5000,
+        }), HttpStatusCode.Created);
+        var invoiceId = invoice.GetProperty("id").GetGuid();
+
+        var idempotencyKey = Guid.NewGuid();
+        var body = new
+        {
+            amount = 1500, mode = "Cash", student_name = "Race Kid", cls = "V-C",
+            fee_type = "academic", idempotency_key = idempotencyKey,
+        };
+
+        /* Fire two requests carrying the same key concurrently. Regardless of whether both reach
+           RecordInvoicePaymentAsync's INSERT before either commits (exercising the unique-index
+           catch path) or the second lands after the first commits (exercising the fast-path/
+           top-of-transaction lookup), the observable contract must hold: both calls succeed with
+           the same payment id, and exactly one payment row is ever recorded. */
+        var task1 = client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", body);
+        var task2 = client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", body);
+        var responses = await Task.WhenAll(task1, task2);
+
+        var first = await Data(responses[0], HttpStatusCode.OK);
+        var second = await Data(responses[1], HttpStatusCode.OK);
+        first.GetProperty("id").GetGuid().Should().Be(second.GetProperty("id").GetGuid());
+
+        var payments = await Data(await client.GetAsync($"/v1/fees/payments?student_id={studentId}"), HttpStatusCode.OK);
+        payments.EnumerateArray().Count(p => p.GetProperty("id").GetGuid() == first.GetProperty("id").GetGuid())
+            .Should().Be(1);
+    }
 }
