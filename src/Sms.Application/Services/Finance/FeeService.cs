@@ -120,9 +120,10 @@ public sealed class FeeService(
             id,
             new CreateFeePaymentRequest(
                 inv.StudentId, studentName, classLabel, feeType, amount, method, paymentRef,
-                InvoiceId: id, HeadId: req?.HeadId),
+                InvoiceId: id, HeadId: req?.HeadId, IdempotencyKey: req?.IdempotencyKey),
             amount,
             method,
+            tenant.UserId,
             ct);
         if (payment is null)
             return ApiResult<FeePaymentResponse>.Fail(new Error("conflict", "invoice already paid"), 409);

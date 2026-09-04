@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
 using Microsoft.Extensions.DependencyInjection;
+using Sms.Shared.Kernel.Audit;
 using Sms.Shared.Kernel.Data;
 
 namespace Sms.Modules.Finance;
@@ -14,7 +15,8 @@ public sealed record FeePaymentResponse(
 
 public sealed record CreateFeePaymentRequest(
     Guid StudentId, string? StudentName, string? ClassLabel, string? FeeType, decimal Amount, string? Method, string? Ref,
-    Guid? InvoiceId = null, string? HeadId = null, string? HeadName = null, string? Mode = null, string? Cls = null);
+    Guid? InvoiceId = null, string? HeadId = null, string? HeadName = null, string? Mode = null, string? Cls = null,
+    Guid? IdempotencyKey = null);
 
 public sealed class FeeRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
@@ -67,9 +69,10 @@ public sealed record PayFeeInvoiceRequest(
     string? Cls,
     string? FeeType,
     string? HeadId,
-    string? HeadName);
+    string? HeadName,
+    Guid? IdempotencyKey = null);
 
-public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLogger auditLogger) : BaseRepository(factory)
 {
     private static int _paidAmountReady;
 
@@ -196,13 +199,28 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
 
     public async Task<FeePaymentResponse?> RecordInvoicePaymentAsync(
         Guid tenantId, Guid invoiceId, CreateFeePaymentRequest req, decimal amount, string method,
-        CancellationToken ct = default)
+        Guid? actorUserId, CancellationToken ct = default)
     {
         await EnsurePaidAmountColumnAsync(ct);
         await using var conn = await Factory.OpenAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         try
         {
+            if (req.IdempotencyKey is { } key)
+            {
+                var existing = await conn.QuerySingleOrDefaultAsync<FeePaymentResponse>(new CommandDefinition(
+                    """
+                    SELECT Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId
+                    FROM dbo.FeePayments WHERE TenantId = @tenantId AND IdempotencyKey = @key
+                    """,
+                    new { tenantId, key }, tx, cancellationToken: ct));
+                if (existing is not null)
+                {
+                    await tx.CommitAsync(ct);
+                    return existing;
+                }
+            }
+
             var inv = await conn.QuerySingleOrDefaultAsync<InvoiceLockRow>(
                 new CommandDefinition(
                     """
@@ -231,8 +249,8 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
                 : req.FeeType;
             await conn.ExecuteAsync(new CommandDefinition(
                 """
-                INSERT dbo.FeePayments (Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId)
-                VALUES (@payId, @tenantId, @StudentId, @StudentName, @classLabel, @feeType, @amount, @method, @Ref, CAST(SYSUTCDATETIME() AS date), @invoiceId, @HeadId)
+                INSERT dbo.FeePayments (Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId, IdempotencyKey, CreatedAt)
+                VALUES (@payId, @tenantId, @StudentId, @StudentName, @classLabel, @feeType, @amount, @method, @Ref, CAST(SYSUTCDATETIME() AS date), @invoiceId, @HeadId, @IdempotencyKey, SYSUTCDATETIME())
                 """,
                 new
                 {
@@ -247,6 +265,7 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
                     req.Ref,
                     invoiceId,
                     req.HeadId,
+                    req.IdempotencyKey,
                 }, tx, cancellationToken: ct));
 
             await conn.ExecuteAsync(new CommandDefinition(
@@ -274,6 +293,11 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
                 FROM dbo.FeePayments WHERE Id = @payId
                 """,
                 new { payId }, tx, cancellationToken: ct));
+
+            await auditLogger.LogAsync(conn, tx, new AuditEntry(
+                tenantId, actorUserId, "FeePayment.Recorded", "Fees", "FeePayment", payId.ToString(),
+                AfterData: new { Id = payId, InvoiceId = invoiceId, Amount = amount, Method = method }), ct);
+
             await tx.CommitAsync(ct);
             return payment;
         }

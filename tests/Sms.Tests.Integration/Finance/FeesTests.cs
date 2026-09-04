@@ -306,4 +306,87 @@ public class FeesTests(SqlServerFixture fx)
         row.HeadId.Should().Be("tuition");
         row.Method.Should().Be("UPI");
     }
+
+    [Fact]
+    public async Task Pay_invoice_with_same_idempotency_key_twice_records_payment_once()
+    {
+        await using var app = App();
+        var tenant = Guid.NewGuid();
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenant, ["school.principal"], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var student = await Data(await client.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "ADM-IDEMP-1", name = "Idem Kid", grade = "V", section = "A", roll = 9,
+        }), HttpStatusCode.Created);
+        var studentId = student.GetProperty("id").GetGuid();
+
+        var invoice = await Data(await client.PostAsJsonAsync("/v1/fees/invoices", new
+        {
+            student_id = studentId, period = "Term 1", due_date = "2026-06-01", amount = 5000,
+        }), HttpStatusCode.Created);
+        var invoiceId = invoice.GetProperty("id").GetGuid();
+
+        var idempotencyKey = Guid.NewGuid();
+        var body = new
+        {
+            amount = 2000, mode = "Cash", student_name = "Idem Kid", cls = "V-A",
+            fee_type = "academic", idempotency_key = idempotencyKey,
+        };
+
+        var first = await Data(await client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", body), HttpStatusCode.OK);
+        var second = await Data(await client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", body), HttpStatusCode.OK);
+
+        first.GetProperty("id").GetGuid().Should().Be(second.GetProperty("id").GetGuid());
+
+        var payments = await Data(await client.GetAsync($"/v1/fees/payments?student_id={studentId}"), HttpStatusCode.OK);
+        payments.EnumerateArray().Count(p => p.GetProperty("id").GetGuid() == first.GetProperty("id").GetGuid())
+            .Should().Be(1);
+
+        var invoiceAfter = await Data(await client.GetAsync("/v1/fees/invoices"), HttpStatusCode.OK);
+        invoiceAfter.EnumerateArray().First(i => i.GetProperty("id").GetGuid() == invoiceId)
+            .GetProperty("paid_amount").GetDecimal().Should().Be(2000);
+    }
+
+    [Fact]
+    public async Task Pay_invoice_writes_exactly_one_audit_row()
+    {
+        await using var app = App();
+        var tenant = Guid.NewGuid();
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenant, ["school.principal"], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var student = await Data(await client.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "ADM-AUDIT-1", name = "Audit Kid", grade = "V", section = "B", roll = 4,
+        }), HttpStatusCode.Created);
+        var studentId = student.GetProperty("id").GetGuid();
+        var invoice = await Data(await client.PostAsJsonAsync("/v1/fees/invoices", new
+        {
+            student_id = studentId, period = "Term 1", due_date = "2026-06-01", amount = 3000,
+        }), HttpStatusCode.Created);
+        var invoiceId = invoice.GetProperty("id").GetGuid();
+
+        var paid = await Data(await client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", new
+        {
+            amount = 3000, mode = "Cash", student_name = "Audit Kid", cls = "V-B", fee_type = "academic",
+        }), HttpStatusCode.OK);
+        var paymentId = paid.GetProperty("id").GetString();
+
+        await using var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenant", new { tenant });
+        var count = await conn.QuerySingleAsync<int>(
+            "SELECT COUNT(*) FROM dbo.AuditLogs WHERE EntityType = 'FeePayment' AND EntityId = @paymentId",
+            new { paymentId });
+        count.Should().Be(1);
+    }
 }
