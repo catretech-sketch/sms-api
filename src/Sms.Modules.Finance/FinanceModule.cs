@@ -2,7 +2,9 @@ using System.Data;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Dapper;
+using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.DependencyInjection;
+using Sms.Shared.Kernel.Audit;
 using Sms.Shared.Kernel.Data;
 
 namespace Sms.Modules.Finance;
@@ -14,27 +16,78 @@ public sealed record FeePaymentResponse(
 
 public sealed record CreateFeePaymentRequest(
     Guid StudentId, string? StudentName, string? ClassLabel, string? FeeType, decimal Amount, string? Method, string? Ref,
-    Guid? InvoiceId = null, string? HeadId = null, string? HeadName = null, string? Mode = null, string? Cls = null);
+    Guid? InvoiceId = null, string? HeadId = null, string? HeadName = null, string? Mode = null, string? Cls = null,
+    Guid? IdempotencyKey = null);
 
-public sealed class FeeRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+/// <summary>
+/// Thrown when a client-supplied IdempotencyKey matches an existing FeePayments row whose
+/// Amount/InvoiceId differ from the current request. Signals a genuine conflict — not a safe
+/// replay — so callers must surface a 409 rather than returning the (different) stored payment.
+/// </summary>
+public sealed class IdempotencyKeyConflictException()
+    : Exception("This idempotency key was already used for a different payment");
+
+public sealed class FeeRepository(IDbConnectionFactory factory, IAuditLogger auditLogger) : BaseRepository(factory)
 {
     private const string Cols =
         "Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId";
 
-    public Task<FeePaymentResponse?> CreateAsync(Guid tenantId, CreateFeePaymentRequest r, CancellationToken ct = default) =>
-        QuerySingleProcAsync<FeePaymentResponse>("dbo.FeePayment_Create", new
+    private sealed record FeePaymentCreateRow(
+        Guid Id, Guid TenantId, Guid StudentId, string? StudentName, string? ClassLabel, string FeeType,
+        decimal Amount, string? Method, string? Ref, DateTime Date, Guid? InvoiceId, string? HeadId, bool WasCreated);
+
+    public async Task<FeePaymentResponse?> CreateAsync(
+        Guid tenantId, CreateFeePaymentRequest r, Guid? actorUserId, CancellationToken ct = default)
+    {
+        await using var conn = await Factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var row = await conn.QuerySingleOrDefaultAsync<FeePaymentCreateRow>(new CommandDefinition(
+            "dbo.FeePayment_Create",
+            new
+            {
+                TenantId = tenantId,
+                r.StudentId,
+                StudentName = r.StudentName,
+                ClassLabel = string.IsNullOrWhiteSpace(r.ClassLabel) ? r.Cls : r.ClassLabel,
+                FeeType = string.IsNullOrWhiteSpace(r.FeeType) ? r.HeadName : r.FeeType,
+                r.Amount,
+                Method = string.IsNullOrWhiteSpace(r.Method) ? r.Mode : r.Method,
+                r.Ref,
+                r.InvoiceId,
+                r.HeadId,
+                r.IdempotencyKey,
+            },
+            tx,
+            commandType: CommandType.StoredProcedure,
+            cancellationToken: ct));
+
+        if (row is null)
         {
-            TenantId = tenantId,
-            r.StudentId,
-            StudentName = r.StudentName,
-            ClassLabel = string.IsNullOrWhiteSpace(r.ClassLabel) ? r.Cls : r.ClassLabel,
-            FeeType = string.IsNullOrWhiteSpace(r.FeeType) ? r.HeadName : r.FeeType,
-            r.Amount,
-            Method = string.IsNullOrWhiteSpace(r.Method) ? r.Mode : r.Method,
-            r.Ref,
-            r.InvoiceId,
-            r.HeadId,
-        }, ct);
+            await tx.RollbackAsync(ct);
+            return null;
+        }
+
+        if (!row.WasCreated && (row.Amount != r.Amount || (r.InvoiceId is { } reqInvoiceId && row.InvoiceId != reqInvoiceId)))
+        {
+            /* IdempotencyKey matched an existing row, but the request's Amount/InvoiceId don't —
+               a stale-replay/reuse, not a safe retry. Reject instead of silently returning the
+               (different) stored payment. */
+            await tx.RollbackAsync(ct);
+            throw new IdempotencyKeyConflictException();
+        }
+
+        if (row.WasCreated)
+        {
+            await auditLogger.LogAsync(conn, tx, new AuditEntry(
+                tenantId, actorUserId, "FeePayment.Recorded", "Fees", "FeePayment", row.Id.ToString(),
+                AfterData: new { row.Id, row.Amount, row.Method, row.StudentId }), ct);
+        }
+
+        await tx.CommitAsync(ct);
+        return new FeePaymentResponse(
+            row.Id, row.TenantId, row.StudentId, row.StudentName, row.ClassLabel, row.FeeType,
+            row.Amount, row.Method, row.Ref, row.Date, row.InvoiceId, row.HeadId);
+    }
 
     public Task<IReadOnlyList<FeePaymentResponse>> ListAsync(Guid? studentId, CancellationToken ct = default) =>
         QueryInlineAsync<FeePaymentResponse>(
@@ -67,9 +120,10 @@ public sealed record PayFeeInvoiceRequest(
     string? Cls,
     string? FeeType,
     string? HeadId,
-    string? HeadName);
+    string? HeadName,
+    Guid? IdempotencyKey = null);
 
-public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLogger auditLogger) : BaseRepository(factory)
 {
     private static int _paidAmountReady;
 
@@ -194,15 +248,46 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
         return await GetAsync(id, ct);
     }
 
+    /// <summary>Fast-path lookup used by callers to short-circuit before any invoice-state checks.</summary>
+    public async Task<FeePaymentResponse?> GetPaymentByIdempotencyKeyAsync(
+        Guid tenantId, Guid key, CancellationToken ct = default) =>
+        (await QueryInlineAsync<FeePaymentResponse>(
+            """
+            SELECT Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId
+            FROM dbo.FeePayments WHERE TenantId = @tenantId AND IdempotencyKey = @key
+            """,
+            new { tenantId, key }, ct)).FirstOrDefault();
+
     public async Task<FeePaymentResponse?> RecordInvoicePaymentAsync(
         Guid tenantId, Guid invoiceId, CreateFeePaymentRequest req, decimal amount, string method,
-        CancellationToken ct = default)
+        Guid? actorUserId, CancellationToken ct = default)
     {
         await EnsurePaidAmountColumnAsync(ct);
         await using var conn = await Factory.OpenAsync(ct);
         await using var tx = await conn.BeginTransactionAsync(ct);
         try
         {
+            if (req.IdempotencyKey is { } key)
+            {
+                var existing = await conn.QuerySingleOrDefaultAsync<FeePaymentResponse>(new CommandDefinition(
+                    """
+                    SELECT Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId
+                    FROM dbo.FeePayments WHERE TenantId = @tenantId AND IdempotencyKey = @key
+                    """,
+                    new { tenantId, key }, tx, cancellationToken: ct));
+                if (existing is not null)
+                {
+                    if (existing.InvoiceId != invoiceId || existing.Amount != amount)
+                    {
+                        /* Same IdempotencyKey, different invoice/amount — reject instead of
+                           returning the (different) payment that was already recorded under it. */
+                        throw new IdempotencyKeyConflictException();
+                    }
+                    await tx.CommitAsync(ct);
+                    return existing;
+                }
+            }
+
             var inv = await conn.QuerySingleOrDefaultAsync<InvoiceLockRow>(
                 new CommandDefinition(
                     """
@@ -229,25 +314,49 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
             var feeType = string.IsNullOrWhiteSpace(req.FeeType)
                 ? (string.IsNullOrWhiteSpace(req.HeadName) ? "academic" : req.HeadName)
                 : req.FeeType;
-            await conn.ExecuteAsync(new CommandDefinition(
-                """
-                INSERT dbo.FeePayments (Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId)
-                VALUES (@payId, @tenantId, @StudentId, @StudentName, @classLabel, @feeType, @amount, @method, @Ref, CAST(SYSUTCDATETIME() AS date), @invoiceId, @HeadId)
-                """,
-                new
+            try
+            {
+                await conn.ExecuteAsync(new CommandDefinition(
+                    """
+                    INSERT dbo.FeePayments (Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId, IdempotencyKey, CreatedAt)
+                    VALUES (@payId, @tenantId, @StudentId, @StudentName, @classLabel, @feeType, @amount, @method, @Ref, CAST(SYSUTCDATETIME() AS date), @invoiceId, @HeadId, @IdempotencyKey, SYSUTCDATETIME())
+                    """,
+                    new
+                    {
+                        payId,
+                        tenantId,
+                        inv.StudentId,
+                        req.StudentName,
+                        classLabel,
+                        feeType,
+                        amount,
+                        method,
+                        req.Ref,
+                        invoiceId,
+                        req.HeadId,
+                        req.IdempotencyKey,
+                    }, tx, cancellationToken: ct));
+            }
+            catch (SqlException sqlEx) when (
+                req.IdempotencyKey is not null && (sqlEx.Number == 2601 || sqlEx.Number == 2627))
+            {
+                /* Concurrent request with the same IdempotencyKey won the race and inserted first —
+                   fall back to returning that row instead of surfacing the unique-index violation. */
+                var raced = await conn.QuerySingleOrDefaultAsync<FeePaymentResponse>(new CommandDefinition(
+                    """
+                    SELECT Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId
+                    FROM dbo.FeePayments WHERE TenantId = @tenantId AND IdempotencyKey = @key
+                    """,
+                    new { tenantId, key = req.IdempotencyKey }, tx, cancellationToken: ct));
+                if (raced is not null && (raced.InvoiceId != invoiceId || raced.Amount != amount))
                 {
-                    payId,
-                    tenantId,
-                    inv.StudentId,
-                    req.StudentName,
-                    classLabel,
-                    feeType,
-                    amount,
-                    method,
-                    req.Ref,
-                    invoiceId,
-                    req.HeadId,
-                }, tx, cancellationToken: ct));
+                    /* Concurrent request won the race, but for a different invoice/amount —
+                       reject rather than returning that (different) payment as if it were ours. */
+                    throw new IdempotencyKeyConflictException();
+                }
+                await tx.CommitAsync(ct);
+                return raced;
+            }
 
             await conn.ExecuteAsync(new CommandDefinition(
                 """
@@ -274,6 +383,11 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
                 FROM dbo.FeePayments WHERE Id = @payId
                 """,
                 new { payId }, tx, cancellationToken: ct));
+
+            await auditLogger.LogAsync(conn, tx, new AuditEntry(
+                tenantId, actorUserId, "FeePayment.Recorded", "Fees", "FeePayment", payId.ToString(),
+                AfterData: new { Id = payId, InvoiceId = invoiceId, Amount = amount, Method = method }), ct);
+
             await tx.CommitAsync(ct);
             return payment;
         }

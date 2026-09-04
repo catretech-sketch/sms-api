@@ -54,7 +54,16 @@ public sealed class FeeService(
             FeeType = FirstNonEmpty(req.FeeType, req.HeadName, "academic") ?? "academic",
             Method = FirstNonEmpty(req.Method, req.Mode),
         };
-        var created = await payments.CreateAsync(tid, mapped, ct);
+        FeePaymentResponse? created;
+        try
+        {
+            created = await payments.CreateAsync(tid, mapped, tenant.UserId, ct);
+        }
+        catch (IdempotencyKeyConflictException)
+        {
+            return ApiResult<FeePaymentResponse>.Fail(
+                new Error("idempotency_key_reused", "This idempotency key was already used for a different payment"), 409);
+        }
         await live.PublishAsync(tid, LiveEventTypes.Fees, ct: ct);
         return ApiResult<FeePaymentResponse>.Ok(created!, 201);
     }
@@ -81,6 +90,19 @@ public sealed class FeeService(
         var inv = await invoices.GetAsync(id, ct);
         if (inv is null)
             return ApiResult<FeePaymentResponse>.Fail(new Error("not_found", "resource not found"), 404);
+
+        if (req?.IdempotencyKey is { } idemKey)
+        {
+            var existing = await invoices.GetPaymentByIdempotencyKeyAsync(tid, idemKey, ct);
+            if (existing is not null)
+            {
+                var requestedAmount = req.Amount is { } ra && ra > 0 ? ra : (decimal?)null;
+                if (existing.InvoiceId != id || (requestedAmount is { } amt && existing.Amount != amt))
+                    return ApiResult<FeePaymentResponse>.Fail(
+                        new Error("idempotency_key_reused", "This idempotency key was already used for a different payment"), 409);
+                return ApiResult<FeePaymentResponse>.Ok(existing);
+            }
+        }
 
         var alreadyPaid = inv.PaidAmount;
         var remaining = Math.Max(0, inv.Amount - alreadyPaid);
@@ -115,15 +137,25 @@ public sealed class FeeService(
         var studentName = FirstNonEmpty(req?.StudentName, inv.StudentName);
         var feeType = FirstNonEmpty(req?.FeeType, req?.HeadName, "academic") ?? "academic";
 
-        var payment = await invoices.RecordInvoicePaymentAsync(
-            tid,
-            id,
-            new CreateFeePaymentRequest(
-                inv.StudentId, studentName, classLabel, feeType, amount, method, paymentRef,
-                InvoiceId: id, HeadId: req?.HeadId),
-            amount,
-            method,
-            ct);
+        FeePaymentResponse? payment;
+        try
+        {
+            payment = await invoices.RecordInvoicePaymentAsync(
+                tid,
+                id,
+                new CreateFeePaymentRequest(
+                    inv.StudentId, studentName, classLabel, feeType, amount, method, paymentRef,
+                    InvoiceId: id, HeadId: req?.HeadId, IdempotencyKey: req?.IdempotencyKey),
+                amount,
+                method,
+                tenant.UserId,
+                ct);
+        }
+        catch (IdempotencyKeyConflictException)
+        {
+            return ApiResult<FeePaymentResponse>.Fail(
+                new Error("idempotency_key_reused", "This idempotency key was already used for a different payment"), 409);
+        }
         if (payment is null)
             return ApiResult<FeePaymentResponse>.Fail(new Error("conflict", "invoice already paid"), 409);
 
