@@ -54,7 +54,7 @@ public sealed class FeeService(
             FeeType = FirstNonEmpty(req.FeeType, req.HeadName, "academic") ?? "academic",
             Method = FirstNonEmpty(req.Method, req.Mode),
         };
-        var created = await payments.CreateAsync(tid, mapped, ct);
+        var created = await payments.CreateAsync(tid, mapped, tenant.UserId, ct);
         await live.PublishAsync(tid, LiveEventTypes.Fees, ct: ct);
         return ApiResult<FeePaymentResponse>.Ok(created!, 201);
     }

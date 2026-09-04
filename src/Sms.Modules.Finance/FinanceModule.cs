@@ -19,25 +19,58 @@ public sealed record CreateFeePaymentRequest(
     Guid? InvoiceId = null, string? HeadId = null, string? HeadName = null, string? Mode = null, string? Cls = null,
     Guid? IdempotencyKey = null);
 
-public sealed class FeeRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+public sealed class FeeRepository(IDbConnectionFactory factory, IAuditLogger auditLogger) : BaseRepository(factory)
 {
     private const string Cols =
         "Id, TenantId, StudentId, StudentName, ClassLabel, FeeType, Amount, Method, Ref, [Date], InvoiceId, HeadId";
 
-    public Task<FeePaymentResponse?> CreateAsync(Guid tenantId, CreateFeePaymentRequest r, CancellationToken ct = default) =>
-        QuerySingleProcAsync<FeePaymentResponse>("dbo.FeePayment_Create", new
+    private sealed record FeePaymentCreateRow(
+        Guid Id, Guid TenantId, Guid StudentId, string? StudentName, string? ClassLabel, string FeeType,
+        decimal Amount, string? Method, string? Ref, DateTime Date, Guid? InvoiceId, string? HeadId, bool WasCreated);
+
+    public async Task<FeePaymentResponse?> CreateAsync(
+        Guid tenantId, CreateFeePaymentRequest r, Guid? actorUserId, CancellationToken ct = default)
+    {
+        await using var conn = await Factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        var row = await conn.QuerySingleOrDefaultAsync<FeePaymentCreateRow>(new CommandDefinition(
+            "dbo.FeePayment_Create",
+            new
+            {
+                TenantId = tenantId,
+                r.StudentId,
+                StudentName = r.StudentName,
+                ClassLabel = string.IsNullOrWhiteSpace(r.ClassLabel) ? r.Cls : r.ClassLabel,
+                FeeType = string.IsNullOrWhiteSpace(r.FeeType) ? r.HeadName : r.FeeType,
+                r.Amount,
+                Method = string.IsNullOrWhiteSpace(r.Method) ? r.Mode : r.Method,
+                r.Ref,
+                r.InvoiceId,
+                r.HeadId,
+                r.IdempotencyKey,
+            },
+            tx,
+            commandType: CommandType.StoredProcedure,
+            cancellationToken: ct));
+
+        if (row is null)
         {
-            TenantId = tenantId,
-            r.StudentId,
-            StudentName = r.StudentName,
-            ClassLabel = string.IsNullOrWhiteSpace(r.ClassLabel) ? r.Cls : r.ClassLabel,
-            FeeType = string.IsNullOrWhiteSpace(r.FeeType) ? r.HeadName : r.FeeType,
-            r.Amount,
-            Method = string.IsNullOrWhiteSpace(r.Method) ? r.Mode : r.Method,
-            r.Ref,
-            r.InvoiceId,
-            r.HeadId,
-        }, ct);
+            await tx.RollbackAsync(ct);
+            return null;
+        }
+
+        if (row.WasCreated)
+        {
+            await auditLogger.LogAsync(conn, tx, new AuditEntry(
+                tenantId, actorUserId, "FeePayment.Recorded", "Fees", "FeePayment", row.Id.ToString(),
+                AfterData: new { row.Id, row.Amount, row.Method, row.StudentId }), ct);
+        }
+
+        await tx.CommitAsync(ct);
+        return new FeePaymentResponse(
+            row.Id, row.TenantId, row.StudentId, row.StudentName, row.ClassLabel, row.FeeType,
+            row.Amount, row.Method, row.Ref, row.Date, row.InvoiceId, row.HeadId);
+    }
 
     public Task<IReadOnlyList<FeePaymentResponse>> ListAsync(Guid? studentId, CancellationToken ct = default) =>
         QueryInlineAsync<FeePaymentResponse>(

@@ -487,4 +487,46 @@ public class FeesTests(SqlServerFixture fx)
         payments.EnumerateArray().Count(p => p.GetProperty("id").GetGuid() == first.GetProperty("id").GetGuid())
             .Should().Be(1);
     }
+
+    [Fact]
+    public async Task Create_manual_payment_with_same_idempotency_key_twice_returns_same_row()
+    {
+        await using var app = App();
+        var tenant = Guid.NewGuid();
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenant, ["school.principal"], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+
+        var student = await Data(await client.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = "ADM-MANUAL-1", name = "Manual Kid", grade = "VI", section = "A", roll = 3,
+        }), HttpStatusCode.Created);
+        var studentId = student.GetProperty("id").GetGuid();
+
+        var idempotencyKey = Guid.NewGuid();
+        var body = new
+        {
+            student_id = studentId, student_name = "Manual Kid", class_label = "VI-A",
+            fee_type = "academic", amount = 1500, method = "Cash", idempotency_key = idempotencyKey,
+        };
+
+        var first = await Data(await client.PostAsJsonAsync("/v1/fees/payments", body), HttpStatusCode.Created);
+        var second = await Data(await client.PostAsJsonAsync("/v1/fees/payments", body), HttpStatusCode.Created);
+        first.GetProperty("id").GetGuid().Should().Be(second.GetProperty("id").GetGuid());
+
+        await using var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenant", new { tenant });
+        var paymentCount = await conn.QuerySingleAsync<int>(
+            "SELECT COUNT(*) FROM dbo.FeePayments WHERE Id = @id",
+            new { id = first.GetProperty("id").GetGuid() });
+        paymentCount.Should().Be(1);
+        var auditCount = await conn.QuerySingleAsync<int>(
+            "SELECT COUNT(*) FROM dbo.AuditLogs WHERE EntityType = 'FeePayment' AND EntityId = @id",
+            new { id = first.GetProperty("id").GetString() });
+        auditCount.Should().Be(1);
+    }
 }
