@@ -33,8 +33,8 @@ public sealed class AuditLogger : IAuditLogger
     public Task LogAsync(DbConnection conn, DbTransaction tx, AuditEntry entry, CancellationToken ct = default) =>
         conn.ExecuteAsync(new CommandDefinition(
             """
-            INSERT dbo.AuditLogs (Id, TenantId, ActorUserId, Action, Module, EntityType, EntityId, BeforeData, AfterData)
-            VALUES (NEWID(), @TenantId, @ActorUserId, @Action, @Module, @EntityType, @EntityId, @BeforeData, @AfterData)
+            INSERT dbo.AuditLogs (TenantId, ActorUserId, Action, Module, EntityType, EntityId, BeforeData, AfterData)
+            VALUES (@TenantId, @ActorUserId, @Action, @Module, @EntityType, @EntityId, @BeforeData, @AfterData)
             """,
             new
             {
