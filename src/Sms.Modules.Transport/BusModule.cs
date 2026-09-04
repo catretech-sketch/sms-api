@@ -76,6 +76,18 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
         return new BusResponse(bus.Id, bus.BusNo, bus.RouteName, bus.Driver, bus.DriverPhone, stops);
     }
 
+    /// True if this teacher (RLS-scoped to the caller's tenant) is the assigned
+    /// duty teacher for this bus. Used to authorize a teacher's live-tracking
+    /// subscription to their assigned bus only — teaching a student who rides
+    /// the bus does NOT grant access on its own.
+    public async Task<bool> IsDutyTeacherForBusAsync(Guid teacherUserId, Guid busId, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<int>(
+            "SELECT COUNT(1) FROM dbo.BusAssignments WHERE TeacherUserId = @teacherUserId AND BusId = @busId",
+            new { teacherUserId, busId }, ct);
+        return rows.FirstOrDefault() > 0;
+    }
+
     private async Task<IReadOnlyList<BusStopResponse>> QueryStopsForBusAsync(Guid busId, CancellationToken ct = default)
     {
         var routeId = (await QueryInlineAsync<Guid?>(

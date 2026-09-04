@@ -60,6 +60,28 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
         return null;
     }
 
+    private sealed record ActiveTripParticipantsRow(Guid? DriverId, Guid? ConductorId);
+
+    /// Returns "driver"/"conductor" if the caller is a participant of this bus's
+    /// currently-live trip, else null. Bus-keyed (not trip-keyed) so a caller can
+    /// check "am I driving/conducting this bus right now" without already
+    /// knowing today's TripId.
+    public async Task<string?> GetActiveDriverOrConductorRoleByBusAsync(Guid busId, Guid userId, CancellationToken ct = default)
+    {
+        var row = (await QueryInlineAsync<ActiveTripParticipantsRow>(
+            "SELECT TOP 1 DriverId, ConductorId FROM dbo.Trips WHERE BusId = @busId AND Status = 'live' ORDER BY StartedAt DESC",
+            new { busId }, ct)).FirstOrDefault();
+        if (row is null) return null;
+        if (row.DriverId == userId) return "driver";
+        if (row.ConductorId == userId) return "conductor";
+        return null;
+    }
+
+    /// The bus a trip belongs to — used to know which SignalR bus-group to
+    /// broadcast a position/lifecycle event to after a trip mutation.
+    public async Task<Guid?> GetBusIdAsync(Guid tripId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<Guid?>("SELECT BusId FROM dbo.Trips WHERE Id = @tripId", new { tripId }, ct)).FirstOrDefault();
+
     public Task IngestPingsAsync(Guid tenantId, Guid tripId, IReadOnlyList<PingItem> pings, CancellationToken ct = default)
     {
         var table = new DataTable();
