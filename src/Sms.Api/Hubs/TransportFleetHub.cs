@@ -16,4 +16,5 @@ public sealed class TransportFleetHub : Hub
     }
 
     public static string TenantGroup(string tenantId) => $"transport-fleet:{tenantId}";
+    public static string BusGroup(Guid busId) => $"bus:{busId}";
 }
