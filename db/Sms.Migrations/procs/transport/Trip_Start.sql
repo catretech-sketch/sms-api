@@ -14,6 +14,20 @@ BEGIN
         (SELECT TOP 1 Id FROM dbo.Buses
          WHERE TenantId = @TenantId AND BusNo = @BusNo ORDER BY Id);
 
+    -- Reject a second trip on a bus that already has one live. BusId is resolved above
+    -- (from @BusNo) rather than passed in, so this guard has to live here rather than as a
+    -- C# pre-check in TripRepository/TripService — there is no resolved BusId available to
+    -- either of those before this proc runs. Trips.Status only ever takes 'live'/'ended'
+    -- (see Trip_End.sql) — there is no 'arrived' trip status, so the guard checks 'live' only.
+    -- Returns no row (instead of inserting) when blocked; TripRepository.StartAsync's
+    -- QuerySingleProcAsync then yields null, and TripService.StartAsync translates that
+    -- null into a 409 rather than assuming a trip was always created.
+    IF @BusId IS NOT NULL AND EXISTS (
+        SELECT 1 FROM dbo.Trips WHERE BusId = @BusId AND Status = 'live')
+    BEGIN
+        RETURN;
+    END
+
     -- Auto-assign the trip's conductor from the bus's ConductorStaffId, resolved to their
     -- login identity (Staff.UserId) — ConductorId is a user id, same as DriverId, not a
     -- Staff.Id, so trip-ownership checks can compare it directly against the caller's uid.

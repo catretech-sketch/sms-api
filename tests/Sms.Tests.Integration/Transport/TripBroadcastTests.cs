@@ -220,4 +220,84 @@ public class TripBroadcastTests(SqlServerFixture fx)
         var ended = fleet.TripEndedCalls.Single(c => c.BusId == busId && c.TripId == tripId);
         ended.EndedAt.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromSeconds(10));
     }
+
+    /// dbo.Trip_Start now rejects (returns no row, translated to 409) a second trip on a bus
+    /// that already has one live — otherwise two drivers (or one driver double-tapping "start")
+    /// could each get their own "live" trip pointed at the same physical bus, and every
+    /// bus-keyed broadcast/lookup (GetActiveDriverOrConductorRoleByBusAsync, live snapshots)
+    /// would become ambiguous about which trip is authoritative.
+    [Fact]
+    public async Task Starting_a_second_trip_on_a_bus_already_live_is_rejected()
+    {
+        var (app, _, _) = App();
+        await using var _dispose = app;
+        var tenantId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var busNo = $"KA-{Guid.NewGuid():N}"[..12];
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, @BusNo)",
+                new { Id = busId, TenantId = tenantId, BusNo = busNo });
+        }
+
+        var driver = StaffClient(app, tenantId, Guid.NewGuid());
+        var first = await driver.PostAsJsonAsync("/v1/staff/trips", new { direction = "pickup", bus_no = busNo });
+        first.StatusCode.Should().Be(HttpStatusCode.Created);
+
+        // A different driver (or the same one retrying) trying to start a second trip on the
+        // same bus while the first is still live must be rejected, not silently create a
+        // second concurrent "live" trip on the same physical bus.
+        var otherDriver = StaffClient(app, tenantId, Guid.NewGuid());
+        var second = await otherDriver.PostAsJsonAsync("/v1/staff/trips", new { direction = "pickup", bus_no = busNo });
+        second.StatusCode.Should().Be(HttpStatusCode.Conflict);
+    }
+
+    /// A ping landing on (or within) a route stop's arrival radius must be reflected in the
+    /// same BusLiveSnapshotResponse pushed to fleet subscribers — this is the signal a live map
+    /// or the confirm-arrival screen relies on to know a bus has reached its next stop, without
+    /// each subscriber re-deriving distance-to-stop itself.
+    [Fact]
+    public async Task Pinging_at_a_stops_exact_coordinates_reports_within_arrival_radius()
+    {
+        var (app, fleet, _) = App();
+        await using var _dispose = app;
+        var tenantId = Guid.NewGuid();
+        var driverUserId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var routeId = Guid.NewGuid();
+        var stopId = Guid.NewGuid();
+        var busNo = $"KA-{Guid.NewGuid():N}"[..12];
+        const double stopLat = 12.9716;
+        const double stopLng = 77.5946;
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Buses (Id, TenantId, BusNo, RouteId) VALUES (@Id, @TenantId, @BusNo, @RouteId)",
+                new { Id = busId, TenantId = tenantId, BusNo = busNo, RouteId = routeId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.RouteStops (Id, TenantId, RouteId, Name, Seq, Lat, Lng) VALUES (@Id, @TenantId, @RouteId, 'Stop A', 1, @Lat, @Lng)",
+                new { Id = stopId, TenantId = tenantId, RouteId = routeId, Lat = stopLat, Lng = stopLng });
+        }
+
+        var driver = StaffClient(app, tenantId, driverUserId);
+        var trip = await Data(await driver.PostAsJsonAsync("/v1/staff/trips",
+            new { direction = "pickup", bus_no = busNo, route_id = routeId }), HttpStatusCode.Created);
+        var tripId = trip.GetProperty("id").GetGuid();
+
+        (await driver.PostAsJsonAsync($"/v1/staff/trips/{tripId}/pings", new
+        {
+            pings = new[] { new { lat = stopLat, lng = stopLng, speed_kmh = 0, heading = 0, at = DateTime.UtcNow } },
+        })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var position = fleet.PositionCalls.Single(c => c.BusId == busId);
+        position.Snapshot.NextStopId.Should().Be(stopId);
+        position.Snapshot.WithinArrivalRadius.Should().BeTrue();
+    }
 }

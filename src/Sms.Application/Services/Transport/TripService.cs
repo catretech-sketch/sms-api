@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Sms.Application.Common;
 using Sms.Application.Services.Realtime;
 using Sms.Modules.Transport;
@@ -24,13 +25,26 @@ public interface ITripService
 /// trip would only ever be visible to pollers, defeating the point of "live" tracking.
 public sealed class TripService(
     TripRepository repo, BusRepository buses, ITenantContext tenant,
-    ITransportFleetBroadcaster fleetBroadcaster, ILiveBroadcaster live, IClock clock) : ITripService
+    ITransportFleetBroadcaster fleetBroadcaster, ILiveBroadcaster live, IClock clock,
+    IConfiguration config) : ITripService
 {
+    // Matches TransportOfflineSweepWorker's Math.Clamp-on-read convention for a config value
+    // with a sane default and hard bounds, rather than trusting an unbounded/negative config
+    // value straight through into the arrival check.
+    private readonly double _arrivalRadiusMeters =
+        Math.Clamp(config.GetValue<double?>("TransportStops:ArrivalRadiusMeters") ?? 100, 5, 1000);
+
     public async Task<ApiResult<TripResponse>> StartAsync(StartTripRequest req, CancellationToken ct = default)
     {
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult<TripResponse>.Fail(new Error("forbidden", "no tenant/user context"), 403);
-        var trip = (await repo.StartAsync(tid, uid, req, ct))!;
+        // dbo.Trip_Start now returns no row (instead of inserting) when the bus it resolves
+        // from req.BusNo already has a live trip — the guard has to live in the stored proc
+        // because BusId is resolved there from BusNo, never in C#, so there is no busId this
+        // service layer could check up front. A null result here means "blocked", not "trip
+        // vanished immediately after insert" (that never happens), so it's safe to treat as 409.
+        if (await repo.StartAsync(tid, uid, req, ct) is not { } trip)
+            return ApiResult<TripResponse>.Fail(new Error("bus_already_active", "This bus already has an active trip"), 409);
         await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
         await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
         if (await repo.GetBusIdAsync(trip.Id, ct) is { } busId)
@@ -60,6 +74,22 @@ public sealed class TripService(
         if (await repo.GetBusIdAsync(tripId, ct) is { } busId)
         {
             var snapshot = await buses.GetLiveSnapshotAsync(busId, ct);
+            var currentStopId = await repo.GetCurrentStopIdAsync(tripId, ct);
+            // Only probe for a next stop when not already sitting at a confirmed one —
+            // arrival detection targets the NEXT stop, not the current one (see
+            // TripStopRepositoryTests' note that excluding the current stop is the caller's job).
+            if (currentStopId is null && await repo.GetTripRouteIdAsync(tripId, ct) is { } routeId
+                && await repo.GetNextIncompleteStopAsync(tripId, routeId, ct) is { } nextStop
+                && snapshot.Lat is { } lat && snapshot.Lng is { } lng)
+            {
+                var distance = TripRepository.Haversine(lat, lng, nextStop.Lat, nextStop.Lng);
+                var withinRadius = StopArrivalRules.IsWithinRadius(distance, _arrivalRadiusMeters);
+                snapshot = snapshot with { NextStopId = nextStop.Id, WithinArrivalRadius = withinRadius, CurrentStopId = currentStopId };
+            }
+            else
+            {
+                snapshot = snapshot with { CurrentStopId = currentStopId };
+            }
             await fleetBroadcaster.BroadcastPositionAsync(busId, snapshot, ct);
         }
         return ApiResult.NoContent();

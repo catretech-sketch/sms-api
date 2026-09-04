@@ -243,7 +243,16 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
     public async Task<Guid?> GetCurrentStopIdAsync(Guid tripId, CancellationToken ct = default) =>
         (await QueryInlineAsync<Guid?>("SELECT CurrentStopId FROM dbo.Trips WHERE Id = @tripId", new { tripId }, ct)).FirstOrDefault();
 
-    private static double Haversine(double lat1, double lng1, double lat2, double lng2)
+    /// No existing method already returns a trip's RouteId on its own (TripResponse carries it,
+    /// but only as part of the full row); TripService.IngestPingsAsync needs it in isolation to
+    /// call GetNextIncompleteStopAsync without re-fetching the whole trip.
+    public async Task<Guid?> GetTripRouteIdAsync(Guid tripId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<Guid?>("SELECT RouteId FROM dbo.Trips WHERE Id = @tripId", new { tripId }, ct)).FirstOrDefault();
+
+    /// Public (not private) so TripService's stop-arrival-radius computation (Task 4) can reuse
+    /// the same distance formula instead of duplicating a fourth Haversine implementation
+    /// alongside this one, BusModule's, and AttendanceModule's.
+    public static double Haversine(double lat1, double lng1, double lat2, double lng2)
     {
         const double radius = 6371000;
         double dLat = (lat2 - lat1) * Math.PI / 180;
