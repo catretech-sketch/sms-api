@@ -9,7 +9,12 @@ public sealed record BusLiveSnapshotResponse(
     Guid BusId, Guid? TripId,
     double? Lat, double? Lng, double SpeedKmh, double Heading,
     string Status, DateTime? LastUpdateAt,
-    int? EtaNextStopMin, string? NextStopName);
+    int? EtaNextStopMin, string? NextStopName, double? Accuracy)
+{
+    public Guid? CurrentStopId { get; init; }
+    public bool WithinArrivalRadius { get; init; }
+    public Guid? NextStopId { get; init; }
+}
 public sealed record BusResponse(
     Guid Id, string BusNo, string? RouteName, string? Driver, string? DriverPhone, IReadOnlyList<BusStopResponse> Stops);
 public sealed record BusRosterEntry(Guid StudentId, string StudentName, string Initials, Guid? StopId, string Status);
@@ -391,7 +396,7 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
         return new BusPositionResponse(busId, nearest, progress, ping.Lat, ping.Lng, next, etaMinutes);
     }
 
-    private sealed record LiveSnapshotPingRow(double Lat, double Lng, double SpeedKmh, double Heading, DateTime At);
+    private sealed record LiveSnapshotPingRow(double Lat, double Lng, double SpeedKmh, double Heading, DateTime At, double? Accuracy);
 
     /// Full push payload for a bus's live-tracking subscribers: position, derived
     /// status (moving/stopped/offline), and ETA — computed here once so every
@@ -401,7 +406,7 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
     {
         var tripId = await CurrentTripIdAsync(busId, ct);
         var ping = tripId is null ? null : (await QueryInlineAsync<LiveSnapshotPingRow>(
-            "SELECT TOP 1 Lat, Lng, SpeedKmh, Heading, At FROM dbo.TripPings WHERE TripId = @tripId ORDER BY At DESC",
+            "SELECT TOP 1 Lat, Lng, SpeedKmh, Heading, At, Accuracy FROM dbo.TripPings WHERE TripId = @tripId ORDER BY At DESC",
             new { tripId }, ct)).FirstOrDefault();
 
         var position = await GetPositionAsync(busId, ct);
@@ -419,7 +424,7 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
 
         return new BusLiveSnapshotResponse(
             busId, tripId, ping?.Lat, ping?.Lng, ping?.SpeedKmh ?? 0, ping?.Heading ?? 0,
-            status, ping?.At, position.EtaMinutes, position.NextStopName);
+            status, ping?.At, position.EtaMinutes, position.NextStopName, ping?.Accuracy);
     }
 
     private static double Haversine(double lat1, double lng1, double lat2, double lng2)

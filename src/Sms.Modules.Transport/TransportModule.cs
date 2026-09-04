@@ -17,7 +17,7 @@ public sealed record TripResponse(
     public string? ActiveBroadcaster { get; init; }
 }
 public sealed record StartTripRequest(Guid? RouteId, string? BusNo, string Direction);
-public sealed record PingItem(double Lat, double Lng, double SpeedKmh, double Heading, DateTime At);
+public sealed record PingItem(double Lat, double Lng, double SpeedKmh, double Heading, DateTime At, double? Accuracy = null);
 public sealed record BulkPingRequest(IReadOnlyList<PingItem> Pings);
 public sealed record TripSummaryResponse(Guid TripId, int DurationMin, double DistanceKm, int StopsCovered, int BoardedCount);
 public sealed record BoardingResponse(Guid TripId, Guid StudentId, Guid? StopId, string State, DateTime At);
@@ -91,7 +91,8 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
         table.Columns.Add("SpeedKmh", typeof(double));
         table.Columns.Add("Heading", typeof(double));
         table.Columns.Add("At", typeof(DateTime));
-        foreach (var p in pings) table.Rows.Add(p.Lat, p.Lng, p.SpeedKmh, p.Heading, p.At);
+        table.Columns.Add("Accuracy", typeof(double));
+        foreach (var p in pings) table.Rows.Add(p.Lat, p.Lng, p.SpeedKmh, p.Heading, p.At, (object?)p.Accuracy ?? DBNull.Value);
 
         var args = new DynamicParameters();
         args.Add("@TenantId", tenantId);

@@ -134,4 +134,32 @@ public class BusLiveSnapshotTests(SqlServerFixture fx)
         snapshot.Status.Should().Be("offline");
         snapshot.Lat.Should().BeNull();
     }
+
+    [Fact]
+    public async Task Snapshot_carries_the_pings_accuracy()
+    {
+        var tenantId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var tripId = Guid.NewGuid();
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync("INSERT INTO dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, 'BUS-1')",
+                new { Id = busId, TenantId = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Trips (Id, TenantId, BusId, Direction, Status, StartedAt) VALUES (@Id, @TenantId, @BusId, 'pickup', 'live', SYSUTCDATETIME())",
+                new { Id = tripId, TenantId = tenantId, BusId = busId });
+            await conn.ExecuteAsync(
+                @"INSERT INTO dbo.TripPings (Id, TenantId, TripId, Lat, Lng, SpeedKmh, Heading, At, Accuracy)
+                  VALUES (@Id, @TenantId, @TripId, 12.1, 77.1, 5, 90, SYSUTCDATETIME(), 8.0)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, TripId = tripId });
+        }
+        await using var app = App();
+        using var scope = app.Services.CreateScope();
+        scope.ServiceProvider.GetRequiredService<ITenantContext>().Set(tenantId, null, isPlatform: false);
+        var repo = scope.ServiceProvider.GetRequiredService<BusRepository>();
+
+        (await repo.GetLiveSnapshotAsync(busId, default)).Accuracy.Should().Be(8.0);
+    }
 }
