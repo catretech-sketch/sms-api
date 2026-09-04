@@ -119,8 +119,7 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
             metres += Haversine(pings[i - 1].Lat, pings[i - 1].Lng, pings[i].Lat, pings[i].Lng);
 
         var durationMin = trip is { StartedAt: { } s, EndedAt: { } e } ? (int)(e - s).TotalMinutes : 0;
-        var boarded = (await QueryInlineAsync<int>(
-            "SELECT COUNT(*) FROM dbo.Boardings WHERE TripId = @tripId AND State = 'boarded'", new { tripId }, ct)).First();
+        var boarded = await CountBoardedAsync(tripId, ct);
         var stops = (await QueryInlineAsync<int>(
             "SELECT COUNT(DISTINCT StopId) FROM dbo.Boardings WHERE TripId = @tripId AND StopId IS NOT NULL",
             new { tripId }, ct)).First();
@@ -242,6 +241,26 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
 
     public async Task<Guid?> GetCurrentStopIdAsync(Guid tripId, CancellationToken ct = default) =>
         (await QueryInlineAsync<Guid?>("SELECT CurrentStopId FROM dbo.Trips WHERE Id = @tripId", new { tripId }, ct)).FirstOrDefault();
+
+    /// True when this trip is a still-live pickup trip — the only state a driver may mark
+    /// "school-arrived" from (a drop trip, or a trip already ended/arrived, is rejected).
+    public async Task<bool> IsPickupTripInProgressAsync(Guid tripId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<int>(
+            "SELECT COUNT(1) FROM dbo.Trips WHERE Id = @tripId AND Direction = 'pickup' AND Status = 'live'",
+            new { tripId }, ct)).First() > 0;
+
+    /// Marks the school-arrival milestone without closing the trip — EndAsync remains the only
+    /// way to actually end it, matching this feature's "arrived != ended" distinction.
+    public Task MarkSchoolArrivedAsync(Guid tenantId, Guid tripId, DateTime at, CancellationToken ct = default) =>
+        ExecuteInlineAsync(
+            "UPDATE dbo.Trips SET Status = 'arrived' WHERE Id = @tripId AND TenantId = @tenantId",
+            new { tripId, tenantId }, ct);
+
+    /// Shared by EndAsync's trip-summary and MarkSchoolArrivedAsync's broadcast payload — kept as
+    /// one named query so both call sites can't drift on what counts as "boarded".
+    public async Task<int> CountBoardedAsync(Guid tripId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<int>(
+            "SELECT COUNT(*) FROM dbo.Boardings WHERE TripId = @tripId AND State = 'boarded'", new { tripId }, ct)).First();
 
     /// No existing method already returns a trip's RouteId on its own (TripResponse carries it,
     /// but only as part of the full row); TripService.IngestPingsAsync needs it in isolation to

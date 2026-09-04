@@ -18,6 +18,9 @@ public interface ITripService
     Task<ApiResult<TripSummaryResponse>> EndAsync(Guid tripId, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<BoardingResponse>>> ListBoardingAsync(Guid tripId, CancellationToken ct = default);
     Task<ApiResult> UpsertBoardingAsync(Guid tripId, BoardingRequest req, CancellationToken ct = default);
+    Task<ApiResult> ConfirmStopArrivalAsync(Guid tripId, Guid stopId, CancellationToken ct = default);
+    Task<ApiResult> CompleteStopAsync(Guid tripId, Guid stopId, CancellationToken ct = default);
+    Task<ApiResult> MarkSchoolArrivedAsync(Guid tripId, CancellationToken ct = default);
 }
 
 /// Every mutation that changes a trip's live state (start/ping/end) also pushes a fleet snapshot
@@ -138,13 +141,73 @@ public sealed class TripService(
         return ApiResult<IReadOnlyList<BoardingResponse>>.Ok(await repo.ListBoardingAsync(tripId, ct));
     }
 
+    private static readonly string[] ValidBoardingStates = ["boarded", "absent", "dropped"];
+
     public async Task<ApiResult> UpsertBoardingAsync(Guid tripId, BoardingRequest req, CancellationToken ct = default)
     {
+        if (!ValidBoardingStates.Contains(req.State))
+            return ApiResult.Fail(new Error("invalid_state", $"State must be one of: {string.Join(", ", ValidBoardingStates)}"), 400);
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
         if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
             return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
         await repo.UpsertBoardingAsync(tid, tripId, req, ct);
+        return ApiResult.NoContent();
+    }
+
+    public async Task<ApiResult> ConfirmStopArrivalAsync(Guid tripId, Guid stopId, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
+        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
+            return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
+        if (await repo.GetCurrentStopIdAsync(tripId, ct) is { } current && current != stopId)
+            return ApiResult.Fail(new Error("wrong_stop_order", "a different stop is already current"), 409);
+        if (await repo.GetTripRouteIdAsync(tripId, ct) is not { } routeId)
+            return ApiResult.Fail(new Error("no_route", "trip has no route"), 409);
+        var next = await repo.GetNextIncompleteStopAsync(tripId, routeId, ct);
+        if (next is null || next.Id != stopId)
+            return ApiResult.Fail(new Error("wrong_stop_order", "stops must be confirmed in sequence"), 409);
+
+        await repo.ConfirmStopArrivalAsync(tid, tripId, stopId, next.Seq, clock.UtcNow, clock.UtcNow, ct);
+        if (await repo.GetBusIdAsync(tripId, ct) is { } busId)
+            await fleetBroadcaster.BroadcastStopArrivedAsync(busId, tripId, stopId, next.Name, clock.UtcNow, ct);
+        return ApiResult.NoContent();
+    }
+
+    public async Task<ApiResult> CompleteStopAsync(Guid tripId, Guid stopId, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
+        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
+            return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
+        if (await repo.GetCurrentStopIdAsync(tripId, ct) != stopId)
+            return ApiResult.Fail(new Error("not_current_stop", "this stop is not the confirmed current stop"), 409);
+
+        await repo.CompleteStopAsync(tid, tripId, stopId, clock.UtcNow, ct);
+        if (await repo.GetBusIdAsync(tripId, ct) is { } busId && await repo.GetTripRouteIdAsync(tripId, ct) is { } routeId)
+        {
+            var next = await repo.GetNextIncompleteStopAsync(tripId, routeId, ct);
+            await fleetBroadcaster.BroadcastStopCompletedAsync(busId, tripId, stopId, next?.Id, next?.Name, clock.UtcNow, ct);
+        }
+        return ApiResult.NoContent();
+    }
+
+    public async Task<ApiResult> MarkSchoolArrivedAsync(Guid tripId, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
+        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
+            return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
+        if (!await repo.IsPickupTripInProgressAsync(tripId, ct))
+            return ApiResult.Fail(new Error("invalid_state", "not a pickup trip in progress"), 409);
+
+        await repo.MarkSchoolArrivedAsync(tid, tripId, clock.UtcNow, ct);
+        if (await repo.GetBusIdAsync(tripId, ct) is { } busId)
+        {
+            var onboard = await repo.CountBoardedAsync(tripId, ct);
+            await fleetBroadcaster.BroadcastSchoolArrivedAsync(busId, tripId, clock.UtcNow, onboard, ct);
+        }
         return ApiResult.NoContent();
     }
 

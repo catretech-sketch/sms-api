@@ -45,4 +45,16 @@ public sealed class TripController(ITripService trips) : ApiControllerBase
     [HttpPost("trips/{tripId:guid}/boarding")]
     public async Task<IActionResult> UpsertBoarding(Guid tripId, [FromBody] BoardingRequest req, CancellationToken ct) =>
         FromResult(await trips.UpsertBoardingAsync(tripId, req, ct));
+
+    [HttpPost("trips/{tripId:guid}/stops/{stopId:guid}/confirm-arrival")]
+    public async Task<IActionResult> ConfirmStopArrival(Guid tripId, Guid stopId, CancellationToken ct) =>
+        FromResult(await trips.ConfirmStopArrivalAsync(tripId, stopId, ct));
+
+    [HttpPost("trips/{tripId:guid}/stops/{stopId:guid}/complete")]
+    public async Task<IActionResult> CompleteStop(Guid tripId, Guid stopId, CancellationToken ct) =>
+        FromResult(await trips.CompleteStopAsync(tripId, stopId, ct));
+
+    [HttpPost("trips/{tripId:guid}/school-arrived")]
+    public async Task<IActionResult> SchoolArrived(Guid tripId, CancellationToken ct) =>
+        FromResult(await trips.MarkSchoolArrivedAsync(tripId, ct));
 }
