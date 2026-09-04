@@ -215,6 +215,34 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
         return rows.Where(r => r.LastPingAt is null || r.LastPingAt < cutoff).ToList();
     }
 
+    public sealed record NextStopRow(Guid Id, string Name, double Lat, double Lng, int Seq);
+
+    /// The trip's next stop (by Seq) that has no TripStopProgress row with a
+    /// DepartedAt set — i.e. not yet completed. Null once every stop on the
+    /// route has been completed. Stops must be confirmed/completed in this
+    /// order; the confirm-arrival endpoint (Task 5) rejects out-of-order calls.
+    public async Task<NextStopRow?> GetNextIncompleteStopAsync(Guid tripId, Guid routeId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<NextStopRow>(
+            @"SELECT TOP 1 rs.Id, rs.Name, rs.Lat, rs.Lng, rs.Seq
+              FROM dbo.RouteStops rs
+              WHERE rs.RouteId = @routeId
+                AND NOT EXISTS (
+                    SELECT 1 FROM dbo.TripStopProgress tsp
+                    WHERE tsp.TripId = @tripId AND tsp.StopId = rs.Id AND tsp.DepartedAt IS NOT NULL)
+              ORDER BY rs.Seq",
+            new { routeId, tripId }, ct)).FirstOrDefault();
+
+    public Task ConfirmStopArrivalAsync(Guid tenantId, Guid tripId, Guid stopId, int seq, DateTime arrivedAt, DateTime confirmedAt, CancellationToken ct = default) =>
+        ExecuteProcAsync("dbo.TripStopProgress_ConfirmArrival",
+            new { TenantId = tenantId, TripId = tripId, StopId = stopId, Seq = seq, ArrivedAt = arrivedAt, ConfirmedAt = confirmedAt }, ct);
+
+    public Task CompleteStopAsync(Guid tenantId, Guid tripId, Guid stopId, DateTime departedAt, CancellationToken ct = default) =>
+        ExecuteProcAsync("dbo.TripStopProgress_Complete",
+            new { TenantId = tenantId, TripId = tripId, StopId = stopId, DepartedAt = departedAt }, ct);
+
+    public async Task<Guid?> GetCurrentStopIdAsync(Guid tripId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<Guid?>("SELECT CurrentStopId FROM dbo.Trips WHERE Id = @tripId", new { tripId }, ct)).FirstOrDefault();
+
     private static double Haversine(double lat1, double lng1, double lat2, double lng2)
     {
         const double radius = 6371000;
