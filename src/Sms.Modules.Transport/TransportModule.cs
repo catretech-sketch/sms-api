@@ -27,6 +27,7 @@ public sealed record StaffRouteResponse(Guid Id, string Name, string BusNo, IRea
 public sealed record StaffTripAssignmentResponse(StaffRouteResponse Route, string BusNo, string? ConductorName);
 public sealed record StaffRosterStudentResponse(Guid Id, string Name, Guid? StopId, string? PhotoUrl);
 public sealed record StaffBusRouteSummaryResponse(string BusNo, string RouteName);
+public sealed record StaleTripRow(Guid TripId, Guid BusId, Guid TenantId, DateTime? LastPingAt);
 
 public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
@@ -59,6 +60,28 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
         if (row.ConductorId == userId) return "conductor";
         return null;
     }
+
+    private sealed record ActiveTripParticipantsRow(Guid? DriverId, Guid? ConductorId);
+
+    /// Returns "driver"/"conductor" if the caller is a participant of this bus's
+    /// currently-live trip, else null. Bus-keyed (not trip-keyed) so a caller can
+    /// check "am I driving/conducting this bus right now" without already
+    /// knowing today's TripId.
+    public async Task<string?> GetActiveDriverOrConductorRoleByBusAsync(Guid busId, Guid userId, CancellationToken ct = default)
+    {
+        var row = (await QueryInlineAsync<ActiveTripParticipantsRow>(
+            "SELECT TOP 1 DriverId, ConductorId FROM dbo.Trips WHERE BusId = @busId AND Status = 'live' ORDER BY StartedAt DESC",
+            new { busId }, ct)).FirstOrDefault();
+        if (row is null) return null;
+        if (row.DriverId == userId) return "driver";
+        if (row.ConductorId == userId) return "conductor";
+        return null;
+    }
+
+    /// The bus a trip belongs to — used to know which SignalR bus-group to
+    /// broadcast a position/lifecycle event to after a trip mutation.
+    public async Task<Guid?> GetBusIdAsync(Guid tripId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<Guid?>("SELECT BusId FROM dbo.Trips WHERE Id = @tripId", new { tripId }, ct)).FirstOrDefault();
 
     public Task IngestPingsAsync(Guid tenantId, Guid tripId, IReadOnlyList<PingItem> pings, CancellationToken ct = default)
     {
@@ -172,6 +195,24 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
     public Task UpsertBoardingAsync(Guid tenantId, Guid tripId, BoardingRequest r, CancellationToken ct = default) =>
         ExecuteProcAsync("dbo.Boarding_Upsert",
             new { TenantId = tenantId, TripId = tripId, r.StudentId, r.StopId, r.State, r.At }, ct);
+
+    /// Every currently-live trip whose most recent driver-or-conductor ping is
+    /// older than staleAfter (or has never pinged at all). Runs under a
+    /// platform-level ITenantContext (IsPlatform = true) since this must scan
+    /// across every tenant, mirroring AbsenceAlertWorker's cross-tenant sweep
+    /// pattern — verify against src/Sms.Api/Workers/AbsenceAlertWorker.cs that
+    /// rls.fn_tenant_predicate actually bypasses RLS filtering when IsPlatform
+    /// is true before relying on this in production.
+    public async Task<IReadOnlyList<StaleTripRow>> GetStaleActiveTripsAsync(TimeSpan staleAfter, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<StaleTripRow>(
+            @"SELECT Id AS TripId, BusId, TenantId,
+                     (SELECT MAX(v) FROM (VALUES (DriverLastPingAt), (ConductorLastPingAt)) AS x(v)) AS LastPingAt
+              FROM dbo.Trips
+              WHERE Status = 'live' AND BusId IS NOT NULL", null, ct);
+        var cutoff = DateTime.UtcNow - staleAfter;
+        return rows.Where(r => r.LastPingAt is null || r.LastPingAt < cutoff).ToList();
+    }
 
     private static double Haversine(double lat1, double lng1, double lat2, double lng2)
     {

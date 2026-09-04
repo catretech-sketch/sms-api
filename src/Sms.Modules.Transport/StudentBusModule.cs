@@ -79,6 +79,19 @@ public sealed class StudentBusRepository(IDbConnectionFactory factory) : BaseRep
                 WHERE pp.TripId = t.Id ORDER BY pp.At DESC) p
               WHERE s.AdmissionNo = @admissionNo
               ORDER BY s.Name", new { admissionNo }, ct);
+
+    /// True if a student with this admission number (RLS-scoped to the caller's
+    /// tenant) is currently assigned to this bus. Used to authorize a parent's
+    /// live-tracking subscription to their own child's bus only.
+    public async Task<bool> HasChildOnBusAsync(string admissionNo, Guid busId, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<int>(
+            @"SELECT COUNT(1) FROM dbo.Students s
+              JOIN dbo.StudentBusAssignments sba ON sba.StudentId = s.Id
+              WHERE s.AdmissionNo = @admissionNo AND sba.BusId = @busId",
+            new { admissionNo, busId }, ct);
+        return rows.FirstOrDefault() > 0;
+    }
 }
 
 public static class StudentBusModule

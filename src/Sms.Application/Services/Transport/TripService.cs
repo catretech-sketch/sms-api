@@ -23,7 +23,7 @@ public interface ITripService
 /// and a live event, matching the bus-duty lifecycle in BusService — otherwise a driver-started
 /// trip would only ever be visible to pollers, defeating the point of "live" tracking.
 public sealed class TripService(
-    TripRepository repo, ITenantContext tenant,
+    TripRepository repo, BusRepository buses, ITenantContext tenant,
     ITransportFleetBroadcaster fleetBroadcaster, ILiveBroadcaster live, IClock clock) : ITripService
 {
     public async Task<ApiResult<TripResponse>> StartAsync(StartTripRequest req, CancellationToken ct = default)
@@ -33,6 +33,8 @@ public sealed class TripService(
         var trip = (await repo.StartAsync(tid, uid, req, ct))!;
         await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
         await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
+        if (await repo.GetBusIdAsync(trip.Id, ct) is { } busId)
+            await fleetBroadcaster.BroadcastTripStartedAsync(busId, trip.Id, trip.DriverId, trip.ConductorId, trip.Direction, trip.StartedAt ?? clock.UtcNow, ct);
         return ApiResult<TripResponse>.Ok(WithActiveBroadcaster(trip), 201);
     }
 
@@ -55,6 +57,11 @@ public sealed class TripService(
         await repo.MarkPingAsync(tripId, role, ct);
         await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
         await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
+        if (await repo.GetBusIdAsync(tripId, ct) is { } busId)
+        {
+            var snapshot = await buses.GetLiveSnapshotAsync(busId, ct);
+            await fleetBroadcaster.BroadcastPositionAsync(busId, snapshot, ct);
+        }
         return ApiResult.NoContent();
     }
 
@@ -64,9 +71,12 @@ public sealed class TripService(
             return ApiResult<TripSummaryResponse>.Fail(new Error("forbidden", "no tenant/user context"), 403);
         if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
             return ApiResult<TripSummaryResponse>.Fail(new Error("forbidden", "not your trip"), 403);
+        var busId = await repo.GetBusIdAsync(tripId, ct);
         var summary = await repo.EndAsync(tripId, ct);
         await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
         await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
+        if (busId is { } bid)
+            await fleetBroadcaster.BroadcastTripEndedAsync(bid, tripId, clock.UtcNow, ct);
         return ApiResult<TripSummaryResponse>.Ok(summary);
     }
 

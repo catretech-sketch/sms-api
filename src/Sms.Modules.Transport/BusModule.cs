@@ -5,6 +5,11 @@ namespace Sms.Modules.Transport;
 
 public sealed record BusStopResponse(Guid Id, string Name, string? Time, int Seq, double Lat, double Lng);
 public sealed record BusPositionResponse(Guid BusId, int CurrentStopIndex, double Progress, double? Lat, double? Lng, string? NextStopName, int? EtaMinutes);
+public sealed record BusLiveSnapshotResponse(
+    Guid BusId, Guid? TripId,
+    double? Lat, double? Lng, double SpeedKmh, double Heading,
+    string Status, DateTime? LastUpdateAt,
+    int? EtaNextStopMin, string? NextStopName);
 public sealed record BusResponse(
     Guid Id, string BusNo, string? RouteName, string? Driver, string? DriverPhone, IReadOnlyList<BusStopResponse> Stops);
 public sealed record BusRosterEntry(Guid StudentId, string StudentName, string Initials, Guid? StopId, string Status);
@@ -74,6 +79,18 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
         if (bus is null) return null;
         var stops = await QueryStopsForBusAsync(bus.Id, ct);
         return new BusResponse(bus.Id, bus.BusNo, bus.RouteName, bus.Driver, bus.DriverPhone, stops);
+    }
+
+    /// True if this teacher (RLS-scoped to the caller's tenant) is the assigned
+    /// duty teacher for this bus. Used to authorize a teacher's live-tracking
+    /// subscription to their assigned bus only — teaching a student who rides
+    /// the bus does NOT grant access on its own.
+    public async Task<bool> IsDutyTeacherForBusAsync(Guid teacherUserId, Guid busId, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<int>(
+            "SELECT COUNT(1) FROM dbo.BusAssignments WHERE TeacherUserId = @teacherUserId AND BusId = @busId",
+            new { teacherUserId, busId }, ct);
+        return rows.FirstOrDefault() > 0;
     }
 
     private async Task<IReadOnlyList<BusStopResponse>> QueryStopsForBusAsync(Guid busId, CancellationToken ct = default)
@@ -372,6 +389,37 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
         }
 
         return new BusPositionResponse(busId, nearest, progress, ping.Lat, ping.Lng, next, etaMinutes);
+    }
+
+    private sealed record LiveSnapshotPingRow(double Lat, double Lng, double SpeedKmh, double Heading, DateTime At);
+
+    /// Full push payload for a bus's live-tracking subscribers: position, derived
+    /// status (moving/stopped/offline), and ETA — computed here once so every
+    /// consumer (parent app, teacher app, CRM) renders directly without
+    /// re-deriving status/ETA logic itself.
+    public async Task<BusLiveSnapshotResponse> GetLiveSnapshotAsync(Guid busId, CancellationToken ct = default)
+    {
+        var tripId = await CurrentTripIdAsync(busId, ct);
+        var ping = tripId is null ? null : (await QueryInlineAsync<LiveSnapshotPingRow>(
+            "SELECT TOP 1 Lat, Lng, SpeedKmh, Heading, At FROM dbo.TripPings WHERE TripId = @tripId ORDER BY At DESC",
+            new { tripId }, ct)).FirstOrDefault();
+
+        var position = await GetPositionAsync(busId, ct);
+
+        string status;
+        if (ping is null)
+        {
+            status = "offline";
+        }
+        else
+        {
+            var ageSeconds = (DateTime.UtcNow - ping.At).TotalSeconds;
+            status = ageSeconds > 60 ? "offline" : ping.SpeedKmh > 3 ? "moving" : "stopped";
+        }
+
+        return new BusLiveSnapshotResponse(
+            busId, tripId, ping?.Lat, ping?.Lng, ping?.SpeedKmh ?? 0, ping?.Heading ?? 0,
+            status, ping?.At, position.EtaMinutes, position.NextStopName);
     }
 
     private static double Haversine(double lat1, double lng1, double lat2, double lng2)

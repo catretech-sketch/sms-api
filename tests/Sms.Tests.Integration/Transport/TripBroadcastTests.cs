@@ -25,11 +25,30 @@ public class TripBroadcastTests(SqlServerFixture fx)
     private sealed class SpyFleetBroadcaster : ITransportFleetBroadcaster
     {
         public List<Guid> Calls { get; } = [];
+        public List<(Guid BusId, Sms.Modules.Transport.BusLiveSnapshotResponse Snapshot)> PositionCalls { get; } = [];
+        public List<(Guid BusId, Guid TripId, Guid? DriverId, Guid? ConductorId, string Direction, DateTime StartedAt)> TripStartedCalls { get; } = [];
+        public List<(Guid BusId, Guid TripId, DateTime EndedAt)> TripEndedCalls { get; } = [];
         public Task BroadcastFleetAsync(Guid tenantId, CancellationToken ct = default)
         {
             Calls.Add(tenantId);
             return Task.CompletedTask;
         }
+        public Task BroadcastPositionAsync(Guid busId, Sms.Modules.Transport.BusLiveSnapshotResponse snapshot, CancellationToken ct = default)
+        {
+            PositionCalls.Add((busId, snapshot));
+            return Task.CompletedTask;
+        }
+        public Task BroadcastTripStartedAsync(Guid busId, Guid tripId, Guid? driverId, Guid? conductorId, string direction, DateTime startedAt, CancellationToken ct = default)
+        {
+            TripStartedCalls.Add((busId, tripId, driverId, conductorId, direction, startedAt));
+            return Task.CompletedTask;
+        }
+        public Task BroadcastTripEndedAsync(Guid busId, Guid tripId, DateTime endedAt, CancellationToken ct = default)
+        {
+            TripEndedCalls.Add((busId, tripId, endedAt));
+            return Task.CompletedTask;
+        }
+        public Task BroadcastStatusChangedAsync(Guid busId, Guid tripId, string status, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     private sealed class SpyLiveBroadcaster : ILiveBroadcaster
@@ -148,5 +167,57 @@ public class TripBroadcastTests(SqlServerFixture fx)
 
         var current = await Data(await driver.GetAsync("/v1/staff/trip/current"), HttpStatusCode.OK);
         current.GetProperty("active_broadcaster").GetString().Should().Be("driver");
+    }
+
+    /// Starting, pinging, and ending a trip that is tied to a real bus row must also push the
+    /// per-bus SignalR events (trip_started/position_update/trip_ended) that a live map or the
+    /// bus's own group subscribers rely on, in addition to the tenant-wide fleet snapshot.
+    [Fact]
+    public async Task Starting_pinging_and_ending_a_trip_broadcasts_the_bus_lifecycle_events()
+    {
+        var (app, fleet, _) = App();
+        await using var _dispose = app;
+        var tenantId = Guid.NewGuid();
+        var driverUserId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var busNo = $"KA-{Guid.NewGuid():N}"[..12];
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, @BusNo)",
+                new { Id = busId, TenantId = tenantId, BusNo = busNo });
+        }
+
+        var driver = StaffClient(app, tenantId, driverUserId);
+        var trip = await Data(await driver.PostAsJsonAsync("/v1/staff/trips",
+            new { direction = "pickup", bus_no = busNo }), HttpStatusCode.Created);
+        var tripId = trip.GetProperty("id").GetGuid();
+
+        var started = fleet.TripStartedCalls.Single(c => c.BusId == busId && c.TripId == tripId);
+        started.Direction.Should().Be("pickup");
+        started.DriverId.Should().Be(driverUserId);
+        started.ConductorId.Should().BeNull();
+        started.StartedAt.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromSeconds(10));
+
+        var now = DateTime.UtcNow;
+        const double pingLat = 12.9716;
+        const double pingLng = 77.5946;
+        (await driver.PostAsJsonAsync($"/v1/staff/trips/{tripId}/pings", new
+        {
+            pings = new[] { new { lat = pingLat, lng = pingLng, speed_kmh = 20, heading = 10, at = now } },
+        })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var position = fleet.PositionCalls.Single(c => c.BusId == busId);
+        position.Snapshot.Lat.Should().Be(pingLat);
+        position.Snapshot.Lng.Should().Be(pingLng);
+
+        (await driver.PostAsync($"/v1/staff/trips/{tripId}/end", null))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var ended = fleet.TripEndedCalls.Single(c => c.BusId == busId && c.TripId == tripId);
+        ended.EndedAt.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromSeconds(10));
     }
 }
