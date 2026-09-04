@@ -216,6 +216,7 @@ public static class ServiceCollectionExtensions
         });
         builder.Services.AddScoped<ILiveBroadcaster, SignalRLiveBroadcaster>();
         builder.Services.AddScoped<ITransportFleetBroadcaster, TransportFleetBroadcaster>();
+        builder.Services.AddScoped<ITransportAuthorizationResolver, TransportAuthorizationResolver>();
 
         builder.Services.AddEndpointsApiExplorer();
         builder.Services.AddSwaggerGen(c =>
