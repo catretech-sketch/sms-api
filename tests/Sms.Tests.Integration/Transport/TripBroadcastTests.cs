@@ -173,7 +173,7 @@ public class TripBroadcastTests(SqlServerFixture fx)
     /// per-bus SignalR events (trip_started/position_update/trip_ended) that a live map or the
     /// bus's own group subscribers rely on, in addition to the tenant-wide fleet snapshot.
     [Fact]
-    public async Task Starting_pinging_and_ending_a_trip_broadcasts_the_buss_lifecycle_events()
+    public async Task Starting_pinging_and_ending_a_trip_broadcasts_the_bus_lifecycle_events()
     {
         var (app, fleet, _) = App();
         await using var _dispose = app;
@@ -196,19 +196,28 @@ public class TripBroadcastTests(SqlServerFixture fx)
             new { direction = "pickup", bus_no = busNo }), HttpStatusCode.Created);
         var tripId = trip.GetProperty("id").GetGuid();
 
-        fleet.TripStartedCalls.Should().ContainSingle(c => c.BusId == busId && c.TripId == tripId && c.Direction == "pickup");
+        var started = fleet.TripStartedCalls.Single(c => c.BusId == busId && c.TripId == tripId);
+        started.Direction.Should().Be("pickup");
+        started.DriverId.Should().Be(driverUserId);
+        started.ConductorId.Should().BeNull();
+        started.StartedAt.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromSeconds(10));
 
         var now = DateTime.UtcNow;
+        const double pingLat = 12.9716;
+        const double pingLng = 77.5946;
         (await driver.PostAsJsonAsync($"/v1/staff/trips/{tripId}/pings", new
         {
-            pings = new[] { new { lat = 12.9716, lng = 77.5946, speed_kmh = 20, heading = 10, at = now } },
+            pings = new[] { new { lat = pingLat, lng = pingLng, speed_kmh = 20, heading = 10, at = now } },
         })).StatusCode.Should().Be(HttpStatusCode.NoContent);
 
-        fleet.PositionCalls.Should().ContainSingle(c => c.BusId == busId);
+        var position = fleet.PositionCalls.Single(c => c.BusId == busId);
+        position.Snapshot.Lat.Should().Be(pingLat);
+        position.Snapshot.Lng.Should().Be(pingLng);
 
         (await driver.PostAsync($"/v1/staff/trips/{tripId}/end", null))
             .StatusCode.Should().Be(HttpStatusCode.OK);
 
-        fleet.TripEndedCalls.Should().ContainSingle(c => c.BusId == busId && c.TripId == tripId);
+        var ended = fleet.TripEndedCalls.Single(c => c.BusId == busId && c.TripId == tripId);
+        ended.EndedAt.Should().BeCloseTo(DateTime.UtcNow, TimeSpan.FromSeconds(10));
     }
 }
