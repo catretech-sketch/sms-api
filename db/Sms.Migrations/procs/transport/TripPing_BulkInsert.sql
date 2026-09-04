@@ -3,6 +3,6 @@ CREATE OR ALTER PROCEDURE dbo.TripPing_BulkInsert
 AS
 BEGIN
     SET NOCOUNT ON;
-    INSERT dbo.TripPings (Id, TenantId, TripId, Lat, Lng, SpeedKmh, Heading, At)
-    SELECT NEWID(), @TenantId, @TripId, Lat, Lng, SpeedKmh, Heading, At FROM @Rows;
+    INSERT dbo.TripPings (Id, TenantId, TripId, Lat, Lng, SpeedKmh, Heading, At, Accuracy)
+    SELECT NEWID(), @TenantId, @TripId, Lat, Lng, SpeedKmh, Heading, At, Accuracy FROM @Rows;
 END
