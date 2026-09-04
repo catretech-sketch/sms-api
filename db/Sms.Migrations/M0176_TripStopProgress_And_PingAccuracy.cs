@@ -77,13 +77,34 @@ IF COL_LENGTH('dbo.TripPings', 'Accuracy') IS NULL
     Heading float NOT NULL,
     At datetime2 NOT NULL
 );");
-        foreach (var sql in M0003_Procs_Auth.EmbeddedProcs("procs.transport."))
-            Execute.Sql(sql);
+        // Frozen inline (not sourced from the shared procs/transport/TripPing_BulkInsert.sql
+        // resource) because that file was edited by this same migration's Up() to reference
+        // Accuracy — embedded resources always reflect current on-disk content, so reloading
+        // the folder here would recreate the proc against the just-recreated 5-column TVP
+        // above while the file itself still selects the 6th (Accuracy) column, throwing
+        // "Invalid column name 'Accuracy'". This is exactly the M0077_Trips_BusId.cs pattern:
+        // a rollback must see the proc as it looked BEFORE this migration ran, not the file's
+        // current-tip content.
+        Execute.Sql(@"
+CREATE OR ALTER PROCEDURE dbo.TripPing_BulkInsert
+    @TenantId uniqueidentifier, @TripId uniqueidentifier, @Rows dbo.TripPingTvp READONLY
+AS
+BEGIN
+    SET NOCOUNT ON;
+    INSERT dbo.TripPings (Id, TenantId, TripId, Lat, Lng, SpeedKmh, Heading, At)
+    SELECT NEWID(), @TenantId, @TripId, Lat, Lng, SpeedKmh, Heading, At FROM @Rows;
+END");
 
         Delete.Column("Accuracy").FromTable("TripPings");
         Delete.Column("CurrentStopId").FromTable("Trips");
 
         Execute.Sql("DROP SECURITY POLICY IF EXISTS rls.TripStopProgressTenantPolicy;");
         Delete.Table("TripStopProgress");
+
+        // Note: the guard patch added to M0024_Procs_Transport.cs's Up() (TripPings.Accuracy /
+        // TripPingTvp recreation before its procs.transport. reload) is intentionally NOT
+        // reverted here. It is a permanent, harmless no-op once this migration has run either
+        // direction — same as M0024's pre-existing BusId/DriverLastPingAt guards, which are
+        // never undone by any Down() either.
     }
 }
