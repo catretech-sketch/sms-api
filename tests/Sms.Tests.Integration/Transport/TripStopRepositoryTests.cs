@@ -69,6 +69,12 @@ public class TripStopRepositoryTests(SqlServerFixture fx)
         await repo.ConfirmStopArrivalAsync(tenantId, tripId, stop1, 1, DateTime.UtcNow, DateTime.UtcNow, default);
         (await repo.GetCurrentStopIdAsync(tripId, default)).Should().Be(stop1);
 
+        // GetNextIncompleteStopAsync considers a stop "incomplete" until DepartedAt is set, so
+        // while stop1 is confirmed-but-undeparted it is still the "next incomplete" stop, not
+        // stop2. This is intentional: excluding the current stop is the caller's job (Task 4
+        // guards with `if (currentStopId is null && ...)` before calling this method).
+        (await repo.GetNextIncompleteStopAsync(tripId, routeId, default))!.Id.Should().Be(stop1);
+
         await repo.CompleteStopAsync(tenantId, tripId, stop1, DateTime.UtcNow, default);
         (await repo.GetCurrentStopIdAsync(tripId, default)).Should().BeNull();
 
