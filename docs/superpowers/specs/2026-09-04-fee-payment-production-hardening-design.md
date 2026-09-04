@@ -2,79 +2,60 @@
 
 **Date:** 2026-09-04
 **Status:** Draft
-**Scope:** `sms-backend` (primary), `sms-admin` (frontend already ships the client for this)
+**Scope:** `sms-backend` only
 
 ## Summary
 
-The student-fee payment flow has two problems discovered during an audit:
+Two problems were found while auditing the student-fee payment flow:
 
-1. **Broken, not just weak:** `sms-admin`'s `feePayments.ts` already calls
-   `POST /fees/invoices/{id}/razorpay/order` and
-   `POST /fees/invoices/{id}/razorpay/verify`. Neither endpoint exists in
-   `sms-backend` — only `PlanUpgradeController` has Razorpay wiring, and that's
-   for SaaS plan billing, not student fees. Any parent/staff paying a fee
-   online today gets a 404.
-2. **No idempotency, no audit trail:** the manual/offline payment path
-   (`FeeService.CreatePaymentAsync` → `FeeRepository.CreateAsync`) has no
-   duplicate-payment protection, and no action anywhere in the backend writes
-   an audit record — there is no `AuditLog` table at all.
+1. **Broken online payment path (out of scope for this spec):**
+   `sms-admin`'s `feePayments.ts` calls `POST
+   /fees/invoices/{id}/razorpay/order` and `POST
+   /fees/invoices/{id}/razorpay/verify`. Neither endpoint exists in
+   `sms-backend` — only `PlanUpgradeController` has Razorpay wiring, for SaaS
+   plan billing, not student fees. Any parent/staff paying a fee online today
+   gets a 404. **This spec does not fix that** — real Razorpay integration
+   for fee invoices is tracked as a separate, future spec. Until that spec
+   ships, online fee payment remains broken in production; this doc doesn't
+   change that fact, it just doesn't try to solve it here.
+2. **No idempotency, no audit trail (this spec's scope):** the manual/offline
+   payment path (`FeeService.CreatePaymentAsync` → `FeeRepository.CreateAsync`)
+   has no duplicate-payment protection, and no action anywhere in the backend
+   writes an audit record — there is no `AuditLog` table at all.
 
-This spec fixes both, reusing existing, already-correct infrastructure
-(`RazorpayGateway`'s HMAC-SHA256 signature verification, and
-`FeeInvoiceRepository.RecordInvoicePaymentAsync`'s `UPDLOCK`/`HOLDLOCK`
-transaction) rather than rebuilding them.
+This spec fixes problem 2: idempotency for offline/manual fee payments, and
+a minimal, reusable audit log — needed independently of any payment gateway,
+and required for other modules to adopt later.
 
-**Out of scope:** refunds (no refund endpoint exists yet for student fees —
-building one is a new feature, not a hardening fix), fee reminders/reports,
-and every non-Fees module. Audit logging is being introduced here as a
-minimal, reusable mechanism — Fees is its first and only consumer in this
-spec; other modules adopt it in their own future specs.
+**Out of scope:** Razorpay/online fee payment (separate future spec),
+refunds (no refund endpoint exists yet for student fees — building one is a
+new feature, not a hardening fix), fee reminders/reports, and every
+non-Fees module. Audit logging is introduced here as a minimal, reusable
+mechanism — Fees is its first and only consumer in this spec; other modules
+adopt it in their own future specs.
 
-## 1. Razorpay wiring for fee invoices
+## 1. Idempotency for offline/manual payments
 
-Add two `FeeController` actions, mirroring the routes `sms-admin` already
-calls:
+The manual/staff-recorded payment path (cash, cheque, UPI-manual) has no
+duplicate-payment protection: `FeeService.CreatePaymentAsync` →
+`FeeRepository.CreateAsync` inserts unconditionally.
 
-- `POST /fees/invoices/{id}/razorpay/order` (staff or linked parent, same
-  authorization as the existing `POST /fees/invoices/{id}/pay`) — loads the
-  invoice, computes the outstanding balance, calls the existing
-  `RazorpayGateway` to create a Razorpay order for that amount, and returns
-  `{ orderId, amount, currency, keyId }` (shape already matches
-  `FeeRazorpayOrder` in the frontend).
-- `POST /fees/invoices/{id}/razorpay/verify` — accepts
-  `{ razorpayOrderId, razorpayPaymentId, razorpaySignature }`, verifies the
-  signature server-side via `RazorpayGateway.VerifyPaymentSignature` (already
-  implemented, HMAC-SHA256, constant-time compare), and on success calls
-  `FeeInvoiceRepository.RecordInvoicePaymentAsync` with `Method = "razorpay"`
-  and `Ref = razorpayPaymentId` — the same transactional, `UPDLOCK`/`HOLDLOCK`
-  path that offline payments already use.
+Add a client-generated `IdempotencyKey` (GUID) to `FeePayments`, generated
+once per form open by `sms-admin`'s payment form (not regenerated on
+retry/double-click). Unique index on `(TenantId, IdempotencyKey)`.
+`CreateAsync` becomes insert-or-return-existing: on a unique-constraint
+violation, it re-reads and returns the existing row instead of erroring or
+inserting a duplicate.
 
-`StubPaymentGateway` remains registered only for non-production
-environments/tests where no real Razorpay credentials are configured; the
-DI registration is switched to `RazorpayGateway` for the fee payment path in
-the same way `PlanUpgradeService` already resolves it.
+This mapping (constraint violation → idempotent response) lives in
+`FeeRepository`, not the controller, so callers can't bypass it.
 
-## 2. Idempotency
+The existing invoice-linked path, `FeeInvoiceRepository
+.RecordInvoicePaymentAsync`, already prevents double-pay via
+`UPDLOCK`/`HOLDLOCK` + balance re-check inside its transaction — that
+protection is unchanged and unaffected by this spec.
 
-**Online (Razorpay):** `razorpayPaymentId` is globally unique per Razorpay
-payment. Add a unique index on `FeePayments.Ref` (nullable, filtered to
-non-null so offline payments without a ref aren't constrained). If `/verify`
-is called twice with the same `razorpayPaymentId` (retry, double-tab,
-webhook-replay-style client bug), the second insert hits the unique
-constraint; the handler catches that specific violation and returns the
-existing payment row instead of erroring.
-
-**Offline (manual staff-recorded cash/cheque/UPI-manual):** add a
-client-generated `IdempotencyKey` (GUID) column to `FeePayments`, sent once
-per form submission (`sms-admin`'s payment form generates it on open, not on
-each click). Unique index on `(TenantId, IdempotencyKey)`. `CreateAsync`
-becomes insert-or-return-existing on conflict, same pattern as above.
-
-Both cases: the unique-constraint-violation-to-idempotent-response mapping
-lives in `FeeRepository`/`FeeInvoiceRepository`, not in the controller, so
-callers can't bypass it.
-
-## 3. Minimal reusable audit log
+## 2. Minimal reusable audit log
 
 New table `AuditLogs` (migration `M0173`, the next available number as of
 this writing):
@@ -84,7 +65,7 @@ this writing):
 | Id | uniqueidentifier | PK |
 | TenantId | uniqueidentifier | RLS-filtered like other tenant tables |
 | ActorUserId | uniqueidentifier | nullable (system-initiated actions) |
-| Action | nvarchar(100) | e.g. `FeePayment.Recorded`, `FeePayment.Refunded` |
+| Action | nvarchar(100) | e.g. `FeePayment.Recorded` |
 | Module | nvarchar(50) | e.g. `Fees` |
 | EntityType | nvarchar(100) | e.g. `FeePayment` |
 | EntityId | nvarchar(100) | |
@@ -93,37 +74,45 @@ this writing):
 | AfterData | nvarchar(max) | JSON |
 
 No update/delete path is exposed through the application — rows are
-insert-only, written by an `IAuditLogger.LogAsync(...)` helper in
-`Sms.Shared.Kernel`.
+insert-only, written by a new `IAuditLogger.LogAsync(...)` helper in
+`Sms.Shared.Kernel`, designed generically (any module, any action/entity)
+so other modules can call it later without schema changes.
 
-Both `RecordInvoicePaymentAsync` (online + offline payments) and the
-idempotent-duplicate-detection path write their audit row **inside the same
-transaction** as the payment/invoice update — a rollback removes both, a
-commit keeps both. No app-level CRUD can edit or delete an `AuditLogs` row.
+Both `FeeRepository.CreateAsync` (manual payments) and
+`FeeInvoiceRepository.RecordInvoicePaymentAsync` (invoice-linked payments)
+write their audit row **inside the same transaction** as the payment/invoice
+write — a rollback removes both, a commit keeps both. The idempotent-replay
+case (constraint violation → return existing row) does **not** write a new
+audit row, since no new business event occurred. No app-level CRUD can edit
+or delete an `AuditLogs` row.
 
-## 4. Schema fixes
+## 3. Schema fixes
 
 Migration adds to `FeePayments`: `CreatedAt datetime2 default
-SYSUTCDATETIME()`, `UpdatedAt datetime2 null`, `Ref` unique filtered index,
-`IdempotencyKey uniqueidentifier null` + unique filtered index on
-`(TenantId, IdempotencyKey)`.
+SYSUTCDATETIME()`, `UpdatedAt datetime2 null`, `IdempotencyKey
+uniqueidentifier null` + unique filtered index on `(TenantId,
+IdempotencyKey)`.
 
-## 5. Tests
+## 4. Tests
 
 Extend `tests/Sms.Tests.Integration/Finance/FeesTests.cs`:
 
-- Razorpay order creation + verify happy path records a payment and updates
-  invoice balance.
-- Verify with a tampered/invalid signature is rejected, no payment recorded.
-- Duplicate `/verify` call with the same `razorpayPaymentId` returns the
-  original payment, does not create a second row.
 - Duplicate manual payment submission (same `IdempotencyKey`) returns the
-  original payment, does not create a second row.
-- An `AuditLogs` row is created for both online and offline payment
-  recording, with correct `TenantId`/`Action`/`EntityId`.
+  original payment, does not create a second row, does not write a second
+  audit row.
+- A fresh manual payment writes exactly one `AuditLogs` row with correct
+  `TenantId`/`Action`/`EntityId`/`Module`.
+- An invoice-linked payment via `RecordInvoicePaymentAsync` writes exactly
+  one `AuditLogs` row in the same transaction; a forced failure after the
+  payment insert (simulated) rolls back both the payment and the audit row.
 
 ## Frontend impact
 
-None required — `sms-admin`'s `feePayments.ts` already calls the correct
-routes and shapes; this spec makes the backend match what the frontend
-already expects.
+`sms-admin`'s manual payment recording form needs to generate an
+`IdempotencyKey` (GUID) once per form open and include it in the
+`POST /fees/payments` body — a small, additive change, not covered by this
+backend-focused spec but noted here so it isn't missed during
+implementation planning.
+
+Razorpay-calling code in `feePayments.ts` is unaffected by this spec and
+will continue to 404 until the separate Razorpay spec ships.
