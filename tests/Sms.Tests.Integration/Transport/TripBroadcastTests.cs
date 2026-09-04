@@ -30,6 +30,10 @@ public class TripBroadcastTests(SqlServerFixture fx)
             Calls.Add(tenantId);
             return Task.CompletedTask;
         }
+        public Task BroadcastPositionAsync(Guid busId, Sms.Modules.Transport.BusLiveSnapshotResponse snapshot, CancellationToken ct = default) => Task.CompletedTask;
+        public Task BroadcastTripStartedAsync(Guid busId, Guid tripId, Guid? driverId, Guid? conductorId, string direction, DateTime startedAt, CancellationToken ct = default) => Task.CompletedTask;
+        public Task BroadcastTripEndedAsync(Guid busId, Guid tripId, DateTime endedAt, CancellationToken ct = default) => Task.CompletedTask;
+        public Task BroadcastStatusChangedAsync(Guid busId, Guid tripId, string status, CancellationToken ct = default) => Task.CompletedTask;
     }
 
     private sealed class SpyLiveBroadcaster : ILiveBroadcaster
