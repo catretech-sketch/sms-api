@@ -78,6 +78,7 @@ public class TripStopEndpointsTests(SqlServerFixture fx)
         await using var app = App();
         var client = AuthedClient(app, driverId, tenantId, Policies.Driver);
 
+        await SeedPing(tenantId, tripId, lat: 12.1000, lng: 77.1000); // at Stop A
         var confirm1 = await client.PostAsync($"/v1/staff/trips/{tripId}/stops/{stop1}/confirm-arrival", null);
         confirm1.IsSuccessStatusCode.Should().BeTrue();
 
@@ -87,8 +88,19 @@ public class TripStopEndpointsTests(SqlServerFixture fx)
         var complete1 = await client.PostAsync($"/v1/staff/trips/{tripId}/stops/{stop1}/complete", null);
         complete1.IsSuccessStatusCode.Should().BeTrue();
 
+        await SeedPing(tenantId, tripId, lat: 12.2000, lng: 77.2000); // bus has since moved to Stop B
         var confirm2 = await client.PostAsync($"/v1/staff/trips/{tripId}/stops/{stop2}/confirm-arrival", null);
         confirm2.IsSuccessStatusCode.Should().BeTrue();
+    }
+
+    private async Task SeedPing(Guid tenantId, Guid tripId, double lat, double lng)
+    {
+        await using var conn = new SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+        await conn.ExecuteAsync(
+            "INSERT INTO dbo.TripPings (Id, TenantId, TripId, Lat, Lng, SpeedKmh, Heading, At) VALUES (NEWID(), @TenantId, @TripId, @Lat, @Lng, 0, 0, SYSUTCDATETIME())",
+            new { TenantId = tenantId, TripId = tripId, Lat = lat, Lng = lng });
     }
 
     [Fact]
@@ -135,6 +147,22 @@ public class TripStopEndpointsTests(SqlServerFixture fx)
         // return/drop leg — the headline scenario this whole feature exists to support.
         var startRes = await client.PostAsJsonAsync("/v1/staff/trips", new { RouteId = (Guid?)null, BusNo = "BUS-1", Direction = "drop" });
         startRes.IsSuccessStatusCode.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ConfirmArrival_with_no_ping_ever_sent_is_rejected_as_no_location()
+    {
+        // A driver who never sends a single GPS ping must not be able to bypass the
+        // proximity check entirely by having no location to disprove — this used to
+        // silently pass (skip, not reject) until the too_far check was tightened.
+        var (tenantId, tripId, driverId, stop1, _) = await SeedLiveTripWithTwoStops();
+        await using var app = App();
+        var client = AuthedClient(app, driverId, tenantId, Policies.Driver);
+
+        var res = await client.PostAsync($"/v1/staff/trips/{tripId}/stops/{stop1}/confirm-arrival", null);
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var body = await res.Content.ReadAsStringAsync();
+        body.Should().Contain("no_location");
     }
 
     [Fact]

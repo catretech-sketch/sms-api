@@ -177,23 +177,22 @@ public sealed class TripService(
         var busId = await repo.GetBusIdAsync(tripId, ct);
         // Authoritative server-side re-check of GPS proximity — stronger than the merely-
         // advisory WithinArrivalRadius signal computed during ping ingest (IngestPingsAsync).
-        // Reuses the exact same lat/lng lookup and radius config as that call site. Only
-        // rejects when a location is actually known and it's outside the radius — a trip with
-        // no ping yet has nothing to disprove proximity with, so it isn't blocked here.
-        if (busId is { } bid)
-        {
-            var snapshot = await buses.GetLiveSnapshotAsync(bid, ct);
-            if (snapshot.Lat is { } lat && snapshot.Lng is { } lng)
-            {
-                var distance = TripRepository.Haversine(lat, lng, next.Lat, next.Lng);
-                if (!StopArrivalRules.IsWithinRadius(distance, _arrivalRadiusMeters))
-                    return ApiResult.Fail(new Error("too_far", "you are not close enough to this stop to confirm arrival"), 409);
-            }
-        }
+        // Reuses the exact same lat/lng lookup and radius config as that call site. A trip
+        // with no known location at all (no bus resolved, or no ping ever ingested) is
+        // rejected rather than waved through — silently skipping this check would let a
+        // driver bypass proximity validation entirely just by never sending a GPS ping,
+        // which defeats the whole point of an authoritative server-side check.
+        if (busId is not { } bid)
+            return ApiResult.Fail(new Error("no_location", "cannot confirm arrival without a known GPS location"), 409);
+        var snapshot = await buses.GetLiveSnapshotAsync(bid, ct);
+        if (snapshot.Lat is not { } lat || snapshot.Lng is not { } lng)
+            return ApiResult.Fail(new Error("no_location", "cannot confirm arrival without a known GPS location"), 409);
+        var distance = TripRepository.Haversine(lat, lng, next.Lat, next.Lng);
+        if (!StopArrivalRules.IsWithinRadius(distance, _arrivalRadiusMeters))
+            return ApiResult.Fail(new Error("too_far", "you are not close enough to this stop to confirm arrival"), 409);
 
         await repo.ConfirmStopArrivalAsync(tid, tripId, stopId, next.Seq, clock.UtcNow, clock.UtcNow, ct);
-        if (busId is { } b)
-            await fleetBroadcaster.BroadcastStopArrivedAsync(b, tripId, stopId, next.Name, clock.UtcNow, ct);
+        await fleetBroadcaster.BroadcastStopArrivedAsync(bid, tripId, stopId, next.Name, clock.UtcNow, ct);
         return ApiResult.NoContent();
     }
 
