@@ -161,7 +161,12 @@ public sealed class TripService(
             return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
         if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
             return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
-        if (await repo.GetCurrentStopIdAsync(tripId, ct) is { } current && current != stopId)
+        var currentStopId = await repo.GetCurrentStopIdAsync(tripId, ct);
+        // Re-confirming the stop that's already current would otherwise silently re-run the
+        // MERGE below and reset ConfirmedAt — reject it explicitly instead.
+        if (currentStopId == stopId)
+            return ApiResult.Fail(new Error("already_at_stop", "this stop is already confirmed as current"), 409);
+        if (currentStopId is not null)
             return ApiResult.Fail(new Error("wrong_stop_order", "a different stop is already current"), 409);
         if (await repo.GetTripRouteIdAsync(tripId, ct) is not { } routeId)
             return ApiResult.Fail(new Error("no_route", "trip has no route"), 409);
@@ -169,9 +174,26 @@ public sealed class TripService(
         if (next is null || next.Id != stopId)
             return ApiResult.Fail(new Error("wrong_stop_order", "stops must be confirmed in sequence"), 409);
 
+        var busId = await repo.GetBusIdAsync(tripId, ct);
+        // Authoritative server-side re-check of GPS proximity — stronger than the merely-
+        // advisory WithinArrivalRadius signal computed during ping ingest (IngestPingsAsync).
+        // Reuses the exact same lat/lng lookup and radius config as that call site. Only
+        // rejects when a location is actually known and it's outside the radius — a trip with
+        // no ping yet has nothing to disprove proximity with, so it isn't blocked here.
+        if (busId is { } bid)
+        {
+            var snapshot = await buses.GetLiveSnapshotAsync(bid, ct);
+            if (snapshot.Lat is { } lat && snapshot.Lng is { } lng)
+            {
+                var distance = TripRepository.Haversine(lat, lng, next.Lat, next.Lng);
+                if (!StopArrivalRules.IsWithinRadius(distance, _arrivalRadiusMeters))
+                    return ApiResult.Fail(new Error("too_far", "you are not close enough to this stop to confirm arrival"), 409);
+            }
+        }
+
         await repo.ConfirmStopArrivalAsync(tid, tripId, stopId, next.Seq, clock.UtcNow, clock.UtcNow, ct);
-        if (await repo.GetBusIdAsync(tripId, ct) is { } busId)
-            await fleetBroadcaster.BroadcastStopArrivedAsync(busId, tripId, stopId, next.Name, clock.UtcNow, ct);
+        if (busId is { } b)
+            await fleetBroadcaster.BroadcastStopArrivedAsync(b, tripId, stopId, next.Name, clock.UtcNow, ct);
         return ApiResult.NoContent();
     }
 
@@ -202,7 +224,16 @@ public sealed class TripService(
         if (!await repo.IsPickupTripInProgressAsync(tripId, ct))
             return ApiResult.Fail(new Error("invalid_state", "not a pickup trip in progress"), 409);
 
-        await repo.MarkSchoolArrivedAsync(tid, tripId, clock.UtcNow, ct);
+        // Persist the triggering GPS location (the trip's last known ping) alongside the
+        // arrival timestamp — same lookup pattern as ConfirmStopArrivalAsync/IngestPingsAsync.
+        double? lat = null, lng = null;
+        if (await repo.GetBusIdAsync(tripId, ct) is { } bid)
+        {
+            var snapshot = await buses.GetLiveSnapshotAsync(bid, ct);
+            lat = snapshot.Lat;
+            lng = snapshot.Lng;
+        }
+        await repo.MarkSchoolArrivedAsync(tid, tripId, clock.UtcNow, lat, lng, ct);
         if (await repo.GetBusIdAsync(tripId, ct) is { } busId)
         {
             var onboard = await repo.CountBoardedAsync(tripId, ct);

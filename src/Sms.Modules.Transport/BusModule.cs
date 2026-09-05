@@ -220,10 +220,14 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
                 "UPDATE dbo.RouteStops SET Seq = @seq WHERE Id = @id AND RouteId = @routeId",
                 new { seq = i + 1, id = stopIds[i], routeId }, ct);
     }
+    // 'arrived' counts as this bus's current trip alongside 'live': a trip that has reached
+    // school but not yet ended is still active, and every consumer of this helper (roster,
+    // boarding, position/live-snapshot lookups) should keep tracking it rather than treating
+    // it as if no trip were running.
     private async Task<Guid?> CurrentTripIdAsync(Guid busId, CancellationToken ct) =>
         (await QueryInlineAsync<Guid>(
             @"SELECT TOP 1 t.Id FROM dbo.Trips t
-              WHERE t.BusId = @busId AND t.Status = 'live' ORDER BY t.StartedAt DESC",
+              WHERE t.BusId = @busId AND t.Status IN ('live', 'arrived') ORDER BY t.StartedAt DESC",
             new { busId }, ct)).Cast<Guid?>().FirstOrDefault();
 
     public async Task<IReadOnlyList<BusRosterEntry>> GetRosterAsync(Guid busId, CancellationToken ct = default)
@@ -312,7 +316,7 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
               FROM dbo.Buses b
               OUTER APPLY (
                 SELECT TOP 1 tt.Id, tt.StartedAt FROM dbo.Trips tt
-                WHERE tt.BusId = b.Id AND tt.Status = 'live' ORDER BY tt.StartedAt DESC) t
+                WHERE tt.BusId = b.Id AND tt.Status IN ('live', 'arrived') ORDER BY tt.StartedAt DESC) t
               OUTER APPLY (
                 SELECT TOP 1 pp.Lat, pp.Lng, pp.SpeedKmh, pp.At FROM dbo.TripPings pp
                 WHERE pp.TripId = t.Id ORDER BY pp.At DESC) p

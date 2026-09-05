@@ -104,6 +104,112 @@ public class TripStopEndpointsTests(SqlServerFixture fx)
         // Trip must still accept a subsequent action (e.g. End) — proving it wasn't closed.
         var endRes = await client.PostAsync($"/v1/staff/trips/{tripId}/end", null);
         endRes.IsSuccessStatusCode.Should().BeTrue();
+
+        // The old proc matched WHERE Status = 'live' only, so /end on an 'arrived' trip was a
+        // silent no-op that still returned 200 — assert the DB actually recorded Status='ended'
+        // and EndedAt, not just that the HTTP call "succeeded".
+        await using var conn = new SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+        var row = await conn.QuerySingleAsync<(string Status, DateTime? EndedAt)>(
+            "SELECT Status, EndedAt FROM dbo.Trips WHERE Id = @tripId", new { tripId });
+        row.Status.Should().Be("ended");
+        row.EndedAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task SchoolArrived_then_End_then_a_drop_trip_can_start_on_the_same_bus()
+    {
+        var (tenantId, tripId, driverId, _, _) = await SeedLiveTripWithTwoStops();
+        await using var app = App();
+        var client = AuthedClient(app, driverId, tenantId, Policies.Driver);
+
+        var arrivedRes = await client.PostAsync($"/v1/staff/trips/{tripId}/school-arrived", null);
+        arrivedRes.IsSuccessStatusCode.Should().BeTrue();
+
+        var endRes = await client.PostAsync($"/v1/staff/trips/{tripId}/end", null);
+        endRes.IsSuccessStatusCode.Should().BeTrue();
+
+        // Before the fix, Trip_Start's duplicate-active-trip guard (Status IN ('live','arrived'))
+        // would still see this bus's pickup trip stuck at 'arrived' forever and reject the
+        // return/drop leg — the headline scenario this whole feature exists to support.
+        var startRes = await client.PostAsJsonAsync("/v1/staff/trips", new { RouteId = (Guid?)null, BusNo = "BUS-1", Direction = "drop" });
+        startRes.IsSuccessStatusCode.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ConfirmArrival_far_from_the_stop_is_rejected_as_too_far()
+    {
+        var (tenantId, tripId, driverId, stop1, _) = await SeedLiveTripWithTwoStops();
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            // Stop A is at (12.10, 77.10); this ping is many kilometres away.
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.TripPings (Id, TenantId, TripId, Lat, Lng, SpeedKmh, Heading, At) VALUES (NEWID(), @TenantId, @TripId, 20.0000, 90.0000, 0, 0, SYSUTCDATETIME())",
+                new { TenantId = tenantId, TripId = tripId });
+        }
+        await using var app = App();
+        var client = AuthedClient(app, driverId, tenantId, Policies.Driver);
+
+        var res = await client.PostAsync($"/v1/staff/trips/{tripId}/stops/{stop1}/confirm-arrival", null);
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var body = await res.Content.ReadAsStringAsync();
+        body.Should().Contain("too_far");
+    }
+
+    [Fact]
+    public async Task ConfirmArrival_reconfirming_the_current_stop_is_rejected_as_already_at_stop()
+    {
+        var (tenantId, tripId, driverId, stop1, _) = await SeedLiveTripWithTwoStops();
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            // Stop A is at (12.10, 77.10); ping right on top of it so proximity passes.
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.TripPings (Id, TenantId, TripId, Lat, Lng, SpeedKmh, Heading, At) VALUES (NEWID(), @TenantId, @TripId, 12.1000, 77.1000, 0, 0, SYSUTCDATETIME())",
+                new { TenantId = tenantId, TripId = tripId });
+        }
+        await using var app = App();
+        var client = AuthedClient(app, driverId, tenantId, Policies.Driver);
+
+        var confirm1 = await client.PostAsync($"/v1/staff/trips/{tripId}/stops/{stop1}/confirm-arrival", null);
+        confirm1.IsSuccessStatusCode.Should().BeTrue();
+
+        var confirmAgain = await client.PostAsync($"/v1/staff/trips/{tripId}/stops/{stop1}/confirm-arrival", null);
+        confirmAgain.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var body = await confirmAgain.Content.ReadAsStringAsync();
+        body.Should().Contain("already_at_stop");
+    }
+
+    [Fact]
+    public async Task SchoolArrived_persists_arrival_timestamp_and_gps_location()
+    {
+        var (tenantId, tripId, driverId, _, _) = await SeedLiveTripWithTwoStops();
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.TripPings (Id, TenantId, TripId, Lat, Lng, SpeedKmh, Heading, At) VALUES (NEWID(), @TenantId, @TripId, 12.3456, 77.6543, 0, 0, SYSUTCDATETIME())",
+                new { TenantId = tenantId, TripId = tripId });
+        }
+        await using var app = App();
+        var client = AuthedClient(app, driverId, tenantId, Policies.Driver);
+
+        var res = await client.PostAsync($"/v1/staff/trips/{tripId}/school-arrived", null);
+        res.IsSuccessStatusCode.Should().BeTrue();
+
+        await using var check = new SqlConnection(fx.ConnectionString);
+        await check.OpenAsync();
+        await check.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+        var row = await check.QuerySingleAsync<(DateTime? SchoolArrivedAt, double? SchoolArrivedLat, double? SchoolArrivedLng)>(
+            "SELECT SchoolArrivedAt, SchoolArrivedLat, SchoolArrivedLng FROM dbo.Trips WHERE Id = @tripId", new { tripId });
+        row.SchoolArrivedAt.Should().NotBeNull();
+        row.SchoolArrivedLat.Should().Be(12.3456);
+        row.SchoolArrivedLng.Should().Be(77.6543);
     }
 
     [Fact]

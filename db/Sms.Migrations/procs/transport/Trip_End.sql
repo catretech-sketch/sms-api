@@ -3,7 +3,7 @@ CREATE OR ALTER PROCEDURE dbo.Trip_End
 AS
 BEGIN
     SET NOCOUNT ON;
-    UPDATE dbo.Trips SET Status = 'ended', EndedAt = SYSUTCDATETIME() WHERE Id = @Id AND Status = 'live';
+    UPDATE dbo.Trips SET Status = 'ended', EndedAt = SYSUTCDATETIME() WHERE Id = @Id AND Status IN ('live', 'arrived');
 
     SELECT Id, TenantId, RouteId, BusNo, DriverId, ConductorId, Direction, Status, StartedAt, EndedAt,
         DriverLastPingAt, ConductorLastPingAt

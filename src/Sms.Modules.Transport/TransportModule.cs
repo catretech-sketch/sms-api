@@ -42,7 +42,10 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
 
     public async Task<TripResponse?> GetCurrentAsync(Guid userId, CancellationToken ct = default) =>
         (await QueryInlineAsync<TripResponse>(
-            $"SELECT TOP 1 {TripCols} FROM dbo.Trips WHERE (DriverId = @userId OR ConductorId = @userId) AND Status = 'live' ORDER BY StartedAt DESC",
+            // 'arrived' is still an active trip — it has reached school but not yet ended (a
+            // return/drop leg may follow) — so it must stay visible here or the driver's own
+            // app could never see the trip again in order to end it.
+            $"SELECT TOP 1 {TripCols} FROM dbo.Trips WHERE (DriverId = @userId OR ConductorId = @userId) AND Status IN ('live', 'arrived') ORDER BY StartedAt DESC",
             new { userId }, ct)).FirstOrDefault();
 
     private sealed record TripParticipantsRow(Guid? DriverId, Guid? ConductorId);
@@ -70,7 +73,9 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
     public async Task<string?> GetActiveDriverOrConductorRoleByBusAsync(Guid busId, Guid userId, CancellationToken ct = default)
     {
         var row = (await QueryInlineAsync<ActiveTripParticipantsRow>(
-            "SELECT TOP 1 DriverId, ConductorId FROM dbo.Trips WHERE BusId = @busId AND Status = 'live' ORDER BY StartedAt DESC",
+            // Include 'arrived': a trip that reached school but hasn't ended is still this
+            // bus's active trip, and its driver/conductor still own it.
+            "SELECT TOP 1 DriverId, ConductorId FROM dbo.Trips WHERE BusId = @busId AND Status IN ('live', 'arrived') ORDER BY StartedAt DESC",
             new { busId }, ct)).FirstOrDefault();
         if (row is null) return null;
         if (row.DriverId == userId) return "driver";
@@ -250,11 +255,16 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
             new { tripId }, ct)).First() > 0;
 
     /// Marks the school-arrival milestone without closing the trip — EndAsync remains the only
-    /// way to actually end it, matching this feature's "arrived != ended" distinction.
-    public Task MarkSchoolArrivedAsync(Guid tenantId, Guid tripId, DateTime at, CancellationToken ct = default) =>
+    /// way to actually end it, matching this feature's "arrived != ended" distinction. Persists
+    /// the arrival timestamp and the triggering GPS location (the trip's last known ping,
+    /// resolved by the caller — TripService.MarkSchoolArrivedAsync — the same way
+    /// IngestPingsAsync/ConfirmStopArrivalAsync already resolve "where is this trip right now").
+    public Task MarkSchoolArrivedAsync(Guid tenantId, Guid tripId, DateTime at, double? lat, double? lng, CancellationToken ct = default) =>
         ExecuteInlineAsync(
-            "UPDATE dbo.Trips SET Status = 'arrived' WHERE Id = @tripId AND TenantId = @tenantId",
-            new { tripId, tenantId }, ct);
+            @"UPDATE dbo.Trips
+              SET Status = 'arrived', SchoolArrivedAt = @at, SchoolArrivedLat = @lat, SchoolArrivedLng = @lng
+              WHERE Id = @tripId AND TenantId = @tenantId",
+            new { tripId, tenantId, at, lat, lng }, ct);
 
     /// Shared by EndAsync's trip-summary and MarkSchoolArrivedAsync's broadcast payload — kept as
     /// one named query so both call sites can't drift on what counts as "boarded".
