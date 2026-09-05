@@ -12,11 +12,14 @@ namespace Sms.Tests.Integration.Transport;
 [Collection("sql")]
 public class TripStopRepositoryTests(SqlServerFixture fx)
 {
+    private const string Key = "integration-test-signing-key-32-bytes-min!!";
+
     private WebApplicationFactory<Program> App() =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseSetting("environment", "Production");
             b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
+            b.UseSetting("Jwt:SigningKey", Key);
         });
 
     private async Task<(Guid tenantId, Guid routeId, Guid tripId, Guid stop1, Guid stop2)> Seed()
