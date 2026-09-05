@@ -12,11 +12,14 @@ namespace Sms.Tests.Integration.Transport;
 [Collection("sql")]
 public class BusLiveSnapshotTests(SqlServerFixture fx)
 {
+    private const string Key = "integration-test-signing-key-32-bytes-min!!";
+
     private WebApplicationFactory<Program> App() =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseSetting("environment", "Production");
             b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
+            b.UseSetting("Jwt:SigningKey", Key);
         });
 
     private async Task<(Guid tenantId, Guid busId, Guid tripId)> SeedBusWithLastPing(DateTime pingAt, double speedKmh)
