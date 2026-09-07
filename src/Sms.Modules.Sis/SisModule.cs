@@ -8,6 +8,7 @@ public static class SisModule
     public static IServiceCollection AddSisModule(this IServiceCollection services)
     {
         services.AddScoped<StudentRepository>();
+        services.AddScoped<BulkImportRepository>();
         return services;
     }
 }

@@ -34,6 +34,7 @@ public static class DependencyInjection
         services.AddSingleton<INoticePdfGenerator, NoticePdfGenerator>();
         services.AddScoped<IPayrollService, PayrollService>();
         services.AddScoped<ISisService, SisService>();
+        services.AddScoped<IStudentBulkImportService, StudentBulkImportService>();
         services.AddScoped<IStaffingService, StaffingService>();
         services.AddScoped<IProfileService, ProfileService>();
         services.AddScoped<IDashboardService, DashboardService>();
