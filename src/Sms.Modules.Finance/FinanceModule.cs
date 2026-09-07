@@ -518,10 +518,10 @@ public sealed class PayrollRepository(IDbConnectionFactory factory) : BaseReposi
 
 // ---- Fee heads (catalog of fee types) ----
 public sealed record FeeHeadResponse(
-    Guid Id, Guid TenantId, string Name, string? Code, bool Active, bool IsSystem);
+    Guid Id, Guid TenantId, string Name, string? Code, bool Active, bool IsSystem, bool IsTransportFeeHead);
 
-public sealed record CreateFeeHeadRequest(string Name, string? Code);
-public sealed record UpdateFeeHeadRequest(string? Name, string? Code, bool? Active);
+public sealed record CreateFeeHeadRequest(string Name, string? Code, bool IsTransportFeeHead = false);
+public sealed record UpdateFeeHeadRequest(string? Name, string? Code, bool? Active, bool? IsTransportFeeHead = null);
 
 public sealed class FeeHeadRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
@@ -536,6 +536,7 @@ public sealed class FeeHeadRepository(IDbConnectionFactory factory) : BaseReposi
             Code = string.IsNullOrWhiteSpace(r.Code) ? null : r.Code.Trim(),
             Active = true,
             IsSystem = false,
+            r.IsTransportFeeHead,
         }, ct);
 
     public Task<FeeHeadResponse?> UpdateAsync(
@@ -547,8 +548,14 @@ public sealed class FeeHeadRepository(IDbConnectionFactory factory) : BaseReposi
             Name = string.IsNullOrWhiteSpace(r.Name) ? null : r.Name.Trim(),
             Code = r.Code is null ? null : (string.IsNullOrWhiteSpace(r.Code) ? null : r.Code.Trim()),
             CodeSpecified = r.Code is not null,
-            Active = r.Active,
+            r.Active,
+            r.IsTransportFeeHead,
         }, ct);
+
+    public async Task<bool> IsTransportFeeHeadAsync(Guid id, Guid tenantId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<int>(
+            "SELECT COUNT(1) FROM dbo.FeeHeads WHERE Id = @id AND TenantId = @tenantId AND IsTransportFeeHead = 1",
+            new { id, tenantId }, ct)).First() > 0;
 
     public async Task<bool> DeleteAsync(Guid id, Guid tenantId, CancellationToken ct = default)
     {
