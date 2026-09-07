@@ -20,6 +20,9 @@ public sealed record ChildBusRow(
     Guid BusId, string BusNo, string? RouteName,
     Guid? TripId, double? Lat, double? Lng, double? SpeedKmh, DateTime? LastPingAt);
 
+/// Current transport mapping for a student (route/stop/fee head chosen, bus possibly pending). Consumed by Task 3's StudentTransportService.
+public sealed record TransportStatusRow(Guid? BusId, Guid? RouteId, Guid? StopId, Guid? FeeHeadId);
+
 public sealed class StudentBusRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
     private sealed record AssignmentRow(
@@ -33,6 +36,24 @@ public sealed class StudentBusRepository(IDbConnectionFactory factory) : BaseRep
     public Task UnassignAsync(Guid tenantId, Guid studentId, CancellationToken ct = default) =>
         ExecuteProcAsync("dbo.StudentBus_Unassign",
             new { TenantId = tenantId, StudentId = studentId }, ct);
+
+    public Task OptInAsync(Guid tenantId, Guid studentId, CancellationToken ct = default) =>
+        ExecuteProcAsync("dbo.StudentTransport_OptIn", new { TenantId = tenantId, StudentId = studentId }, ct);
+
+    public Task OptOutAsync(Guid tenantId, Guid studentId, CancellationToken ct = default) =>
+        ExecuteProcAsync("dbo.StudentTransport_OptOut", new { TenantId = tenantId, StudentId = studentId }, ct);
+
+    public Task UpsertTransportAsync(
+        Guid tenantId, Guid studentId, Guid routeId, Guid? stopId, Guid? feeHeadId, Guid? busId,
+        CancellationToken ct = default) =>
+        ExecuteProcAsync("dbo.StudentTransport_Upsert",
+            new { TenantId = tenantId, StudentId = studentId, RouteId = routeId, StopId = stopId, FeeHeadId = feeHeadId, BusId = busId },
+            ct);
+
+    public async Task<TransportStatusRow?> GetTransportStatusAsync(Guid studentId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<TransportStatusRow>(
+            "SELECT BusId, RouteId, StopId, FeeHeadId FROM dbo.StudentBusAssignments WHERE StudentId = @studentId",
+            new { studentId }, ct)).FirstOrDefault();
 
     // RLS-scoped existence guards: a caller can never see another tenant's bus/student,
     // so these double as cross-tenant reference protection before an upsert.
