@@ -14,6 +14,9 @@ public interface IStudentBusService
     Task<ApiResult> UnassignAsync(Guid studentId, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<StudentBusAssignmentResponse>>> ListByBusAsync(Guid busId, CancellationToken ct = default);
 
+    Task<ApiResult<IReadOnlyList<TransportMappedStudentResponse>>> ListMappedAsync(
+        TransportStudentsFilter filter, CancellationToken ct = default);
+
     /// Parent app: live bus position for the logged-in parent's child (or children). Tenant + child
     /// scoped — resolves the caller's linked student, never accepts a student id from the client.
     Task<ApiResult<IReadOnlyList<ChildBusPositionResponse>>> GetMyChildrenBusAsync(CancellationToken ct = default);
@@ -58,6 +61,14 @@ public sealed class StudentBusService(
         if (!FeatureGate.Allowed(tenant, features, FeatureCatalog.Operations))
             return FeatureGate.Locked<IReadOnlyList<StudentBusAssignmentResponse>>(FeatureCatalog.Operations);
         return ApiResult<IReadOnlyList<StudentBusAssignmentResponse>>.Ok(await repo.ListByBusAsync(busId, ct));
+    }
+
+    public async Task<ApiResult<IReadOnlyList<TransportMappedStudentResponse>>> ListMappedAsync(
+        TransportStudentsFilter filter, CancellationToken ct = default)
+    {
+        if (!FeatureGate.Allowed(tenant, features, FeatureCatalog.Operations))
+            return FeatureGate.Locked<IReadOnlyList<TransportMappedStudentResponse>>(FeatureCatalog.Operations);
+        return ApiResult<IReadOnlyList<TransportMappedStudentResponse>>.Ok(await repo.ListMappedAsync(filter, ct));
     }
 
     public async Task<ApiResult<IReadOnlyList<ChildBusPositionResponse>>> GetMyChildrenBusAsync(CancellationToken ct = default)

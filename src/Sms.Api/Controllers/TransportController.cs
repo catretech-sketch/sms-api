@@ -72,6 +72,14 @@ public sealed class TransportController(IBusService bus, IStudentBusService stud
     public async Task<IActionResult> BusStudents(Guid busId, CancellationToken ct) =>
         FromResult(await studentBus.ListByBusAsync(busId, ct));
 
+    [HttpGet("students")]
+    public async Task<IActionResult> ListMappedStudents(
+        [FromQuery] Guid? routeId, [FromQuery] Guid? stopId, [FromQuery] Guid? busId,
+        [FromQuery] string? grade, [FromQuery] Guid? feeHeadId, [FromQuery] string? status,
+        CancellationToken ct) =>
+        FromResult(await studentBus.ListMappedAsync(
+            new TransportStudentsFilter(routeId, stopId, busId, grade, feeHeadId, status), ct));
+
     [HttpPut("buses/{busId:guid}/students/{studentId:guid}")]
     public async Task<IActionResult> AssignStudent(
         Guid busId, Guid studentId, [FromBody] AssignStudentBusRequest? req, CancellationToken ct) =>
