@@ -60,7 +60,8 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
     private sealed record BusListRow(
         Guid BusId, string BusNo, Guid? RouteId, string? RouteName, Guid? DriverStaffId,
         string? Driver, string? DriverPhone,
-        int StopCount, int StudentsAssigned, Guid? TeacherUserId, string? TeacherName, int? Capacity);
+        int StopCount, int StudentsAssigned, Guid? TeacherUserId, string? TeacherName, int? Capacity,
+        Guid? ConductorStaffId = null);
     private sealed record RouteRow(Guid Id, string Name, int Stops);
     private sealed record RouteStopRow(Guid Id, Guid RouteId, string Name, int Seq, double Lat, double Lng);
 
@@ -274,14 +275,15 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
             $@"SELECT b.Id AS BusId, b.BusNo, b.RouteId, b.RouteName, b.DriverStaffId, b.Driver, b.DriverPhone,
                 {StopCountSql} AS StopCount,
                 (SELECT COUNT(*) FROM dbo.StudentBusAssignments sba WHERE sba.BusId = b.Id) AS StudentsAssigned,
-                a.TeacherUserId, u.Name AS TeacherName, b.Capacity
+                a.TeacherUserId, u.Name AS TeacherName, b.Capacity, b.ConductorStaffId
               FROM dbo.Buses b
               LEFT JOIN dbo.BusAssignments a ON a.BusId = b.Id
               LEFT JOIN dbo.Users u ON u.Id = a.TeacherUserId
               ORDER BY b.BusNo", null, ct);
         return rows.Select(r => new TransportBusResponse(
             r.BusId, r.BusNo, r.RouteId, r.RouteName, r.DriverStaffId, r.Driver, r.DriverPhone,
-            r.StopCount, r.StudentsAssigned, r.TeacherUserId, r.TeacherName, Capacity: r.Capacity)).ToList();
+            r.StopCount, r.StudentsAssigned, r.TeacherUserId, r.TeacherName,
+            ConductorStaffId: r.ConductorStaffId, Capacity: r.Capacity)).ToList();
     }
 
     public async Task<BusTeacherAssignmentResponse?> GetTeacherAssignmentAsync(Guid busId, CancellationToken ct = default)
