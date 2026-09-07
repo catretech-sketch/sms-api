@@ -383,6 +383,12 @@ public class StudentBulkImportServiceTests(SqlServerFixture fx)
 
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
 
+        // Positive control: confirm Tenant A's call actually created the student (not just returned OK).
+        // This proves that the later "Tenant B can't see it" assertion is validating isolation,
+        // not just absence of data.
+        var tenantABody = await resp.Content.ReadFromJsonAsync<DataEnvelopeDto<BulkImportBatchResponseDto>>();
+        tenantABody!.Data.created.Should().Be(1);
+
         // Tenant B queries by grade (the only search that works) and verifies the student isn't in their view.
         // See ProcessBatch_replaying_the_same_import_and_batch_index_never_creates_duplicates for the rationale:
         // /v1/students `q` search only matches name/admission-no/class-label, not email, so we filter client-side.
