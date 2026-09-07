@@ -65,6 +65,13 @@ public sealed class StudentTransportService(
 
         await busAssignRepo.OptInAsync(tid, studentId, ct);
 
+        // The student may already hold a seat on one of these buses (e.g. re-saving the same route with a
+        // different stop/fee head, or an idempotent retry). Don't let their own existing occupancy count against
+        // themselves when scoring candidates, or a since-filled bus they already validly occupy would score as
+        // full and evict them into "pending" for no real reason.
+        var currentStatus = await busAssignRepo.GetTransportStatusAsync(studentId, ct);
+        var currentBusId = currentStatus?.BusId;
+
         var candidates = await busRepo.ListBusesForRouteAsync(routeId, ct);
         Guid? busId = null;
         var bestFree = int.MinValue;
@@ -74,7 +81,8 @@ public sealed class StudentTransportService(
             if (c.Capacity is not { } cap) { free = int.MaxValue; }
             else
             {
-                free = cap - c.Occupied;
+                var occupied = c.BusId == currentBusId ? c.Occupied - 1 : c.Occupied;
+                free = cap - occupied;
                 if (free <= 0) continue;
             }
             if (free > bestFree) { bestFree = free; busId = c.BusId; }

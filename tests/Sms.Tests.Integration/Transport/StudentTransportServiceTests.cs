@@ -175,4 +175,37 @@ public class StudentTransportServiceTests(SqlServerFixture fx)
             "SELECT COUNT(*) FROM dbo.StudentBusAssignments WHERE StudentId = @studentId", new { studentId });
         count.Should().Be(0);
     }
+
+    [Fact]
+    public async Task Re_saving_same_route_keeps_existing_seat_instead_of_evicting_to_pending()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var studentId = await SeedStudentAsync(fx.ConnectionString, tenantId, "TS-006");
+        var routeId = await SeedRouteAsync(fx.ConnectionString, tenantId, "Route Resave");
+        var busId = await SeedBusOnRouteAsync(fx.ConnectionString, tenantId, routeId, "RESAVE-1", capacity: 1);
+        var client = AdminClient(app, tenantId);
+
+        var first = await client.PutAsJsonAsync($"/v1/students/{studentId}/transport",
+            new { opted_in = true, route_id = routeId });
+        using (var firstDoc = JsonDocument.Parse(await first.Content.ReadAsStringAsync()))
+        {
+            firstDoc.RootElement.GetProperty("data").GetProperty("status").GetString().Should().Be("assigned");
+            firstDoc.RootElement.GetProperty("data").GetProperty("bus_id").GetGuid().Should().Be(busId);
+        }
+
+        // Re-save the same route (e.g. changing the stop) now that the sole bus on the route is "full" —
+        // with only this student occupying its one seat.
+        var stopId = Guid.NewGuid();
+        var res = await client.PutAsJsonAsync($"/v1/students/{studentId}/transport",
+            new { opted_in = true, route_id = routeId, stop_id = stopId });
+
+        res.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        var data = doc.RootElement.GetProperty("data");
+        data.GetProperty("status").GetString().Should().Be("assigned");
+        data.GetProperty("assigned").GetBoolean().Should().BeTrue();
+        data.GetProperty("bus_id").GetGuid().Should().Be(busId);
+    }
 }
