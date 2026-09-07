@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Sms.Api.Filters;
 using Sms.Application.Services.Sis;
 using Sms.Modules.Sis.Contracts;
 using Sms.Shared.Kernel.Authz;
@@ -15,7 +16,13 @@ namespace Sms.Api.Controllers;
 [Authorize(Policy = Policies.Principal)]
 public sealed class StudentBulkImportController(IStudentBulkImportService bulkImport) : ApiControllerBase
 {
+    // [SkipModelValidation]: BulkImportRowRequest nests the shared CreateStudentRequest, whose
+    // Name (and other reference-type properties) is non-nullable. Without this, [ApiController]'s
+    // automatic model-state validation rejects the WHOLE batch with 400 the instant any single
+    // row has a null Name — before StudentBulkImportService's own per-row guard ever runs. See
+    // Sms.Api/Filters/SkipModelValidationAttribute.cs for the full rationale.
     [HttpPost("batch")]
+    [SkipModelValidation]
     public async Task<IActionResult> Batch([FromBody] BulkImportBatchRequest req, CancellationToken ct) =>
         FromResult(await bulkImport.ProcessBatchAsync(req, ct));
 }

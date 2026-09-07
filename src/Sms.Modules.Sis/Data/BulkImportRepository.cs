@@ -7,11 +7,12 @@ using Sms.Shared.Kernel.Data;
 
 namespace Sms.Modules.Sis.Data;
 
-/// Thrown when a batch's (TenantId, ImportId, BatchIndex) already has a *different* stored
-/// result than what's about to be inserted — should never happen in practice (the same
-/// batchIndex is always sent with the same rows), but guards against a client bug the same
-/// way IdempotencyKeyConflictException guards fee payments.
-public sealed class BulkImportBatchConflictException() : Exception("This batch was already recorded with a different result");
+/// Thrown when RecordResultAsync loses a unique-index race on (TenantId, ImportId, BatchIndex)
+/// to a concurrent request for the same batch, but the row that won the race can't be read back
+/// (e.g. it was deleted between the conflict and the re-read) — should be effectively
+/// unreachable in practice, but guards against silently returning a null result.
+public sealed class BulkImportBatchConflictException() : Exception(
+    "This batch's result could not be recorded or re-read after a concurrent insert race");
 
 public sealed class BulkImportRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
@@ -26,7 +27,8 @@ public sealed class BulkImportRepository(IDbConnectionFactory factory) : BaseRep
 
     /// Inserts the batch's result. If a concurrent request for the same (tenantId, importId,
     /// batchIndex) won the race, returns that row's already-stored result instead of throwing —
-    /// mirrors FinanceModule.cs's fee-payment idempotency race handling (SQL error 2601/2627).
+    /// same unique-index-race-then-re-read pattern used by TenancyService.cs:114 and
+    /// MeSchoolsService.cs:124 (SQL error 2601/2627).
     public async Task<BulkImportBatchResponse> RecordResultAsync(
         Guid tenantId, Guid importId, int batchIndex, BulkImportBatchResponse result, CancellationToken ct = default)
     {
