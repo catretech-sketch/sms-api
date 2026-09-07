@@ -1,6 +1,7 @@
 using Sms.Application.Common;
 using Sms.Modules.Finance;
 using Sms.Modules.Transport;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
 
@@ -19,7 +20,8 @@ public interface IStudentTransportService
 }
 
 public sealed class StudentTransportService(
-    StudentBusRepository busAssignRepo, BusRepository busRepo, FeeHeadRepository feeHeadRepo, ITenantContext tenant)
+    StudentBusRepository busAssignRepo, BusRepository busRepo, FeeHeadRepository feeHeadRepo, ITenantContext tenant,
+    ITenantFeatureSet features)
     : IStudentTransportService
 {
     private static readonly StudentTransportResponse NotMapped =
@@ -27,6 +29,8 @@ public sealed class StudentTransportService(
 
     public async Task<ApiResult<StudentTransportResponse>> GetAsync(Guid studentId, CancellationToken ct = default)
     {
+        if (!FeatureGate.Allowed(tenant, features, FeatureCatalog.Operations))
+            return FeatureGate.Locked<StudentTransportResponse>(FeatureCatalog.Operations);
         if (!await busAssignRepo.StudentExistsAsync(studentId, ct))
             return ApiResult<StudentTransportResponse>.Fail(new Error("not_found", "student not found"), 404);
 
@@ -43,6 +47,8 @@ public sealed class StudentTransportService(
     public async Task<ApiResult<StudentTransportResponse>> SetAsync(
         Guid studentId, SetStudentTransportRequest req, CancellationToken ct = default)
     {
+        if (!FeatureGate.Allowed(tenant, features, FeatureCatalog.Operations))
+            return FeatureGate.Locked<StudentTransportResponse>(FeatureCatalog.Operations);
         if (tenant.TenantId is not { } tid)
             return ApiResult<StudentTransportResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
         if (!await busAssignRepo.StudentExistsAsync(studentId, ct))
@@ -58,6 +64,12 @@ public sealed class StudentTransportService(
         if (req.RouteId is not { } routeId)
             return ApiResult<StudentTransportResponse>.Fail(
                 new Error("validation_error", "Route is required to opt in to transport"), 400);
+
+        if (!await busRepo.RouteExistsAsync(routeId, ct))
+            return ApiResult<StudentTransportResponse>.Fail(new Error("not_found", "route not found"), 404);
+
+        if (req.StopId is { } stopId && !await busRepo.StopExistsAsync(stopId, ct))
+            return ApiResult<StudentTransportResponse>.Fail(new Error("not_found", "stop not found"), 404);
 
         if (req.FeeHeadId is { } feeHeadId && !await feeHeadRepo.IsTransportFeeHeadAsync(feeHeadId, tid, ct))
             return ApiResult<StudentTransportResponse>.Fail(

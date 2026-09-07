@@ -144,6 +144,15 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
               WHERE b.RouteId = @routeId
               ORDER BY b.Id", new { routeId }, ct);
 
+    // RLS-scoped existence guard: stops can live in either the route-based RouteStops table or the
+    // legacy per-bus BusStops table (see StudentBusModule.ListMappedAsync's dual
+    // COALESCE(rs.Name, bs.Name) lookup) — a stop id is valid for opt-in if it exists in either.
+    public async Task<bool> StopExistsAsync(Guid stopId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<int>(
+            @"SELECT (SELECT COUNT(1) FROM dbo.RouteStops WHERE Id = @stopId) +
+                     (SELECT COUNT(1) FROM dbo.BusStops WHERE Id = @stopId)",
+            new { stopId }, ct)).First() > 0;
+
     public async Task<IReadOnlyList<BusDriverAssignmentResponse>> ListAssignmentHistoryAsync(
         Guid tenantId, Guid busId, CancellationToken ct = default) =>
         await QueryProcAsync<BusDriverAssignmentResponse>(

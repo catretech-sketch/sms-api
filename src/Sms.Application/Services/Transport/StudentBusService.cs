@@ -68,6 +68,22 @@ public sealed class StudentBusService(
     {
         if (!FeatureGate.Allowed(tenant, features, FeatureCatalog.Operations))
             return FeatureGate.Locked<IReadOnlyList<TransportMappedStudentResponse>>(FeatureCatalog.Operations);
+
+        // "assigned" is the status vocabulary used by the single-student transport endpoint for the same
+        // underlying concept as this list's "mapped" — accept it as a synonym rather than silently
+        // returning zero rows, since it's the exact string a caller is likely to guess.
+        switch (filter.Status)
+        {
+            case null or "mapped" or "pending":
+                break;
+            case "assigned":
+                filter = filter with { Status = "mapped" };
+                break;
+            default:
+                return ApiResult<IReadOnlyList<TransportMappedStudentResponse>>.Fail(
+                    new Error("validation_error", $"Unknown status filter: {filter.Status}"), 400);
+        }
+
         return ApiResult<IReadOnlyList<TransportMappedStudentResponse>>.Ok(await repo.ListMappedAsync(filter, ct));
     }
 

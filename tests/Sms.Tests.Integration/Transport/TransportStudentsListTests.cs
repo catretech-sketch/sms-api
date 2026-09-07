@@ -88,5 +88,31 @@ public class TransportStudentsListTests(SqlServerFixture fx)
         rows.GetArrayLength().Should().Be(1);
         rows[0].GetProperty("student_name").GetString().Should().Be("Pending Kid");
         rows[0].GetProperty("mapping_status").GetString().Should().Be("pending");
+
+        // "assigned" is the vocabulary the single-student transport endpoint uses for this same concept —
+        // it must behave identically to "mapped" here rather than silently matching nothing.
+        var mappedOnly = await client.GetAsync("/v1/transport/students?status=mapped");
+        using var mappedDoc = JsonDocument.Parse(await mappedOnly.Content.ReadAsStringAsync());
+        var assignedOnly = await client.GetAsync("/v1/transport/students?status=assigned");
+        using var assignedDoc = JsonDocument.Parse(await assignedOnly.Content.ReadAsStringAsync());
+        assignedDoc.RootElement.GetProperty("data").GetRawText()
+            .Should().Be(mappedDoc.RootElement.GetProperty("data").GetRawText());
+        assignedDoc.RootElement.GetProperty("data").GetArrayLength().Should().Be(1);
+        assignedDoc.RootElement.GetProperty("data")[0].GetProperty("student_name").GetString().Should().Be("Mapped Kid");
+    }
+
+    [Fact]
+    public async Task List_with_unknown_status_returns_400()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = AdminClient(app, tenantId);
+
+        var res = await client.GetAsync("/v1/transport/students?status=bogus");
+
+        res.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString().Should().Be("validation_error");
     }
 }

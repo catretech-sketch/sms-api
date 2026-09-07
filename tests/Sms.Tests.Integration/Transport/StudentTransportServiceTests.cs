@@ -198,6 +198,9 @@ public class StudentTransportServiceTests(SqlServerFixture fx)
         // Re-save the same route (e.g. changing the stop) now that the sole bus on the route is "full" —
         // with only this student occupying its one seat.
         var stopId = Guid.NewGuid();
+        await Seed(fx.ConnectionString, tenantId, conn => conn.ExecuteAsync(
+            "INSERT dbo.RouteStops (Id, TenantId, RouteId, Name, Seq) VALUES (@Id, @TenantId, @RouteId, 'Resave Stop', 1)",
+            new { Id = stopId, TenantId = tenantId, RouteId = routeId }));
         var res = await client.PutAsJsonAsync($"/v1/students/{studentId}/transport",
             new { opted_in = true, route_id = routeId, stop_id = stopId });
 
@@ -207,5 +210,70 @@ public class StudentTransportServiceTests(SqlServerFixture fx)
         data.GetProperty("status").GetString().Should().Be("assigned");
         data.GetProperty("assigned").GetBoolean().Should().BeTrue();
         data.GetProperty("bus_id").GetGuid().Should().Be(busId);
+    }
+
+    [Fact]
+    public async Task Set_transport_returns_403_when_plan_lacks_operations()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
+        var studentId = await SeedStudentAsync(fx.ConnectionString, tenantId, "TS-GATE-1");
+        var routeId = await SeedRouteAsync(fx.ConnectionString, tenantId, "Route Gate");
+
+        var res = await AdminClient(app, tenantId).PutAsJsonAsync($"/v1/students/{studentId}/transport",
+            new { opted_in = true, route_id = routeId });
+
+        res.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString().Should().Be("feature_locked");
+    }
+
+    [Fact]
+    public async Task Get_transport_returns_403_when_plan_lacks_operations()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "gold");
+        var studentId = await SeedStudentAsync(fx.ConnectionString, tenantId, "TS-GATE-2");
+
+        var res = await AdminClient(app, tenantId).GetAsync($"/v1/students/{studentId}/transport");
+
+        res.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString().Should().Be("feature_locked");
+    }
+
+    [Fact]
+    public async Task Opt_in_with_bogus_route_returns_404()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var studentId = await SeedStudentAsync(fx.ConnectionString, tenantId, "TS-007");
+
+        var res = await AdminClient(app, tenantId).PutAsJsonAsync($"/v1/students/{studentId}/transport",
+            new { opted_in = true, route_id = Guid.NewGuid() });
+
+        res.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString().Should().Be("not_found");
+    }
+
+    [Fact]
+    public async Task Opt_in_with_bogus_stop_returns_404()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var studentId = await SeedStudentAsync(fx.ConnectionString, tenantId, "TS-008");
+        var routeId = await SeedRouteAsync(fx.ConnectionString, tenantId, "Route Bogus Stop");
+
+        var res = await AdminClient(app, tenantId).PutAsJsonAsync($"/v1/students/{studentId}/transport",
+            new { opted_in = true, route_id = routeId, stop_id = Guid.NewGuid() });
+
+        res.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
+        doc.RootElement.GetProperty("error").GetProperty("code").GetString().Should().Be("not_found");
     }
 }
