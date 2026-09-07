@@ -25,6 +25,15 @@ public sealed class StudentBulkImportService(
         if (tenant.TenantId is not { } tid)
             return ApiResult<BulkImportBatchResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
 
+        // [ApiController]'s automatic model validation is disabled for this action
+        // (see SkipModelValidationAttribute) so that one nested row's bad field (e.g. a null
+        // CreateStudentRequest.Name) doesn't reject the whole batch with a framework-level 400.
+        // That means the framework no longer catches `rows` itself being null/missing for free —
+        // this guard replaces that lost protection so a missing `rows` field returns a clean 400
+        // instead of an unhandled NullReferenceException from the loop below.
+        if (req.Rows is null or { Count: 0 })
+            return ApiResult<BulkImportBatchResponse>.Fail(new Error("validation_error", "rows is required"), 400);
+
         var existing = await repo.GetExistingResultAsync(tid, req.ImportId, req.BatchIndex, ct);
         if (existing is not null)
             return ApiResult<BulkImportBatchResponse>.Ok(existing);

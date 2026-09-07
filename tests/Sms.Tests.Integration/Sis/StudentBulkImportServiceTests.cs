@@ -308,6 +308,58 @@ public class StudentBulkImportServiceTests(SqlServerFixture fx)
         data.rows.First(r => r.row_number == 2).status.Should().Be("created");
     }
 
+    [Fact]
+    public async Task ProcessBatch_missing_rows_field_returns_a_clean_validation_error_not_a_500()
+    {
+        await using var app = App();
+        var client = TenantClient(app, Guid.NewGuid());
+
+        // `rows` omitted entirely (not merely an empty array) — this is exactly the shape that
+        // used to be caught for free by [ApiController]'s automatic model validation before
+        // SkipModelValidationAttribute cleared ModelState for this action. Without the explicit
+        // guard in ProcessBatchAsync, this previously threw an unhandled NullReferenceException
+        // from the `foreach (var row in req.Rows)` loop instead of a clean 400.
+        const string payload = """
+        {
+            "import_id": "6b1a5b4a-1a2b-4c3d-9e0f-1a2b3c4d5e6f",
+            "batch_index": 0
+        }
+        """;
+
+        var resp = await client.PostAsync("/v1/students/bulk-import/batch",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        var responseBody = await resp.Content.ReadAsStringAsync();
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            $"a missing `rows` field must be a clean validation error, not an unhandled exception. Actual body: {responseBody}");
+        responseBody.Should().Contain("validation_error");
+        responseBody.Should().NotContain("NullReferenceException");
+    }
+
+    [Fact]
+    public async Task ProcessBatch_null_rows_field_returns_a_clean_validation_error_not_a_500()
+    {
+        await using var app = App();
+        var client = TenantClient(app, Guid.NewGuid());
+
+        const string payload = """
+        {
+            "import_id": "6b1a5b4a-1a2b-4c3d-9e0f-1a2b3c4d5e6f",
+            "batch_index": 0,
+            "rows": null
+        }
+        """;
+
+        var resp = await client.PostAsync("/v1/students/bulk-import/batch",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        var responseBody = await resp.Content.ReadAsStringAsync();
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            $"an explicit null `rows` field must be a clean validation error, not an unhandled exception. Actual body: {responseBody}");
+        responseBody.Should().Contain("validation_error");
+        responseBody.Should().NotContain("NullReferenceException");
+    }
+
     private sealed record DataEnvelopeDto<T>(T Data);
     private sealed record BulkImportRowResponseDto(
         int row_number, string? student_id, string status, string? error, string? transport_status);
