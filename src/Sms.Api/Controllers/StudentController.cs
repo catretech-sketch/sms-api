@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Sms.Application.Services.Academics;
 using Sms.Application.Services.Sis;
+using Sms.Application.Services.Transport;
 using Sms.Modules.Sis.Contracts;
 using Sms.Shared.Kernel.Authz;
 
@@ -9,7 +10,7 @@ namespace Sms.Api.Controllers;
 
 [Route("v1")]
 [Authorize]
-public sealed class StudentController(ISisService sis, IAcademicsService academics) : ApiControllerBase
+public sealed class StudentController(ISisService sis, IAcademicsService academics, IStudentTransportService transport) : ApiControllerBase
 {
     [HttpGet("students")]
     public async Task<IActionResult> List(
@@ -40,6 +41,22 @@ public sealed class StudentController(ISisService sis, IAcademicsService academi
         if (!RoleChecks.IsStaff(User))
             return ForbiddenResult("staff only");
         return FromResult(await sis.UpdateStudentAsync(id, req, ct));
+    }
+
+    [HttpPut("students/{id:guid}/transport")]
+    public async Task<IActionResult> SetTransport(Guid id, [FromBody] SetStudentTransportRequest req, CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await transport.SetAsync(id, req, ct));
+    }
+
+    [HttpGet("students/{id:guid}/transport")]
+    public async Task<IActionResult> GetTransport(Guid id, CancellationToken ct)
+    {
+        if (!RoleChecks.IsStaff(User))
+            return ForbiddenResult("staff only");
+        return FromResult(await transport.GetAsync(id, ct));
     }
 
     [HttpGet("classes/{classId:guid}/students")]
