@@ -360,6 +360,37 @@ public class StudentBulkImportServiceTests(SqlServerFixture fx)
         responseBody.Should().NotContain("NullReferenceException");
     }
 
+    [Fact]
+    public async Task ProcessBatch_only_creates_students_in_the_caller_tenant()
+    {
+        await using var app = App();
+        var tenantAId = Guid.NewGuid();
+        var tenantBId = Guid.NewGuid();
+        var tenantAClient = TenantClient(app, tenantAId);
+        var tenantBClient = TenantClient(app, tenantBId);
+
+        // Ensure both tenants exist in the database
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantAId, tier: "platinum");
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantBId, tier: "platinum");
+
+        var importId = Guid.NewGuid();
+        var resp = await tenantAClient.PostAsJsonAsync("/v1/students/bulk-import/batch", new
+        {
+            import_id = importId,
+            batch_index = 0,
+            rows = new[] { Row(1, "Tenant A Student", "9876500001", "tenanta@example.com") },
+        });
+
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        // Tenant B queries by grade (the only search that works) and verifies the student isn't in their view.
+        // See ProcessBatch_replaying_the_same_import_and_batch_index_never_creates_duplicates for the rationale:
+        // /v1/students `q` search only matches name/admission-no/class-label, not email, so we filter client-side.
+        var check = await tenantBClient.GetAsync("/v1/students?grade=I");
+        var students = await check.Content.ReadFromJsonAsync<StudentListEnvelopeDto>();
+        students!.data.Should().NotContain(s => s.email == "tenanta@example.com");
+    }
+
     private sealed record DataEnvelopeDto<T>(T Data);
     private sealed record BulkImportRowResponseDto(
         int row_number, string? student_id, string status, string? error, string? transport_status);
