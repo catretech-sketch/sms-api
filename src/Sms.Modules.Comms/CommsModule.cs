@@ -90,7 +90,10 @@ public sealed record CreateAnnouncementRequest(
     /// Optional user-uploaded file (base64, no data: prefix) attached to email.
     string? AttachmentBase64 = null,
     string? AttachmentFileName = null,
-    string? AttachmentContentType = null);
+    string? AttachmentContentType = null,
+    /// When set, the "app" channel's in-app notification targets only this user instead of
+    /// broadcasting tenant-wide. Has no effect on the email/sms channels.
+    Guid? UserId = null);
 public sealed record ComplaintResponse(
     Guid Id, Guid TenantId, string Subject, string? From, string? Category, string Priority, string Status,
     string? Age, string? Assignee, string? Body);

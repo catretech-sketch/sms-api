@@ -1,5 +1,9 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Sms.Application.Common;
+using Sms.Application.Interfaces.DAO;
+using Sms.Application.Services.Comms;
+using Sms.Modules.Comms;
 using Sms.Modules.Finance;
 using Sms.Modules.Sis.Contracts;
 using Sms.Modules.Sis.Data;
@@ -39,7 +43,10 @@ public sealed class FeeService(
     StudentRepository roster,
     IPaymentGateway gateway,
     ITenantContext tenant,
-    ILiveBroadcaster live) : IFeeService
+    ILiveBroadcaster live,
+    IAnnouncementService announcements,
+    IAuthDao auth,
+    ILogger<FeeService> logger) : IFeeService
 {
     public async Task<ApiResult<IReadOnlyList<FeePaymentResponse>>> ListPaymentsAsync(Guid? studentId, CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<FeePaymentResponse>>.Ok(await payments.ListAsync(studentId, ct));
@@ -305,10 +312,44 @@ public sealed class FeeService(
 
             var row = await invoices.CreateAsync(
                 tid, new CreateFeeInvoiceRequest(student.Id, period, req.DueDate, amount), ct);
-            if (row is not null) created++;
+            if (row is null) continue;
+            created++;
+            await NotifyGuardianBestEffortAsync(tid, student, period, amount, req.DueDate, ct);
         }
 
         return ApiResult<GenerateFeeInvoicesResponse>.Ok(new GenerateFeeInvoicesResponse(created));
+    }
+
+    /// Fires one email+in-app notification for this student's guardian. Best-effort: a
+    /// notify failure never blocks or rolls back the invoice that was already created.
+    private async Task NotifyGuardianBestEffortAsync(
+        Guid tenantId, StudentResponse student, string period, decimal amount, DateTime? dueDate, CancellationToken ct)
+    {
+        var email = (student.GuardianEmail ?? "").Trim();
+        var phone = (student.GuardianPhone ?? "").Trim();
+        if (email.Length == 0 && phone.Length == 0) return;
+
+        var dueLabel = dueDate is { } d ? d.ToString("yyyy-MM-dd") : null;
+        var body = $"A {period} fee invoice of {amount:N0} has been generated for {student.Name}." +
+                   (dueLabel is null ? "" : $" Due date: {dueLabel}.");
+        // IUserProvisioningDao.ListByTenantAsync excludes non-staff users (parents/guardians
+        // included), so it can't resolve a guardian's login account — auth.GetByEmailAndTenantAsync
+        // queries dbo.Users directly, unfiltered by role.
+        Guid? userId = email.Length > 0 ? (await auth.GetByEmailAndTenantAsync(email, tenantId, ct))?.Id : null;
+
+        try
+        {
+            await announcements.CreateAsync(new CreateAnnouncementRequest(
+                "Fee invoice generated", body, "fee_invoice", "specific",
+                email.Length > 0 ? [email] : null,
+                phone.Length > 0 ? [phone] : null,
+                ["email", "app"],
+                UserId: userId), tenant.UserId, null, ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Fee-invoice notification failed for student {StudentId}, invoice still created", student.Id);
+        }
     }
 
     public async Task<ApiResult<FeeReportSummaryResponse>> GetReportSummaryAsync(CancellationToken ct = default)

@@ -206,7 +206,8 @@ public sealed class AnnouncementService(
                     Icon: "bell",
                     Tone: "brand",
                     Title: $"{kind}: {displayTitle}",
-                    Body: string.IsNullOrWhiteSpace(dateLabel) ? details ?? body : $"{dateLabel} · {details ?? body}"), ct);
+                    Body: string.IsNullOrWhiteSpace(dateLabel) ? details ?? body : $"{dateLabel} · {details ?? body}",
+                    UserId: req.UserId), ct);
                 app = 1;
             }
         }
@@ -309,6 +310,11 @@ public sealed class AnnouncementService(
             foreach (var e in explicitEmails) AddEmail(set, e);
 
         var key = audience.Trim().ToLowerInvariant();
+        // "specific" means exactly that: only the explicit recipients passed in, no roster
+        // expansion — used by callers targeting one individual (e.g. one student's guardian).
+        if (key is "specific")
+            return set.ToList();
+
         if (key is "everyone" or "" or "all")
         {
             await AddAllSchoolEmailsAsync(tenantId, set, ct);
@@ -333,7 +339,7 @@ public sealed class AnnouncementService(
                 AddEmail(set, s.Email);
             await AddUserEmailsByRoleAsync(tenantId, set, Policies.StudentOrParent, ct);
         }
-        else if (key is "students" or "grades" or "defaulters" or "specific")
+        else if (key is "students" or "grades" or "defaulters")
         {
             foreach (var s in await students.ListAsync(null, null, null, null, ct))
                 AddEmail(set, s.Email);
@@ -352,6 +358,10 @@ public sealed class AnnouncementService(
             foreach (var p in explicitPhones) AddPhone(set, p);
 
         var key = audience.Trim().ToLowerInvariant();
+        // "specific" means exactly that: only the explicit recipients passed in, no roster
+        // expansion — used by callers targeting one individual (e.g. one student's guardian).
+        if (key is "specific")
+            return set.ToList();
 
         if (key is "teachers" or "everyone" or "" or "all")
         {
@@ -363,7 +373,7 @@ public sealed class AnnouncementService(
         if (key is "staff" or "everyone" or "" or "all")
             await AddUserPhonesByRoleAsync(tenantId, set, Policies.Staff, ct);
 
-        if (key is "parents" or "students" or "everyone" or "" or "all" or "grades" or "defaulters" or "specific")
+        if (key is "parents" or "students" or "everyone" or "" or "all" or "grades" or "defaulters")
         {
             foreach (var s in await students.ListAsync(null, null, null, null, ct))
                 AddPhone(set, s.GuardianPhone);
