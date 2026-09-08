@@ -10,6 +10,7 @@ using Sms.Modules.Sis.Data;
 using Sms.Shared.Kernel.Payments;
 using Sms.Shared.Kernel.Results;
 using Sms.Application.Services.Realtime;
+using Sms.Modules.Tenancy.Data;
 using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Application.Services.Finance;
@@ -41,11 +42,13 @@ public sealed class FeeService(
     FeeHeadRepository heads,
     FeeStructureRepository structures,
     StudentRepository roster,
+    ClientRepository clients,
     IPaymentGateway gateway,
     ITenantContext tenant,
     ILiveBroadcaster live,
     IAnnouncementService announcements,
     IAuthDao auth,
+    IFeeInvoicePdfGenerator pdf,
     ILogger<FeeService> logger) : IFeeService
 {
     public async Task<ApiResult<IReadOnlyList<FeePaymentResponse>>> ListPaymentsAsync(Guid? studentId, CancellationToken ct = default) =>
@@ -189,6 +192,28 @@ public sealed class FeeService(
                    $"Amount received: {payment.Amount:N0}. Payment method: {payment.Method ?? "Cash"}.";
         Guid? userId = email.Length > 0 ? (await auth.GetByEmailAndTenantAsync(email, tenantId, ct))?.Id : null;
 
+        string? attachmentBase64 = null;
+        try
+        {
+            var client = await clients.GetAsync(tenantId, ct);
+            var pdfBytes = pdf.Generate(new FeeInvoicePdfModel(
+                SchoolName: client?.Name ?? "your school",
+                LogoUrl: client?.LogoUrl,
+                StudentName: student.Name,
+                Period: period,
+                Amount: invoice.Amount,
+                PaidAmount: invoice.PaidAmount + payment.Amount > invoice.Amount ? invoice.Amount : invoice.PaidAmount + payment.Amount,
+                DueAmount: Math.Max(0, invoice.Amount - (invoice.PaidAmount + payment.Amount)),
+                Status: invoice.PaidAmount + payment.Amount >= invoice.Amount ? "Paid" : "Partially paid",
+                PaymentMethod: payment.Method ?? "Cash",
+                PaymentDate: payment.Date));
+            attachmentBase64 = Convert.ToBase64String(pdfBytes);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Fee invoice PDF generation failed for student {StudentId}, notification still sent without it", student.Id);
+        }
+
         try
         {
             await announcements.CreateAsync(new CreateAnnouncementRequest(
@@ -196,6 +221,9 @@ public sealed class FeeService(
                 email.Length > 0 ? [email] : null,
                 phone.Length > 0 ? [phone] : null,
                 ["email", "app"],
+                AttachmentBase64: attachmentBase64,
+                AttachmentFileName: attachmentBase64 is not null ? $"Invoice-{period.Replace(' ', '-')}.pdf" : null,
+                AttachmentContentType: attachmentBase64 is not null ? "application/pdf" : null,
                 UserId: userId), tenant.UserId, null, ct);
         }
         catch (Exception ex)

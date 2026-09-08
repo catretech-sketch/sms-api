@@ -115,6 +115,9 @@ public class PayInvoiceNotifyTests(SqlServerFixture fx)
         notify.Channels.Should().BeEquivalentTo(new[] { "email", "app" });
         notify.UserId.Should().Be(guardianUserId);
         notify.Body.Should().Contain("8,500").And.Contain("Cash").And.Contain("Aarav Sharma");
+        notify.AttachmentBase64.Should().NotBeNullOrEmpty();
+        notify.AttachmentFileName.Should().EndWith(".pdf");
+        notify.AttachmentContentType.Should().Be("application/pdf");
     }
 
     [Fact]
