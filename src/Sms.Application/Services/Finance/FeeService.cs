@@ -14,8 +14,6 @@ using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Application.Services.Finance;
 
-#pragma warning disable CS9113 // Parameter is unread — kept for Task 3 (payment-time notification)
-
 public interface IFeeService
 {
     Task<ApiResult<IReadOnlyList<FeePaymentResponse>>> ListPaymentsAsync(Guid? studentId, CancellationToken ct = default);
@@ -37,6 +35,7 @@ public interface IFeeService
     Task<ApiResult<FeeReportSummaryResponse>> GetReportSummaryAsync(CancellationToken ct = default);
 }
 
+#pragma warning disable CS9113 // Parameter is unread — kept for Task 3 (payment-time notification)
 public sealed class FeeService(
     FeeRepository payments,
     FeeInvoiceRepository invoices,
@@ -49,6 +48,7 @@ public sealed class FeeService(
     IAnnouncementService announcements,
     IAuthDao auth,
     ILogger<FeeService> logger) : IFeeService
+#pragma warning restore CS9113
 {
     public async Task<ApiResult<IReadOnlyList<FeePaymentResponse>>> ListPaymentsAsync(Guid? studentId, CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<FeePaymentResponse>>.Ok(await payments.ListAsync(studentId, ct));
@@ -543,5 +543,3 @@ public sealed class FeeService(
         return false;
     }
 }
-
-#pragma warning restore CS9113
