@@ -45,9 +45,7 @@ public sealed class FeeService(
     ITenantContext tenant,
     ILiveBroadcaster live,
     IAnnouncementService announcements,
-#pragma warning disable CS9113 // Parameter is unread — kept for Task 3 (payment-time notification)
     IAuthDao auth,
-#pragma warning restore CS9113
     ILogger<FeeService> logger) : IFeeService
 {
     public async Task<ApiResult<IReadOnlyList<FeePaymentResponse>>> ListPaymentsAsync(Guid? studentId, CancellationToken ct = default) =>
@@ -168,8 +166,42 @@ public sealed class FeeService(
         if (payment is null)
             return ApiResult<FeePaymentResponse>.Fail(new Error("conflict", "invoice already paid"), 409);
 
+        if (await roster.GetAsync(inv.StudentId, ct) is { } student)
+            await NotifyGuardianOnPaymentBestEffortAsync(tid, student, inv, payment, ct);
+
         await live.PublishAsync(tid, LiveEventTypes.Fees, ct: ct);
         return ApiResult<FeePaymentResponse>.Ok(payment);
+    }
+
+    /// Fires one email+in-app notification for the paying student's guardian, only when a
+    /// genuinely new FeePayment was just created (never on idempotent replay or an
+    /// already-paid conflict — both return before this method is ever called). Best-effort:
+    /// a notify failure never blocks or rolls back the payment already committed above.
+    private async Task NotifyGuardianOnPaymentBestEffortAsync(
+        Guid tenantId, StudentResponse student, FeeInvoiceResponse invoice, FeePaymentResponse payment, CancellationToken ct)
+    {
+        var email = (student.GuardianEmail ?? "").Trim();
+        var phone = (student.GuardianPhone ?? "").Trim();
+        if (email.Length == 0 && phone.Length == 0) return;
+
+        var period = invoice.Period ?? "fee";
+        var body = $"Invoice for {period} for {student.Name} has been paid successfully. " +
+                   $"Amount received: {payment.Amount:N0}. Payment method: {payment.Method ?? "Cash"}.";
+        Guid? userId = email.Length > 0 ? (await auth.GetByEmailAndTenantAsync(email, tenantId, ct))?.Id : null;
+
+        try
+        {
+            await announcements.CreateAsync(new CreateAnnouncementRequest(
+                "Invoice Paid", body, "fee_payment", "specific",
+                email.Length > 0 ? [email] : null,
+                phone.Length > 0 ? [phone] : null,
+                ["email", "app"],
+                UserId: userId), tenant.UserId, null, ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Fee-payment notification failed for student {StudentId}, payment still recorded", student.Id);
+        }
     }
 
     private static string? FirstNonEmpty(params string?[] values)
