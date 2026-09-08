@@ -98,13 +98,16 @@ public sealed class AnnouncementService(
                 var notice = AnnouncementNoticeEmail.Build(new AnnouncementNoticeEmail.Model(
                     schoolName, kind, displayTitle, dateLabel, details));
                 byte[]? noticePdfBytes = null;
-                try
+                if (string.IsNullOrWhiteSpace(req.AttachmentBase64))
                 {
-                    noticePdfBytes = noticePdf.Generate(new NoticePdfModel(schoolName, kind, displayTitle, dateLabel, details));
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Notice PDF generation failed for announcement {Id}", created.Id);
+                    try
+                    {
+                        noticePdfBytes = noticePdf.Generate(new NoticePdfModel(schoolName, kind, displayTitle, dateLabel, details));
+                    }
+                    catch (Exception ex)
+                    {
+                        logger.LogWarning(ex, "Notice PDF generation failed for announcement {Id}", created.Id);
+                    }
                 }
                 var noticeFile = $"Catre-Notice-{SanitizeFile(kind)}-{DateTime.UtcNow:yyyyMMdd}.pdf";
 
