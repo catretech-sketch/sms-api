@@ -35,7 +35,6 @@ public interface IFeeService
     Task<ApiResult<FeeReportSummaryResponse>> GetReportSummaryAsync(CancellationToken ct = default);
 }
 
-#pragma warning disable CS9113 // Parameter is unread — kept for Task 3 (payment-time notification)
 public sealed class FeeService(
     FeeRepository payments,
     FeeInvoiceRepository invoices,
@@ -46,9 +45,10 @@ public sealed class FeeService(
     ITenantContext tenant,
     ILiveBroadcaster live,
     IAnnouncementService announcements,
+#pragma warning disable CS9113 // Parameter is unread — kept for Task 3 (payment-time notification)
     IAuthDao auth,
-    ILogger<FeeService> logger) : IFeeService
 #pragma warning restore CS9113
+    ILogger<FeeService> logger) : IFeeService
 {
     public async Task<ApiResult<IReadOnlyList<FeePaymentResponse>>> ListPaymentsAsync(Guid? studentId, CancellationToken ct = default) =>
         ApiResult<IReadOnlyList<FeePaymentResponse>>.Ok(await payments.ListAsync(studentId, ct));
@@ -255,9 +255,35 @@ public sealed class FeeService(
         if (status is not ("active" or "inactive"))
             return ApiResult<FeeStructureResponse>.Fail(new Error("validation_error", "Status must be active or inactive"), 400);
 
+        var previous = await structures.GetAsync(ct);
+        var wasActive = previous is not null
+            && string.Equals(previous.Status, "active", StringComparison.OrdinalIgnoreCase);
+
         var amountsJson = SerializeAmounts(req.Amounts, req.AmountsJson);
         var saved = await structures.UpsertAsync(tid, req with { Status = status }, amountsJson, ct);
+
+        if (status == "active" && !wasActive)
+            await NotifyStructureActivationBestEffortAsync(req.AcademicYear!.Trim(), ct);
+
         return ApiResult<FeeStructureResponse>.Ok(ToResponse(saved!));
+    }
+
+    /// Fires an in-app-only notification the first time a fee structure becomes active (not on
+    /// every subsequent save while already active). Best-effort: never blocks the save.
+    private async Task NotifyStructureActivationBestEffortAsync(string academicYear, CancellationToken ct)
+    {
+        try
+        {
+            await announcements.CreateAsync(new CreateAnnouncementRequest(
+                "Fee Structure Published",
+                $"A new fee structure for {academicYear} has been published. Please check the updated fee details in the Parent App.",
+                "fee_structure", "parents",
+                Channels: ["app"]), tenant.UserId, null, ct);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Fee-structure activation notification failed, structure save still succeeded");
+        }
     }
 
     public async Task<ApiResult<GenerateFeeInvoicesResponse>> GenerateInvoicesAsync(
