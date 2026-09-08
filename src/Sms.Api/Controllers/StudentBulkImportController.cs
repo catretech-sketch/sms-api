@@ -23,6 +23,16 @@ public sealed class StudentBulkImportController(IStudentBulkImportService bulkIm
     // Sms.Api/Filters/SkipModelValidationAttribute.cs for the full rationale.
     [HttpPost("batch")]
     [SkipModelValidation]
-    public async Task<IActionResult> Batch([FromBody] BulkImportBatchRequest req, CancellationToken ct) =>
-        FromResult(await bulkImport.ProcessBatchAsync(req, ct));
+    public async Task<IActionResult> Batch([FromBody] BulkImportBatchRequest? req, CancellationToken ct)
+    {
+        // Defence in depth behind SkipModelValidationAttribute: that filter now preserves body
+        // binding failures so ModelStateInvalidFilter returns 400 before we get here, but if a
+        // body ever fails to bind without a recorded ModelState error (empty body, an
+        // application/json request with no content), `req` is null and dereferencing it in the
+        // service would be an unhandled NullReferenceException — a 500 for the whole batch.
+        if (req is null)
+            return BadRequestResult("request body is required");
+
+        return FromResult(await bulkImport.ProcessBatchAsync(req, ct));
+    }
 }

@@ -361,6 +361,87 @@ public class StudentBulkImportServiceTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task ProcessBatch_a_non_guid_route_id_returns_400_not_500()
+    {
+        await using var app = App();
+        var client = TenantClient(app, Guid.NewGuid());
+
+        // Real admin CSVs carry route NAMES, not GUIDs. If the client fails to resolve one, the
+        // raw name reaches transport.route_id. System.Text.Json cannot bind "Ring Road" to a Guid,
+        // so the whole body fails to bind and `req` arrives null — which used to be masked by
+        // SkipModelValidationAttribute's blanket ModelState.Clear() and blew up as a 500
+        // NullReferenceException for the entire 200-row batch.
+        const string payload = """
+        {
+            "import_id": "0f6b6a1c-2d3e-4f50-8a1b-2c3d4e5f6a7b",
+            "batch_index": 0,
+            "rows": [
+                {
+                    "row_number": 1,
+                    "create_student_request": {
+                        "admission_no": null, "name": "Bad Route Row", "gender": "M", "grade": "I", "section": "A",
+                        "roll": 0, "guardian_name": "Bad Route Row", "guardian_phone": "9876543220",
+                        "guardian_email": "badroute@example.com", "house": null, "avatar_hue": 0,
+                        "dob": "2015-01-01", "email": "badroute@example.com", "address": null
+                    },
+                    "extras_json": "{}",
+                    "transport": { "opted_in": true, "route_id": "Ring Road", "stop_id": null, "fee_head_id": null }
+                }
+            ]
+        }
+        """;
+
+        var resp = await client.PostAsync("/v1/students/bulk-import/batch",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        var responseBody = await resp.Content.ReadAsStringAsync();
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            $"a non-GUID route_id must be a clean 400, not a 500 that fails the whole batch. Actual body: {responseBody}");
+        responseBody.Should().NotContain("NullReferenceException");
+        // Actionable: the error message must name the offending field so an admin can fix the CSV.
+        responseBody.ToLowerInvariant().Should().Contain("route_id");
+    }
+
+    [Fact]
+    public async Task ProcessBatch_a_malformed_import_id_returns_400_not_a_silent_empty_guid()
+    {
+        await using var app = App();
+        var client = TenantClient(app, Guid.NewGuid());
+
+        // A malformed import_id used to be swallowed by the same ModelState.Clear() and silently
+        // coerced to Guid.Empty — a shared idempotency key across unrelated imports, which would
+        // make one import's recorded batch result replay for a completely different import.
+        const string payload = """
+        {
+            "import_id": "not-a-guid",
+            "batch_index": 0,
+            "rows": [
+                {
+                    "row_number": 1,
+                    "create_student_request": {
+                        "admission_no": null, "name": "Bad Import Id Row", "gender": "M", "grade": "I", "section": "A",
+                        "roll": 0, "guardian_name": "Bad Import Id Row", "guardian_phone": "9876543221",
+                        "guardian_email": "badimport@example.com", "house": null, "avatar_hue": 0,
+                        "dob": "2015-01-01", "email": "badimport@example.com", "address": null
+                    },
+                    "extras_json": "{}",
+                    "transport": null
+                }
+            ]
+        }
+        """;
+
+        var resp = await client.PostAsync("/v1/students/bulk-import/batch",
+            new StringContent(payload, Encoding.UTF8, "application/json"));
+
+        var responseBody = await resp.Content.ReadAsStringAsync();
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest,
+            $"a malformed import_id must be rejected, never coerced to Guid.Empty. Actual body: {responseBody}");
+        responseBody.Should().NotContain("NullReferenceException");
+        responseBody.ToLowerInvariant().Should().Contain("import_id");
+    }
+
+    [Fact]
     public async Task ProcessBatch_only_creates_students_in_the_caller_tenant()
     {
         await using var app = App();
