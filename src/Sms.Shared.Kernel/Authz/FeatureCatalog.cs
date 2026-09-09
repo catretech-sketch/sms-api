@@ -8,6 +8,7 @@ public static class FeatureCatalog
     public const string TransportGps = "transport.gps";
     public const string SupportDedicated = "support.dedicated";
     public const string AiSearch = "ai_search";
+    public const string OnlineFeePayment = "fees.online_payment";
 
     // Gold
     public const string HrPayroll = "hr_payroll";
@@ -39,6 +40,6 @@ public static class FeatureCatalog
         Sis, Academics, Attendance, Exams, Fees, Communication, Operations, Library, Transport, Hostel, Sports,
         ExamsDatesheet, ReportsCsv, AnalyticsAdvanced, CommsTargeted,
         HrPayroll, StaffSupport, AnalyticsWeakStudents, ReportingAdvanced, AiSearch,
-        AttendanceGeofence, TransportGps, SupportDedicated,
+        AttendanceGeofence, TransportGps, SupportDedicated, OnlineFeePayment,
     ];
 }

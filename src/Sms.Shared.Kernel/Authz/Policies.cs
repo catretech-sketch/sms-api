@@ -6,6 +6,7 @@ public static class Policies
     public const string PlatformOnly = "platform.only";          // Catre team
     public const string SchoolAdmin = "school.admin";
     public const string SchoolOwner = "school.owner";            // school's founding owner; admin-equivalent powers
+    public const string SchoolOwnerOnly = "school.owner.only";   // strictly Owner — narrower than SchoolAdmin/Principal, which also accept SchoolOwner
     public const string Principal = "school.principal";
     public const string Teacher = "school.teacher";
     public const string Staff = "staff";
