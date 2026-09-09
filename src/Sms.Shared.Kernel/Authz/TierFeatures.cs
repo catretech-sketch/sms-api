@@ -21,7 +21,7 @@ public static class TierFeatures
         FeatureCatalog.Operations, FeatureCatalog.Library, FeatureCatalog.Transport, FeatureCatalog.Hostel,
         FeatureCatalog.Sports, FeatureCatalog.HrPayroll, FeatureCatalog.StaffSupport,
         FeatureCatalog.AttendanceGeofence, FeatureCatalog.TransportGps, FeatureCatalog.SupportDedicated,
-        FeatureCatalog.AiSearch,
+        FeatureCatalog.AiSearch, FeatureCatalog.OnlineFeePayment,
     ];
 
     public static IReadOnlyCollection<string> For(string tier)

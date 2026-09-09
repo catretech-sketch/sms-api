@@ -115,6 +115,8 @@ public static class ServiceCollectionExtensions
         builder.Services.AddHttpClient("razorpay");
         builder.Services.AddSingleton<IRazorpayClient, RazorpayClient>();
         builder.Services.AddSingleton<IRazorpayGateway, RazorpayGateway>();
+        builder.Services.AddScoped<Sms.Modules.Finance.FeePaymentOrderRepository>();
+        builder.Services.AddScoped<IFeeOnlinePaymentService, FeeOnlinePaymentService>();
         builder.Services.Configure<AiSearchOptions>(builder.Configuration.GetSection(AiSearchOptions.SectionName));
         builder.Services.AddHttpClient("claude", (sp, client) =>
         {

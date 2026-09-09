@@ -11,7 +11,7 @@ namespace Sms.Api.Controllers;
 
 [Route("v1")]
 [Authorize]
-public sealed class FeeController(IFeeService fees, ISisService sis) : ApiControllerBase
+public sealed class FeeController(IFeeService fees, ISisService sis, IFeeOnlinePaymentService onlinePayments) : ApiControllerBase
 {
     [HttpGet("fees/payments")]
     public async Task<IActionResult> ListPayments([FromQuery(Name = "student_id")] Guid? studentId, CancellationToken ct)
@@ -60,6 +60,18 @@ public sealed class FeeController(IFeeService fees, ISisService sis) : ApiContro
         if (!RoleChecks.IsStaff(User) && !await sis.IsLinkedToCallerAsync(inv.StudentId, ct))
             return ForbiddenResult("not your linked student");
         return FromResult(await fees.PayInvoiceAsync(id, req, ct));
+    }
+
+    [HttpPost("fees/invoices/{id:guid}/razorpay/order")]
+    public async Task<IActionResult> CreateRazorpayOrder(Guid id, CancellationToken ct)
+    {
+        var inv = await fees.GetInvoiceAsync(id, ct);
+        if (inv is null)
+            return NotFoundResult();
+        var isStaff = RoleChecks.IsStaff(User);
+        if (!isStaff && !await sis.IsLinkedToCallerAsync(inv.StudentId, ct))
+            return ForbiddenResult("not your linked student");
+        return FromResult(await onlinePayments.CreateOrderAsync(id, isStaff, ct));
     }
 
     [HttpGet("fees/heads")]
