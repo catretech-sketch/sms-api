@@ -176,7 +176,11 @@ public class DashboardTests(SqlServerFixture fx)
         var userId = Guid.NewGuid();
         var client = StaffClient(app, tenantId, userId);
 
-        var now = DateTime.UtcNow;
+        // Anchored to noon UTC (not DateTime.UtcNow) so check-in/check-out never straddle the
+        // UTC day boundary — hours-per-day pairing groups punches by the calendar day of their
+        // own timestamp, so a run near midnight would otherwise split this pair across two days
+        // and make this test flaky.
+        var now = DateTime.UtcNow.Date.AddHours(12);
         (await client.PostAsJsonAsync("/v1/staff/attendance/check-in",
             new { at = now.AddHours(-3), lat = 0.0, lng = 0.0, accuracy_meters = 0 }))
             .StatusCode.Should().Be(HttpStatusCode.Created);

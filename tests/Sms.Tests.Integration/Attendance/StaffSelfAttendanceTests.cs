@@ -112,10 +112,15 @@ public class StaffSelfAttendanceTests(SqlServerFixture fx)
         var client = StaffClient(app, tenantId, Guid.NewGuid());
         await SetSchoolLocation(client);
 
+        // Anchored to noon UTC (not DateTime.UtcNow) so check-in/check-out never straddle the
+        // UTC day boundary — PunchAsync buckets each punch by the calendar day of its own
+        // timestamp, so a run near midnight would otherwise put check-in and check-out in
+        // different day-buckets and make this test flaky.
+        var shiftEnd = DateTime.UtcNow.Date.AddHours(12);
         await client.PostAsJsonAsync("/v1/staff/attendance/check-in",
-            new { at = DateTime.UtcNow.AddHours(-1), lat = SchoolLat, lng = SchoolLng, accuracy_meters = 5 });
+            new { at = shiftEnd.AddHours(-1), lat = SchoolLat, lng = SchoolLng, accuracy_meters = 5 });
         var data = await Data(await client.PostAsJsonAsync("/v1/staff/attendance/check-out",
-            new { at = DateTime.UtcNow, lat = SchoolLat, lng = SchoolLng, accuracy_meters = 5 }), HttpStatusCode.Created);
+            new { at = shiftEnd, lat = SchoolLat, lng = SchoolLng, accuracy_meters = 5 }), HttpStatusCode.Created);
 
         data.GetProperty("checked_in").GetBoolean().Should().BeFalse();
         var log = data.GetProperty("last_log").EnumerateArray().ToList();
