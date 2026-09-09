@@ -9,6 +9,8 @@ using Sms.Shared.Kernel.Results;
 
 namespace Sms.Api.Controllers;
 
+public sealed record RazorpayVerifyBody(string RazorpayOrderId, string RazorpayPaymentId, string RazorpaySignature);
+
 [Route("v1")]
 [Authorize]
 public sealed class FeeController(IFeeService fees, ISisService sis, IFeeOnlinePaymentService onlinePayments) : ApiControllerBase
@@ -72,6 +74,18 @@ public sealed class FeeController(IFeeService fees, ISisService sis, IFeeOnlineP
         if (!isStaff && !await sis.IsLinkedToCallerAsync(inv.StudentId, ct))
             return ForbiddenResult("not your linked student");
         return FromResult(await onlinePayments.CreateOrderAsync(id, isStaff, ct));
+    }
+
+    [HttpPost("fees/invoices/{id:guid}/razorpay/verify")]
+    public async Task<IActionResult> VerifyRazorpayPayment(Guid id, [FromBody] RazorpayVerifyBody req, CancellationToken ct)
+    {
+        var inv = await fees.GetInvoiceAsync(id, ct);
+        if (inv is null)
+            return NotFoundResult();
+        if (!RoleChecks.IsStaff(User) && !await sis.IsLinkedToCallerAsync(inv.StudentId, ct))
+            return ForbiddenResult("not your linked student");
+        return FromResult(await onlinePayments.VerifyAsync(
+            id, new RazorpayVerifyRequest(req.RazorpayOrderId, req.RazorpayPaymentId, req.RazorpaySignature), ct));
     }
 
     [HttpGet("fees/heads")]
