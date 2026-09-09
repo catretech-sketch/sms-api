@@ -109,6 +109,7 @@ public static class ServiceCollectionExtensions
         builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
         builder.Services.Configure<RazorpayOptions>(builder.Configuration.GetSection(RazorpayOptions.SectionName));
         builder.Services.AddHttpClient("razorpay");
+        builder.Services.AddSingleton<IRazorpayClient, RazorpayClient>();
         builder.Services.AddSingleton<IRazorpayGateway, RazorpayGateway>();
         builder.Services.Configure<AiSearchOptions>(builder.Configuration.GetSection(AiSearchOptions.SectionName));
         builder.Services.AddHttpClient("claude", (sp, client) =>
