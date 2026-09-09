@@ -17,12 +17,12 @@ public interface IRazorpayClient
 /// Stateless Razorpay HTTP/HMAC client — credentials are passed per-call so the same client
 /// serves both the global platform account (Catre billing, via RazorpayGateway) and any number
 /// of per-tenant accounts (fee payments, via FeeOnlinePaymentService), with zero duplicated logic.
-public sealed class RazorpayClient(IHttpClientFactory? httpClientFactory = null, ILogger<RazorpayClient>? log = null) : IRazorpayClient
+public sealed class RazorpayClient(IHttpClientFactory httpClientFactory, ILogger<RazorpayClient> log) : IRazorpayClient
 {
     public async Task<RazorpayOrderCreated> CreateOrderAsync(
         string keyId, string keySecret, long amountPaise, string currency, string receipt, CancellationToken ct = default)
     {
-        var client = httpClientFactory!.CreateClient("razorpay");
+        var client = httpClientFactory.CreateClient("razorpay");
         var auth = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{keyId}:{keySecret}"));
         using var req = new HttpRequestMessage(HttpMethod.Post, "https://api.razorpay.com/v1/orders");
         req.Headers.Authorization = new AuthenticationHeaderValue("Basic", auth);
@@ -39,7 +39,7 @@ public sealed class RazorpayClient(IHttpClientFactory? httpClientFactory = null,
         var body = await res.Content.ReadAsStringAsync(ct);
         if (!res.IsSuccessStatusCode)
         {
-            log?.LogWarning("Razorpay order create failed: {Status} {Body}", (int)res.StatusCode, body);
+            log.LogWarning("Razorpay order create failed: {Status} {Body}", (int)res.StatusCode, body);
             throw new InvalidOperationException("Could not create Razorpay order.");
         }
 
