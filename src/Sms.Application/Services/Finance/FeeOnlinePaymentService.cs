@@ -88,7 +88,7 @@ public sealed class FeeOnlinePaymentService(
                 Mode: null,
                 Ref: req.RazorpayPaymentId,
                 StudentName: null, ClassLabel: null, Cls: null, FeeType: null, HeadId: null, HeadName: null,
-                IdempotencyKey: DeterministicGuidFrom(req.RazorpayPaymentId)),
+                IdempotencyKey: RazorpayIdempotency.KeyFor(req.RazorpayPaymentId)),
             ct);
 
         if (payment.Error is null)
@@ -96,11 +96,4 @@ public sealed class FeeOnlinePaymentService(
 
         return payment;
     }
-
-    /// PayFeeInvoiceRequest.IdempotencyKey is a Guid, but Razorpay payment ids are opaque
-    /// strings (e.g. "pay_ABC123") — deterministically derive a stable Guid from the payment id
-    /// (MD5 of the UTF-8 bytes) so the SAME payment_id always maps to the SAME idempotency key,
-    /// which is all RecordInvoicePaymentAsync's uniqueness guarantee actually requires.
-    private static Guid DeterministicGuidFrom(string value) =>
-        new(System.Security.Cryptography.MD5.HashData(System.Text.Encoding.UTF8.GetBytes(value)));
 }
