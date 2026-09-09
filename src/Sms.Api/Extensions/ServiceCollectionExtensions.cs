@@ -13,6 +13,7 @@ using Sms.Api.Services;
 using Sms.Api.Swagger;
 using Sms.Application.Services.AiSearch;
 using Sms.Application.Services.AiSearch.Handlers;
+using Sms.Application.Services.Finance;
 using Sms.Application.Services.Realtime;
 using Sms.Application.Services.Transport;
 using Sms.Application;
@@ -107,6 +108,9 @@ public static class ServiceCollectionExtensions
         builder.Services.AddHostedService<Sms.Api.Workers.TransportOfflineSweepWorker>();
         builder.Services.AddSingleton<IPaymentGateway, StubPaymentGateway>();
         builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
+        builder.Services.AddDataProtection();
+        builder.Services.AddScoped<Sms.Modules.Finance.TenantPaymentCredentialRepository>();
+        builder.Services.AddScoped<ITenantPaymentCredentialService, TenantPaymentCredentialService>();
         builder.Services.Configure<RazorpayOptions>(builder.Configuration.GetSection(RazorpayOptions.SectionName));
         builder.Services.AddHttpClient("razorpay");
         builder.Services.AddSingleton<IRazorpayClient, RazorpayClient>();
