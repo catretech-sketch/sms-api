@@ -264,6 +264,8 @@ public sealed class FeeService(
             .Where(h => h.IsTransportFeeHead)
             .Select(h => h.Id.ToString())
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var headNameById = allHeads
+            .ToDictionary(h => h.Id.ToString(), h => h.Name, StringComparer.OrdinalIgnoreCase);
         var transportAssignments = (await studentBus.ListActiveFeeHeadIdsAsync(ct))
             .ToDictionary(r => r.StudentId, r => r.FeeHeadId);
 
@@ -280,13 +282,13 @@ public sealed class FeeService(
             if (!matched) continue;
 
             var studentTransportFeeHeadId = transportAssignments.TryGetValue(student.Id, out var fh) ? fh : (Guid?)null;
-            var amount = AmountFor(amounts, label, grade, transportHeadIds, studentTransportFeeHeadId);
+            var (amount, lines) = AmountForWithLines(amounts, label, grade, transportHeadIds, studentTransportFeeHeadId, headNameById);
             if (amount <= 0) continue;
             if (await invoices.ExistsForStudentPeriodAsync(student.Id, period, ct))
                 continue;
 
-            var row = await invoices.CreateAsync(
-                tid, new CreateFeeInvoiceRequest(student.Id, period, req.DueDate, amount), ct);
+            var row = await invoices.CreateWithLinesAsync(
+                tid, student.Id, period, req.DueDate, lines, ct);
             if (row is not null) created++;
         }
 
@@ -466,31 +468,47 @@ public sealed class FeeService(
         return string.IsNullOrEmpty(section) ? grade : $"{grade}-{section}";
     }
 
-    private static decimal AmountFor(
+    /// Resolves the class's (or, failing that, the grade's) per-head amounts into the invoice
+    /// lines this specific student should be charged — transport-gated per TrySumHeads — plus
+    /// their sum. Every fee head keeps its own line so the invoice can later explain its total.
+    private static (decimal Total, List<FeeInvoiceLineInput> Lines) AmountForWithLines(
         JsonElement amounts, string classLabel, string grade,
-        IReadOnlySet<string> transportHeadIds, Guid? studentTransportFeeHeadId)
+        IReadOnlySet<string> transportHeadIds, Guid? studentTransportFeeHeadId,
+        IReadOnlyDictionary<string, string> headNameById)
     {
-        if (amounts.ValueKind != JsonValueKind.Object) return 0;
-        if (TrySumHeads(amounts, classLabel, transportHeadIds, studentTransportFeeHeadId, out var byClass) && byClass > 0) return byClass;
-        if (!string.IsNullOrWhiteSpace(grade) && TrySumHeads(amounts, grade, transportHeadIds, studentTransportFeeHeadId, out var byGrade))
-            return byGrade;
-        return 0;
+        if (amounts.ValueKind != JsonValueKind.Object) return (0, []);
+        if (TrySumHeads(amounts, classLabel, transportHeadIds, studentTransportFeeHeadId, headNameById, out var byClass, out var classLines)
+            && byClass > 0)
+            return (byClass, classLines);
+        if (!string.IsNullOrWhiteSpace(grade)
+            && TrySumHeads(amounts, grade, transportHeadIds, studentTransportFeeHeadId, headNameById, out var byGrade, out var gradeLines))
+            return (byGrade, gradeLines);
+        return (0, []);
     }
 
     /// Sums every fee head's amount for the given class/grade key, EXCEPT a transport-flagged
     /// head (transportHeadIds, by FeeHead.Id string) whose id doesn't match this specific
     /// student's own assigned transport fee head — that head is skipped for this student, exactly
     /// as if it weren't in the structure at all. Every non-transport head is unaffected.
+    /// `lines` mirrors the amounts actually summed, one per contributing head — the JSON key is
+    /// resolved to a real FeeHeadId + name when it is one, or kept as a literal label otherwise
+    /// (covers the legacy free-text head-key structures already saved before this feature).
     private static bool TrySumHeads(
         JsonElement amounts, string key,
-        IReadOnlySet<string> transportHeadIds, Guid? studentTransportFeeHeadId, out decimal total)
+        IReadOnlySet<string> transportHeadIds, Guid? studentTransportFeeHeadId,
+        IReadOnlyDictionary<string, string> headNameById,
+        out decimal total, out List<FeeInvoiceLineInput> lines)
     {
         total = 0;
+        lines = [];
         foreach (var prop in amounts.EnumerateObject())
         {
             if (!string.Equals(prop.Name, key, StringComparison.OrdinalIgnoreCase)) continue;
             if (prop.Value.ValueKind == JsonValueKind.Number && prop.Value.TryGetDecimal(out total))
+            {
+                if (total > 0) lines.Add(new FeeInvoiceLineInput(null, "Fee", total));
                 return true;
+            }
             if (prop.Value.ValueKind != JsonValueKind.Object) return false;
             foreach (var head in prop.Value.EnumerateObject())
             {
@@ -499,6 +517,10 @@ public sealed class FeeService(
                     !(studentTransportFeeHeadId is { } assigned && string.Equals(head.Name, assigned.ToString(), StringComparison.OrdinalIgnoreCase)))
                     continue;
                 total += n;
+                if (n <= 0) continue;
+                var headId = Guid.TryParse(head.Name, out var g) ? g : (Guid?)null;
+                var headName = headNameById.TryGetValue(head.Name, out var nm) ? nm : head.Name;
+                lines.Add(new FeeInvoiceLineInput(headId, headName, n));
             }
             return true;
         }

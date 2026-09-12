@@ -47,12 +47,22 @@ public sealed class FeeRepository(IDbConnectionFactory factory) : BaseRepository
 }
 
 // ---- Fee invoices (student/parent bills) ----
+
+/// <summary>One fee-head line making up an invoice's total, e.g. "Transport Fee — 500".
+/// Amount is snapshotted at invoice-generation time — later Fee Head renames/amount edits
+/// must never change an already-generated invoice's lines.</summary>
+public sealed record FeeInvoiceLineResponse(Guid? HeadId, string HeadName, decimal Amount);
+
+/// <summary>Input to CreateWithLinesAsync — same shape as the response, kept as a separate
+/// type so the generation path isn't coupled to the wire-serialized response record.</summary>
+public sealed record FeeInvoiceLineInput(Guid? HeadId, string HeadName, decimal Amount);
+
 public sealed record FeeInvoiceResponse(
     Guid Id, Guid TenantId, Guid StudentId, string? Period, DateTime? DueDate, decimal Amount,
     string Status, DateTime? PaidOn, string? Method,
     string? StudentName = null, string? ClassLabel = null, string? AdmissionNo = null,
     string? Grade = null, int? AvatarHue = null, string? PhotoUrl = null,
-    decimal PaidAmount = 0);
+    decimal PaidAmount = 0, IReadOnlyList<FeeInvoiceLineResponse> Lines = null!);
 
 public sealed record CreateFeeInvoiceRequest(Guid StudentId, string? Period, DateTime? DueDate, decimal Amount);
 
@@ -139,6 +149,56 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
         var core = await QuerySingleProcAsync<FeeInvoiceCore>("dbo.FeeInvoice_Create",
             new { TenantId = tenantId, r.StudentId, r.Period, r.DueDate, r.Amount }, ct);
         return core is null ? null : await GetAsync(core.Id, ct);
+    }
+
+    /// <summary>Invoice generation's path: creates the invoice AND its per-fee-head line items in one
+    /// transaction. Amount is the sum of the lines — the caller must not pass a total that disagrees
+    /// with them. Manual invoice creation (<see cref="CreateAsync"/>) is untouched and keeps
+    /// producing invoices with no lines, exactly as before.</summary>
+    public async Task<FeeInvoiceResponse?> CreateWithLinesAsync(
+        Guid tenantId, Guid studentId, string? period, DateTime? dueDate,
+        IReadOnlyList<FeeInvoiceLineInput> lines, CancellationToken ct = default)
+    {
+        await EnsurePaidAmountColumnAsync(ct);
+        if (lines.Count == 0) return null;
+        var total = lines.Sum(l => l.Amount);
+        if (total <= 0) return null;
+
+        var invoiceId = Guid.NewGuid();
+        await using var conn = await Factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        try
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                """
+                INSERT dbo.FeeInvoices (Id, TenantId, StudentId, Period, DueDate, Amount)
+                VALUES (@invoiceId, @tenantId, @studentId, @period, @dueDate, @total)
+                """,
+                new { invoiceId, tenantId, studentId, period, dueDate, total }, tx, cancellationToken: ct));
+
+            foreach (var line in lines)
+            {
+                await conn.ExecuteAsync(new CommandDefinition(
+                    """
+                    INSERT dbo.FeeInvoiceLines (Id, TenantId, InvoiceId, FeeHeadId, FeeHeadName, Amount)
+                    VALUES (@id, @tenantId, @invoiceId, @headId, @headName, @amount)
+                    """,
+                    new
+                    {
+                        id = Guid.NewGuid(), tenantId, invoiceId,
+                        headId = line.HeadId, headName = line.HeadName, amount = line.Amount,
+                    }, tx, cancellationToken: ct));
+            }
+
+            await tx.CommitAsync(ct);
+        }
+        catch
+        {
+            await tx.RollbackAsync(ct);
+            throw;
+        }
+
+        return await GetAsync(invoiceId, ct);
     }
 
     public async Task<FeeInvoiceResponse?> MarkPaidAsync(Guid id, string method, CancellationToken ct = default)
@@ -284,13 +344,19 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
         }
     }
 
+    private const string LineCols = "InvoiceId, FeeHeadId AS HeadId, FeeHeadName AS HeadName, Amount";
+
     public async Task<FeeInvoiceResponse?> GetAsync(Guid id, CancellationToken ct = default)
     {
         await EnsurePaidAmountColumnAsync(ct);
         var row = (await QueryInlineAsync<FeeInvoiceSqlRow>(
             $"{SelectJoined} WHERE i.Id = @id", new { id }, ct))
             .FirstOrDefault();
-        return row?.ToResponse();
+        if (row is null) return null;
+        var lines = await QueryInlineAsync<FeeInvoiceLineRow>(
+            $"SELECT {LineCols} FROM dbo.FeeInvoiceLines WHERE InvoiceId = @id ORDER BY CreatedAt",
+            new { id }, ct);
+        return row.ToResponse(lines.Select(l => l.ToResponse()).ToList());
     }
 
     public async Task<IReadOnlyList<FeeInvoiceResponse>> ListAsync(Guid? studentId, CancellationToken ct = default)
@@ -299,7 +365,18 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
         var rows = await QueryInlineAsync<FeeInvoiceSqlRow>(
             $"{SelectJoined} WHERE (@studentId IS NULL OR i.StudentId = @studentId) ORDER BY i.DueDate DESC",
             new { studentId }, ct);
-        return rows.Select(r => r.ToResponse()).ToList();
+        if (rows.Count == 0) return [];
+
+        var ids = rows.Select(r => r.Id).ToList();
+        var allLines = await QueryInlineAsync<FeeInvoiceLineRow>(
+            $"SELECT {LineCols} FROM dbo.FeeInvoiceLines WHERE InvoiceId IN @ids ORDER BY CreatedAt",
+            new { ids }, ct);
+        var byInvoice = allLines
+            .GroupBy(l => l.InvoiceId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<FeeInvoiceLineResponse>)g.Select(l => l.ToResponse()).ToList());
+
+        return rows.Select(r => r.ToResponse(
+            byInvoice.TryGetValue(r.Id, out var ls) ? ls : [])).ToList();
     }
 
     public async Task<bool> ExistsForStudentPeriodAsync(Guid studentId, string period, CancellationToken ct = default)
@@ -336,6 +413,16 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
         Guid Id, Guid TenantId, Guid StudentId, string? Period, DateTime? DueDate, decimal Amount,
         string Status, DateTime? PaidOn, string? Method);
 
+    private sealed class FeeInvoiceLineRow
+    {
+        public Guid InvoiceId { get; set; }
+        public Guid? HeadId { get; set; }
+        public string HeadName { get; set; } = "";
+        public decimal Amount { get; set; }
+
+        public FeeInvoiceLineResponse ToResponse() => new(HeadId, HeadName, Amount);
+    }
+
     private sealed class FeeInvoiceSqlRow
     {
         public Guid Id { get; set; }
@@ -355,9 +442,9 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
         public string? PhotoUrl { get; set; }
         public decimal PaidAmount { get; set; }
 
-        public FeeInvoiceResponse ToResponse() => new(
+        public FeeInvoiceResponse ToResponse(IReadOnlyList<FeeInvoiceLineResponse> lines) => new(
             Id, TenantId, StudentId, Period, DueDate, Amount, Status, PaidOn, Method,
-            StudentName, ClassLabel, AdmissionNo, Grade, AvatarHue, PhotoUrl, PaidAmount);
+            StudentName, ClassLabel, AdmissionNo, Grade, AvatarHue, PhotoUrl, PaidAmount, lines);
     }
 }
 
