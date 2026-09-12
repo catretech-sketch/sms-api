@@ -45,8 +45,12 @@ public sealed class SchoolIntegrationsController(ITenantPaymentCredentialService
         if (tenant.TenantId is not { } tid)
             return ForbiddenResult("no tenant context");
         if (body.Razorpay is { } r)
+            // Mode/Enabled are passed through as-given (null = omitted, leave unchanged) — the
+            // repository's MERGE COALESCEs them against the stored row, exactly like KeyId already
+            // does, so a partial body (per spec, and sms-admin's Partial<...> client type) never
+            // silently resets Mode to "test" or disables the integration.
             await credentials.UpsertAsync(tid, new UpsertTenantRazorpayRequest(
-                r.KeyId, r.KeySecret, r.WebhookSecret, r.Mode ?? "test", r.Enabled ?? false), ct);
+                r.KeyId, r.KeySecret, r.WebhookSecret, r.Mode, r.Enabled), ct);
         return await Get(ct);
     }
 

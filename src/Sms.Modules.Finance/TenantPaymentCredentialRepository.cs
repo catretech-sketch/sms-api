@@ -16,7 +16,7 @@ public sealed class TenantPaymentCredentialRepository(IDbConnectionFactory facto
 
     public Task UpsertAsync(
         Guid tenantId, string? keyId, string? keySecretEncrypted, string? webhookSecretEncrypted,
-        string mode, bool isEnabled, bool hasNewKeySecret, bool hasNewWebhookSecret, CancellationToken ct = default) =>
+        string? mode, bool? isEnabled, bool hasNewKeySecret, bool hasNewWebhookSecret, CancellationToken ct = default) =>
         ExecuteInlineAsync(
             """
             MERGE dbo.TenantPaymentCredentials AS target
@@ -25,9 +25,10 @@ public sealed class TenantPaymentCredentialRepository(IDbConnectionFactory facto
                 KeyId = COALESCE(@keyId, target.KeyId),
                 KeySecretEncrypted = CASE WHEN @hasNewKeySecret = 1 THEN @keySecretEncrypted ELSE target.KeySecretEncrypted END,
                 WebhookSecretEncrypted = CASE WHEN @hasNewWebhookSecret = 1 THEN @webhookSecretEncrypted ELSE target.WebhookSecretEncrypted END,
-                Mode = @mode, IsEnabled = @isEnabled, UpdatedAt = SYSUTCDATETIME()
+                Mode = COALESCE(@mode, target.Mode), IsEnabled = COALESCE(@isEnabled, target.IsEnabled), UpdatedAt = SYSUTCDATETIME()
             WHEN NOT MATCHED THEN INSERT (TenantId, Provider, KeyId, KeySecretEncrypted, WebhookSecretEncrypted, Mode, IsEnabled)
-                VALUES (@tenantId, 'razorpay', @keyId, @keySecretEncrypted, @webhookSecretEncrypted, @mode, @isEnabled);
+                VALUES (@tenantId, 'razorpay', @keyId, @keySecretEncrypted, @webhookSecretEncrypted,
+                    COALESCE(@mode, 'test'), COALESCE(@isEnabled, 0));
             """,
             new { tenantId, keyId, keySecretEncrypted, webhookSecretEncrypted, mode, isEnabled, hasNewKeySecret, hasNewWebhookSecret },
             ct);

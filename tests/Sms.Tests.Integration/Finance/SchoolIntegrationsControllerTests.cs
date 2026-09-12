@@ -56,6 +56,35 @@ public class SchoolIntegrationsControllerTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Partial_body_put_preserves_existing_mode_and_enabled()
+    {
+        await using var app = App(fx);
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = AuthedClient(app, tenantId, Guid.NewGuid(), "school.owner");
+
+        await client.PutAsJsonAsync("/school/integrations", new
+        {
+            razorpay = new { key_id = "rzp_test_initial", key_secret = "sekrit", webhook_secret = "whsekrit", mode = "live", enabled = true },
+        });
+
+        // Partial body: only key_id given, mode/enabled omitted entirely — must not silently reset
+        // mode back to "test" or disable the integration.
+        var put = await client.PutAsJsonAsync("/school/integrations", new
+        {
+            razorpay = new { key_id = "rzp_test_updated" },
+        });
+        put.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var get = await client.GetAsync("/school/integrations");
+        using var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync());
+        var razorpay = doc.RootElement.GetProperty("data").GetProperty("razorpay");
+        razorpay.GetProperty("key_id").GetString().Should().Be("rzp_test_updated");
+        razorpay.GetProperty("mode").GetString().Should().Be("live");
+        razorpay.GetProperty("enabled").GetBoolean().Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Principal_is_forbidden_from_configuring_razorpay()
     {
         await using var app = App(fx);
