@@ -186,6 +186,39 @@ public class PayInvoiceNotifyTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Concurrent_pay_requests_with_the_same_idempotency_key_notify_exactly_once()
+    {
+        // Regression test for the duplicate-notification race: verify and webhook (or any two callers)
+        // racing on the same payment must fire the guardian notification exactly once, not twice. One
+        // caller wins the FeePayments insert; the other must land on the idempotency-conflict path
+        // (top-of-transaction lookup finding the winner's row, or losing the unique-index race) and be
+        // handed back the winner's payment WITHOUT that being treated as "I just created this, notify".
+        var fake = new CapturingAnnouncementService();
+        var app = BuildApp(fx, fake);
+        var (tenantId, principalUserId, _, invoiceId) = await SeedInvoiceAsync(
+            fx, "guardian-race@school.test", "+91-9000000099");
+        var idempotencyKey = Guid.NewGuid();
+
+        var client1 = Client(app, tenantId, principalUserId);
+        var client2 = Client(app, tenantId, principalUserId);
+        // Deliberately a partial amount (invoice total is 8500): this keeps the invoice "partial"
+        // rather than "paid" after the winning insert commits, so the losing concurrent call reaches
+        // RecordInvoicePaymentAsync's own INSERT (and its unique-index conflict handling) instead of
+        // short-circuiting on the unrelated "invoice already fully paid" check.
+        var body = new { amount = 1500, method = "Cash", idempotency_key = idempotencyKey };
+
+        var task1 = client1.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", body);
+        var task2 = client2.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", body);
+        var responses = await Task.WhenAll(task1, task2);
+
+        responses[0].StatusCode.Should().Be(HttpStatusCode.OK);
+        responses[1].StatusCode.Should().Be(HttpStatusCode.OK);
+
+        fake.Created.Should().ContainSingle(
+            "both concurrent calls for the same payment resolved to one payment row, so exactly one notification must fire");
+    }
+
+    [Fact]
     public async Task Paying_student_A_invoice_never_notifies_student_B_guardian()
     {
         var fake = new CapturingAnnouncementService();

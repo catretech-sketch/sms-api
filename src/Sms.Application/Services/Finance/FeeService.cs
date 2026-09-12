@@ -148,9 +148,10 @@ public sealed class FeeService(
         var feeType = FirstNonEmpty(req?.FeeType, req?.HeadName, "academic") ?? "academic";
 
         FeePaymentResponse? payment;
+        bool wasCreated;
         try
         {
-            payment = await invoices.RecordInvoicePaymentAsync(
+            (payment, wasCreated) = await invoices.RecordInvoicePaymentAsync(
                 tid,
                 id,
                 new CreateFeePaymentRequest(
@@ -169,7 +170,11 @@ public sealed class FeeService(
         if (payment is null)
             return ApiResult<FeePaymentResponse>.Fail(new Error("conflict", "invoice already paid"), 409);
 
-        if (await roster.GetAsync(inv.StudentId, ct) is { } student)
+        // Only the call that genuinely inserted the FeePayments row notifies. A concurrent verify/webhook
+        // race for the same payment can have the loser land on the idempotency-conflict path and be
+        // handed back the winner's row (wasCreated=false) — without this check that would fire a second,
+        // duplicate guardian notification (email + in-app + PDF) for a single payment.
+        if (wasCreated && await roster.GetAsync(inv.StudentId, ct) is { } student)
             await NotifyGuardianOnPaymentBestEffortAsync(tid, student, inv, payment, ct);
 
         await live.PublishAsync(tid, LiveEventTypes.Fees, ct: ct);

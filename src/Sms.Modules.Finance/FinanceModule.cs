@@ -258,7 +258,15 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
             """,
             new { tenantId, key }, ct)).FirstOrDefault();
 
-    public async Task<FeePaymentResponse?> RecordInvoicePaymentAsync(
+    /// <summary>
+    /// WasCreated is true only when THIS call is the one that actually inserted the FeePayments row.
+    /// It is false whenever a payment is returned via an idempotency-key conflict path — either this
+    /// call's own top-of-transaction lookup found a row a concurrent call already committed, or this
+    /// call's INSERT lost the unique-index race to a concurrent call. Callers must only fire
+    /// once-per-payment side effects (e.g. the guardian payment notification) when WasCreated is true,
+    /// or a verify/webhook race for the same payment fires that side effect twice.
+    /// </summary>
+    public async Task<(FeePaymentResponse? Payment, bool WasCreated)> RecordInvoicePaymentAsync(
         Guid tenantId, Guid invoiceId, CreateFeePaymentRequest req, decimal amount, string method,
         Guid? actorUserId, CancellationToken ct = default)
     {
@@ -284,7 +292,7 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
                         throw new IdempotencyKeyConflictException();
                     }
                     await tx.CommitAsync(ct);
-                    return existing;
+                    return (existing, false);
                 }
             }
 
@@ -299,14 +307,14 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
             if (inv is null)
             {
                 await tx.RollbackAsync(ct);
-                return null;
+                return (null, false);
             }
 
             var remaining = Math.Max(0, inv.Amount - inv.PaidAmount);
             if (remaining <= 0 || string.Equals(inv.Status, "paid", StringComparison.OrdinalIgnoreCase))
             {
                 await tx.RollbackAsync(ct);
-                return null;
+                return (null, false);
             }
 
             var payId = Guid.NewGuid();
@@ -355,7 +363,7 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
                     throw new IdempotencyKeyConflictException();
                 }
                 await tx.CommitAsync(ct);
-                return raced;
+                return (raced, false);
             }
 
             await conn.ExecuteAsync(new CommandDefinition(
@@ -389,7 +397,7 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
                 AfterData: new { Id = payId, InvoiceId = invoiceId, Amount = amount, Method = method }), ct);
 
             await tx.CommitAsync(ct);
-            return payment;
+            return (payment, true);
         }
         catch
         {
