@@ -41,13 +41,13 @@ public class SchoolIntegrationsControllerTests(SqlServerFixture fx)
         await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var client = AuthedClient(app, tenantId, Guid.NewGuid(), "school.owner");
 
-        var put = await client.PutAsJsonAsync("/school/integrations", new
+        var put = await client.PutAsJsonAsync("/v1/school/integrations", new
         {
             razorpay = new { key_id = "rzp_test_owner", key_secret = "sekrit", webhook_secret = "whsekrit", mode = "test", enabled = true },
         });
         put.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var get = await client.GetAsync("/school/integrations");
+        var get = await client.GetAsync("/v1/school/integrations");
         using var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync());
         var razorpay = doc.RootElement.GetProperty("data").GetProperty("razorpay");
         razorpay.GetProperty("key_id").GetString().Should().Be("rzp_test_owner");
@@ -63,20 +63,20 @@ public class SchoolIntegrationsControllerTests(SqlServerFixture fx)
         await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var client = AuthedClient(app, tenantId, Guid.NewGuid(), "school.owner");
 
-        await client.PutAsJsonAsync("/school/integrations", new
+        await client.PutAsJsonAsync("/v1/school/integrations", new
         {
             razorpay = new { key_id = "rzp_test_initial", key_secret = "sekrit", webhook_secret = "whsekrit", mode = "live", enabled = true },
         });
 
         // Partial body: only key_id given, mode/enabled omitted entirely — must not silently reset
         // mode back to "test" or disable the integration.
-        var put = await client.PutAsJsonAsync("/school/integrations", new
+        var put = await client.PutAsJsonAsync("/v1/school/integrations", new
         {
             razorpay = new { key_id = "rzp_test_updated" },
         });
         put.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var get = await client.GetAsync("/school/integrations");
+        var get = await client.GetAsync("/v1/school/integrations");
         using var doc = JsonDocument.Parse(await get.Content.ReadAsStringAsync());
         var razorpay = doc.RootElement.GetProperty("data").GetProperty("razorpay");
         razorpay.GetProperty("key_id").GetString().Should().Be("rzp_test_updated");
@@ -92,7 +92,7 @@ public class SchoolIntegrationsControllerTests(SqlServerFixture fx)
         await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var client = AuthedClient(app, tenantId, Guid.NewGuid(), "principal");
 
-        var res = await client.PutAsJsonAsync("/school/integrations", new { razorpay = new { key_id = "x" } });
+        var res = await client.PutAsJsonAsync("/v1/school/integrations", new { razorpay = new { key_id = "x" } });
         res.StatusCode.Should().Be(HttpStatusCode.Forbidden);
     }
 
@@ -103,12 +103,12 @@ public class SchoolIntegrationsControllerTests(SqlServerFixture fx)
         var tenantId = Guid.NewGuid();
         await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var client = AuthedClient(app, tenantId, Guid.NewGuid(), "school.owner");
-        await client.PutAsJsonAsync("/school/integrations", new
+        await client.PutAsJsonAsync("/v1/school/integrations", new
         {
             razorpay = new { key_id = "rzp_test_v", key_secret = "s", webhook_secret = "w", mode = "test", enabled = true },
         });
 
-        var res = await client.PostAsync("/school/integrations/razorpay/verify", null);
+        var res = await client.PostAsync("/v1/school/integrations/razorpay/verify", null);
         res.StatusCode.Should().Be(HttpStatusCode.OK);
         using var doc = JsonDocument.Parse(await res.Content.ReadAsStringAsync());
         doc.RootElement.GetProperty("data").GetProperty("status").GetString().Should().BeOneOf("configured", "invalid");

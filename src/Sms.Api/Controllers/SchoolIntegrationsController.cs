@@ -9,7 +9,7 @@ namespace Sms.Api.Controllers;
 public sealed record RazorpaySettingsBody(string? KeyId, string? KeySecret, string? WebhookSecret, string? Mode, bool? Enabled);
 public sealed record SaveIntegrationsBody(RazorpaySettingsBody? Razorpay);
 
-[Route("school/integrations")]
+[Route("v1/school/integrations")]
 [Authorize]
 public sealed class SchoolIntegrationsController(ITenantPaymentCredentialService credentials, ITenantContext tenant) : ApiControllerBase
 {

@@ -2,7 +2,7 @@ using FluentMigrator;
 
 namespace Sms.Migrations;
 
-[Migration(181, "Row-Level Security: tenant predicate on TenantPaymentCredentials + FeePaymentOrders")]
+[Migration(190, "Row-Level Security: tenant predicate on TenantPaymentCredentials + FeePaymentOrders")]
 public sealed class M0181_Razorpay_Rls_Policies : Migration
 {
     public override void Up()

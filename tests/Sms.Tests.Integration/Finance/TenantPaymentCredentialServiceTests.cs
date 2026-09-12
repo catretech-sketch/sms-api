@@ -45,7 +45,7 @@ public class TenantPaymentCredentialServiceTests(SqlServerFixture fx)
 
         await using var conn = new SqlConnection(fx.ConnectionString);
         await conn.OpenAsync();
-        // dbo.TenantPaymentCredentials is tenant-RLS-scoped (M0181) — a bare connection has no
+        // dbo.TenantPaymentCredentials is tenant-RLS-scoped (M0190) — a bare connection has no
         // session context, so stamp the tenant explicitly for this raw read.
         await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
         var storedSecret = await conn.QuerySingleAsync<string>(

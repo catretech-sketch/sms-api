@@ -2,7 +2,7 @@ using FluentMigrator;
 
 namespace Sms.Migrations;
 
-[Migration(180, "Razorpay online fee payment: TenantPaymentCredentials + FeePaymentOrders")]
+[Migration(189, "Razorpay online fee payment: TenantPaymentCredentials + FeePaymentOrders")]
 public sealed class M0180_Razorpay_Fee_Payment_Schema : Migration
 {
     public override void Up()
