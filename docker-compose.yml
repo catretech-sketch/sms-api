@@ -12,4 +12,12 @@ services:
       ConnectionStrings__Sql: "Server=db;Database=Sms;User Id=sa;Password=Local_Dev_Pass123!;TrustServerCertificate=True;Encrypt=False"
       Jwt__SigningKey: "compose-dev-signing-key-at-least-32-bytes!!"
       ASPNETCORE_ENVIRONMENT: "Development"
+      # DataProtection keys must survive `docker compose restart`/recreate or every school's
+      # encrypted Razorpay secrets become permanently undecryptable — see dp-keys volume below.
+      DataProtection__KeyPath: "/app/keys"
     ports: ["5080:8080"]
+    volumes:
+      - dp-keys:/app/keys
+
+volumes:
+  dp-keys: {}

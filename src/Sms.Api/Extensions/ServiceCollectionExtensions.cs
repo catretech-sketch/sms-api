@@ -1,6 +1,7 @@
 using System.Text;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
@@ -108,7 +109,16 @@ public static class ServiceCollectionExtensions
         builder.Services.AddHostedService<Sms.Api.Workers.TransportOfflineSweepWorker>();
         builder.Services.AddSingleton<IPaymentGateway, StubPaymentGateway>();
         builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
-        builder.Services.AddDataProtection();
+        // Keys MUST be persisted somewhere durable, or every school's encrypted Razorpay secrets
+        // become permanently undecryptable on the next redeploy/restart/scale-out (CryptographicException
+        // in TenantPaymentCredentialService.GetActiveAsync). Default is a relative "keys" folder so it
+        // resolves under the container's WORKDIR (/app/keys per src/Sms.Api/Dockerfile) without hardcoding
+        // an absolute, environment-specific path here — override DataProtection:KeyPath in any real
+        // deployment to point at a genuinely durable, backed-up volume (see docker-compose.yml for the
+        // local Docker Compose dev/test wiring of this same default).
+        var dataProtectionKeyPath = builder.Configuration["DataProtection:KeyPath"] ?? "keys";
+        builder.Services.AddDataProtection()
+            .PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeyPath));
         builder.Services.AddScoped<Sms.Modules.Finance.TenantPaymentCredentialRepository>();
         builder.Services.AddScoped<ITenantPaymentCredentialService, TenantPaymentCredentialService>();
         builder.Services.Configure<RazorpayOptions>(builder.Configuration.GetSection(RazorpayOptions.SectionName));
