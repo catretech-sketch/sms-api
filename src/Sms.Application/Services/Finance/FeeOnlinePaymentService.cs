@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Sms.Application.Common;
 using Sms.Modules.Finance;
 using Sms.Shared.Kernel.Authz;
@@ -23,7 +24,8 @@ public sealed class FeeOnlinePaymentService(
     IRazorpayClient razorpay,
     FeePaymentOrderRepository orders,
     ITenantContext tenant,
-    ITenantFeatureSet features) : IFeeOnlinePaymentService
+    ITenantFeatureSet features,
+    ILogger<FeeOnlinePaymentService> logger) : IFeeOnlinePaymentService
 {
     private bool OnlinePaymentAllowed => FeatureGate.Allowed(tenant, features, FeatureCatalog.OnlineFeePayment);
 
@@ -92,7 +94,20 @@ public sealed class FeeOnlinePaymentService(
             ct);
 
         if (payment.Error is null)
+        {
             await orders.MarkStatusAsync(order.Id, "Captured", ct);
+        }
+        else
+        {
+            // Razorpay's signature verified — this money has been captured — but PayInvoiceAsync
+            // couldn't record it (e.g. the invoice was fully paid via another path in the interim).
+            // The response to the client is unchanged; this only ensures the gap doesn't vanish
+            // silently and can be reconciled manually.
+            logger.LogError(
+                "Razorpay verify: payment {PaymentId} for order {OrderId} (invoice {InvoiceId}) was " +
+                "captured by Razorpay but PayInvoiceAsync failed to record it: {ErrorCode}",
+                req.RazorpayPaymentId, req.RazorpayOrderId, invoiceId, payment.Error.Code);
+        }
 
         return payment;
     }
