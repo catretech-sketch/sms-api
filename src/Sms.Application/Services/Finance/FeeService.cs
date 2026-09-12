@@ -37,6 +37,7 @@ public sealed class FeeService(
     FeeHeadRepository heads,
     FeeStructureRepository structures,
     StudentRepository roster,
+    Sms.Modules.Transport.StudentBusRepository studentBus,
     IPaymentGateway gateway,
     ITenantContext tenant,
     ILiveBroadcaster live) : IFeeService
@@ -254,6 +255,18 @@ public sealed class FeeService(
             amounts = JsonDocument.Parse("{}").RootElement.Clone();
         }
 
+        // A transport-flagged fee head only applies to a student whose active transport
+        // assignment carries that exact FeeHeadId (StudentBusAssignments.FeeHeadId) — every other
+        // fee head still applies to everyone, unchanged. Both lookups are bulk/tenant-wide so this
+        // loop never issues a per-student query.
+        var allHeads = await heads.ListAsync(ct);
+        var transportHeadIds = allHeads
+            .Where(h => h.IsTransportFeeHead)
+            .Select(h => h.Id.ToString())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var transportAssignments = (await studentBus.ListActiveFeeHeadIdsAsync(ct))
+            .ToDictionary(r => r.StudentId, r => r.FeeHeadId);
+
         var students = await roster.ListAsync(null, null, null, null, ct);
         var period = $"{year} {term}";
         var created = 0;
@@ -266,7 +279,8 @@ public sealed class FeeService(
                 : grades.Contains(grade);
             if (!matched) continue;
 
-            var amount = AmountFor(amounts, label, grade);
+            var studentTransportFeeHeadId = transportAssignments.TryGetValue(student.Id, out var fh) ? fh : (Guid?)null;
+            var amount = AmountFor(amounts, label, grade, transportHeadIds, studentTransportFeeHeadId);
             if (amount <= 0) continue;
             if (await invoices.ExistsForStudentPeriodAsync(student.Id, period, ct))
                 continue;
@@ -452,16 +466,24 @@ public sealed class FeeService(
         return string.IsNullOrEmpty(section) ? grade : $"{grade}-{section}";
     }
 
-    private static decimal AmountFor(JsonElement amounts, string classLabel, string grade)
+    private static decimal AmountFor(
+        JsonElement amounts, string classLabel, string grade,
+        IReadOnlySet<string> transportHeadIds, Guid? studentTransportFeeHeadId)
     {
         if (amounts.ValueKind != JsonValueKind.Object) return 0;
-        if (TrySumHeads(amounts, classLabel, out var byClass) && byClass > 0) return byClass;
-        if (!string.IsNullOrWhiteSpace(grade) && TrySumHeads(amounts, grade, out var byGrade))
+        if (TrySumHeads(amounts, classLabel, transportHeadIds, studentTransportFeeHeadId, out var byClass) && byClass > 0) return byClass;
+        if (!string.IsNullOrWhiteSpace(grade) && TrySumHeads(amounts, grade, transportHeadIds, studentTransportFeeHeadId, out var byGrade))
             return byGrade;
         return 0;
     }
 
-    private static bool TrySumHeads(JsonElement amounts, string key, out decimal total)
+    /// Sums every fee head's amount for the given class/grade key, EXCEPT a transport-flagged
+    /// head (transportHeadIds, by FeeHead.Id string) whose id doesn't match this specific
+    /// student's own assigned transport fee head — that head is skipped for this student, exactly
+    /// as if it weren't in the structure at all. Every non-transport head is unaffected.
+    private static bool TrySumHeads(
+        JsonElement amounts, string key,
+        IReadOnlySet<string> transportHeadIds, Guid? studentTransportFeeHeadId, out decimal total)
     {
         total = 0;
         foreach (var prop in amounts.EnumerateObject())
@@ -472,8 +494,11 @@ public sealed class FeeService(
             if (prop.Value.ValueKind != JsonValueKind.Object) return false;
             foreach (var head in prop.Value.EnumerateObject())
             {
-                if (head.Value.ValueKind == JsonValueKind.Number && head.Value.TryGetDecimal(out var n))
-                    total += n;
+                if (head.Value.ValueKind != JsonValueKind.Number || !head.Value.TryGetDecimal(out var n)) continue;
+                if (transportHeadIds.Contains(head.Name) &&
+                    !(studentTransportFeeHeadId is { } assigned && string.Equals(head.Name, assigned.ToString(), StringComparison.OrdinalIgnoreCase)))
+                    continue;
+                total += n;
             }
             return true;
         }

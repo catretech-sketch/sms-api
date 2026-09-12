@@ -23,6 +23,11 @@ public sealed record ChildBusRow(
 /// Current transport mapping for a student (route/stop/fee head chosen, bus possibly pending). Consumed by Task 3's StudentTransportService.
 public sealed record TransportStatusRow(Guid? BusId, Guid? RouteId, Guid? StopId, Guid? FeeHeadId);
 
+/// One tenant-wide row of "this student's transport assignment carries this fee head" — used by
+/// invoice generation to decide, per student, whether a transport-flagged fee head applies. Bulk
+/// query (one row per student with an active FeeHeadId), not one lookup per student.
+public sealed record StudentTransportFeeHeadRow(Guid StudentId, Guid FeeHeadId);
+
 /// One row of the admin "Transport Students" list: a student's route/stop/fee-head/bus mapping, with
 /// MappingStatus "mapped" (has a bus) or "pending" (opted in but not yet auto/manually assigned a bus).
 public sealed record TransportMappedStudentResponse(
@@ -66,6 +71,12 @@ public sealed class StudentBusRepository(IDbConnectionFactory factory) : BaseRep
         (await QueryInlineAsync<TransportStatusRow>(
             "SELECT BusId, RouteId, StopId, FeeHeadId FROM dbo.StudentBusAssignments WHERE StudentId = @studentId",
             new { studentId }, ct)).FirstOrDefault();
+
+    /// One query for every student in the tenant with an active transport-fee-head assignment —
+    /// used by invoice generation, which must not issue a per-student lookup for this.
+    public Task<IReadOnlyList<StudentTransportFeeHeadRow>> ListActiveFeeHeadIdsAsync(CancellationToken ct = default) =>
+        QueryInlineAsync<StudentTransportFeeHeadRow>(
+            "SELECT StudentId, FeeHeadId FROM dbo.StudentBusAssignments WHERE FeeHeadId IS NOT NULL", ct: ct);
 
     public async Task<IReadOnlyList<TransportMappedStudentResponse>> ListMappedAsync(
         TransportStudentsFilter filter, CancellationToken ct = default)
