@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using FluentAssertions;
@@ -9,7 +10,9 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.SqlClient;
 using Dapper;
 using Microsoft.Extensions.DependencyInjection;
+using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Payments;
+using Sms.Shared.Kernel.Time;
 using Xunit;
 
 namespace Sms.Tests.Integration.Finance;
@@ -39,10 +42,11 @@ public class RazorpayFeeWebhookTests(SqlServerFixture fx)
             b.ConfigureTestServices(services => services.AddSingleton<IRazorpayClient>(new FakeRazorpayClient(signatureValid)));
         });
 
-    private static async Task<(Guid tenantId, Guid invoiceId, string orderId)> SeedOrderAsync(
+    private static async Task<(Guid tenantId, Guid principalUserId, Guid invoiceId, string orderId)> SeedOrderAsync(
         WebApplicationFactory<Program> app, SqlServerFixture fx)
     {
         var tenantId = Guid.NewGuid();
+        var principalUserId = Guid.NewGuid();
         var studentId = Guid.NewGuid();
         var invoiceId = Guid.NewGuid();
         var orderId = $"order_webhook_{Guid.NewGuid():N}";
@@ -50,6 +54,9 @@ public class RazorpayFeeWebhookTests(SqlServerFixture fx)
         await using var conn = new SqlConnection(fx.ConnectionString);
         await conn.OpenAsync();
         await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+        await conn.ExecuteAsync(
+            "INSERT dbo.Users (Id, TenantId, Name) VALUES (@principalUserId, @tenantId, 'Priya Principal')",
+            new { principalUserId, tenantId });
         await conn.ExecuteAsync(
             "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name, Status, Grade) " +
             "VALUES (@studentId, @tenantId, 'A400', 'Webhook Kid', 'active', '8')", new { studentId, tenantId });
@@ -70,7 +77,7 @@ public class RazorpayFeeWebhookTests(SqlServerFixture fx)
         await conn.ExecuteAsync(
             "INSERT dbo.FeePaymentOrders (Id, TenantId, InvoiceId, RazorpayOrderId, AmountPaise, Status, InitiatedBy) " +
             "VALUES (NEWID(), @tenantId, @invoiceId, @orderId, 200000, 'Created', 'parent')", new { tenantId, invoiceId, orderId });
-        return (tenantId, invoiceId, orderId);
+        return (tenantId, principalUserId, invoiceId, orderId);
     }
 
     private static StringContent WebhookBody(string orderId, string paymentId, string evt = "payment.captured") =>
@@ -80,11 +87,30 @@ public class RazorpayFeeWebhookTests(SqlServerFixture fx)
             payload = new { payment = new { entity = new { order_id = orderId, id = paymentId } } },
         }), Encoding.UTF8, "application/json");
 
+    // Mirrors RazorpayVerifyPaymentTests.AuthedClient — same signing key, same JwtTokenService shape,
+    // so a genuine cross-path (Task 5 verify + Task 6 webhook) scenario can be exercised in this file.
+    private static HttpClient AuthedClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId, string role)
+    {
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = SigningKey, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(userId, tenantId, new[] { role }, isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+        return client;
+    }
+
+    private static Task<HttpResponseMessage> VerifyAsync(HttpClient client, Guid invoiceId, string orderId, string paymentId) =>
+        client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/razorpay/verify", new
+        {
+            razorpay_order_id = orderId, razorpay_payment_id = paymentId, razorpay_signature = "any-value-fake-client-accepts-everything",
+        });
+
     [Fact]
     public async Task Payment_captured_webhook_records_payment_without_any_client_confirm()
     {
         await using var app = App(fx);
-        var (tenantId, invoiceId, orderId) = await SeedOrderAsync(app, fx);
+        var (tenantId, _, invoiceId, orderId) = await SeedOrderAsync(app, fx);
         var client = app.CreateClient();
 
         var res = await client.PostAsync("/v1/webhooks/razorpay-fees",
@@ -100,10 +126,10 @@ public class RazorpayFeeWebhookTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task Webhook_after_client_verify_already_processed_it_does_not_duplicate()
+    public async Task Duplicate_webhook_delivery_does_not_duplicate_payment()
     {
         await using var app = App(fx);
-        var (tenantId, invoiceId, orderId) = await SeedOrderAsync(app, fx);
+        var (tenantId, _, invoiceId, orderId) = await SeedOrderAsync(app, fx);
         var client = app.CreateClient();
         const string paymentId = "pay_RACE";
 
@@ -120,11 +146,72 @@ public class RazorpayFeeWebhookTests(SqlServerFixture fx)
         paymentCount.Should().Be(1);
     }
 
+    // This is the actual Task-5-verify-then-Task-6-webhook race the brief's Step 4 shared-helper
+    // extraction exists to protect against: the client's browser calls /razorpay/verify right after
+    // Razorpay's checkout.js redirect completes, and Razorpay's own webhook for the same payment can
+    // land moments later (or even first, if the client's tab closes before the verify call returns).
+    // Both paths must derive the same idempotency Guid from the same razorpay_payment_id so the
+    // (TenantId, IdempotencyKey) unique constraint — not luck — is what prevents a double-charge.
+    [Fact]
+    public async Task Verify_then_webhook_for_same_payment_does_not_duplicate()
+    {
+        await using var app = App(fx);
+        var (tenantId, principalUserId, invoiceId, orderId) = await SeedOrderAsync(app, fx);
+        const string paymentId = "pay_CROSSPATH_VW";
+
+        var authedClient = AuthedClient(app, tenantId, principalUserId, "principal");
+        var verifyRes = await VerifyAsync(authedClient, invoiceId, orderId, paymentId);
+        verifyRes.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var anonClient = app.CreateClient();
+        var webhookRes = await anonClient.PostAsync("/v1/webhooks/razorpay-fees", WebhookBody(orderId, paymentId));
+        webhookRes.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await using var conn = new SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+        var paymentCount = await conn.QuerySingleAsync<int>(
+            "SELECT COUNT(*) FROM dbo.FeePayments WHERE InvoiceId = @invoiceId", new { invoiceId });
+        paymentCount.Should().Be(1);
+        var status = await conn.QuerySingleAsync<string>(
+            "SELECT Status FROM dbo.FeeInvoices WHERE Id = @invoiceId", new { invoiceId });
+        status.Should().Be("paid");
+    }
+
+    // The reverse ordering: Razorpay's webhook can beat the client's own verify call back to the
+    // server (e.g. the guardian's browser is slow or the tab is backgrounded). Same guarantee, other
+    // direction — still exactly one FeePayments row for the shared payment id.
+    [Fact]
+    public async Task Webhook_then_verify_for_same_payment_does_not_duplicate()
+    {
+        await using var app = App(fx);
+        var (tenantId, principalUserId, invoiceId, orderId) = await SeedOrderAsync(app, fx);
+        const string paymentId = "pay_CROSSPATH_WV";
+
+        var anonClient = app.CreateClient();
+        var webhookRes = await anonClient.PostAsync("/v1/webhooks/razorpay-fees", WebhookBody(orderId, paymentId));
+        webhookRes.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var authedClient = AuthedClient(app, tenantId, principalUserId, "principal");
+        var verifyRes = await VerifyAsync(authedClient, invoiceId, orderId, paymentId);
+        verifyRes.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await using var conn = new SqlConnection(fx.ConnectionString);
+        await conn.OpenAsync();
+        await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@tenantId", new { tenantId });
+        var paymentCount = await conn.QuerySingleAsync<int>(
+            "SELECT COUNT(*) FROM dbo.FeePayments WHERE InvoiceId = @invoiceId", new { invoiceId });
+        paymentCount.Should().Be(1);
+        var status = await conn.QuerySingleAsync<string>(
+            "SELECT Status FROM dbo.FeeInvoices WHERE Id = @invoiceId", new { invoiceId });
+        status.Should().Be("paid");
+    }
+
     [Fact]
     public async Task Wrong_secret_webhook_signature_is_rejected_with_no_state_change()
     {
         await using var app = App(fx, signatureValid: false);
-        var (tenantId, invoiceId, orderId) = await SeedOrderAsync(app, fx);
+        var (tenantId, _, invoiceId, orderId) = await SeedOrderAsync(app, fx);
         var client = app.CreateClient();
 
         var res = await client.PostAsync("/v1/webhooks/razorpay-fees", WebhookBody(orderId, "pay_BADSIG"));
