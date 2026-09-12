@@ -211,7 +211,8 @@ public sealed class FeeService(
                 DueAmount: Math.Max(0, invoice.Amount - (invoice.PaidAmount + payment.Amount)),
                 Status: invoice.PaidAmount + payment.Amount >= invoice.Amount ? "Paid" : "Partially paid",
                 PaymentMethod: payment.Method ?? "Cash",
-                PaymentDate: payment.Date));
+                PaymentDate: payment.Date,
+                Ref: payment.Ref));
             attachmentBase64 = Convert.ToBase64String(pdfBytes);
         }
         catch (Exception ex)

@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Sms.Application.Common;
 using Sms.Application.Services.Comms;
+using Sms.Application.Services.Finance;
 using Sms.Modules.Comms;
 using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Auth;
@@ -41,13 +42,33 @@ public class PayInvoiceNotifyTests(SqlServerFixture fx)
         }
     }
 
-    private static WebApplicationFactory<Program> BuildApp(SqlServerFixture fx, CapturingAnnouncementService fake) =>
+    /// Captures the exact model handed to the PDF generator, so a test can assert on receipt
+    /// content (e.g. the payment reference) without needing to parse the actual PDF bytes —
+    /// QuestPDF embeds a subset font with its own glyph encoding, so the rendered text is not
+    /// searchable in the raw or decompressed PDF stream.
+    private sealed class CapturingPdfGenerator : IFeeInvoicePdfGenerator
+    {
+        public FeeInvoicePdfModel? LastModel { get; private set; }
+        public byte[] Generate(FeeInvoicePdfModel model)
+        {
+            LastModel = model;
+            return [1, 2, 3];
+        }
+    }
+
+    private static WebApplicationFactory<Program> BuildApp(
+        SqlServerFixture fx, CapturingAnnouncementService fake, CapturingPdfGenerator? pdfFake = null) =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(b =>
         {
             b.UseSetting("environment", "Production");
             b.UseSetting("ConnectionStrings:Sql", fx.ConnectionString);
             b.UseSetting("Jwt:SigningKey", Key);
-            b.ConfigureTestServices(services => services.AddScoped<IAnnouncementService>(_ => fake));
+            b.ConfigureTestServices(services =>
+            {
+                services.AddScoped<IAnnouncementService>(_ => fake);
+                if (pdfFake is not null)
+                    services.AddScoped<IFeeInvoicePdfGenerator>(_ => pdfFake);
+            });
         });
 
     private static async Task<(Guid tenantId, Guid principalUserId, Guid studentId, Guid invoiceId)> SeedInvoiceAsync(
@@ -253,5 +274,39 @@ public class PayInvoiceNotifyTests(SqlServerFixture fx)
 
         fake.Created.Should().ContainSingle();
         fake.Created[0].Emails.Should().ContainSingle().Which.Should().Be("guardian-a@school.test");
+    }
+
+    [Fact]
+    public async Task Razorpay_style_payment_with_a_reference_puts_it_on_the_receipt_model()
+    {
+        var fake = new CapturingAnnouncementService();
+        var pdfFake = new CapturingPdfGenerator();
+        var app = BuildApp(fx, fake, pdfFake);
+        var (tenantId, principalUserId, _, invoiceId) = await SeedInvoiceAsync(fx, "guardian-aarav@school.test", "+91-9000000000");
+        var client = Client(app, tenantId, principalUserId);
+
+        var pay = await client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay",
+            new { amount = 8500, method = "Razorpay", @ref = "pay_QWERTY12345" });
+        pay.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        pdfFake.LastModel.Should().NotBeNull();
+        pdfFake.LastModel!.Ref.Should().Be("pay_QWERTY12345");
+    }
+
+    [Fact]
+    public async Task Cash_payment_without_a_reference_leaves_the_receipt_model_ref_empty()
+    {
+        var fake = new CapturingAnnouncementService();
+        var pdfFake = new CapturingPdfGenerator();
+        var app = BuildApp(fx, fake, pdfFake);
+        var (tenantId, principalUserId, _, invoiceId) = await SeedInvoiceAsync(fx, "guardian-aarav@school.test", "+91-9000000000");
+        var client = Client(app, tenantId, principalUserId);
+
+        var pay = await client.PostAsJsonAsync($"/v1/fees/invoices/{invoiceId}/pay", new { amount = 8500, method = "Cash" });
+        pay.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        pdfFake.LastModel.Should().NotBeNull();
+        pdfFake.LastModel!.Ref.Should().BeNullOrEmpty(
+            "a cash/manual payment with no reference must not carry a placeholder ref onto the receipt");
     }
 }

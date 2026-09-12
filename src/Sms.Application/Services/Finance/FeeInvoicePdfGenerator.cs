@@ -14,7 +14,8 @@ public sealed record FeeInvoicePdfModel(
     decimal DueAmount,
     string Status,
     string PaymentMethod,
-    DateTime PaymentDate);
+    DateTime PaymentDate,
+    string? Ref = null);
 
 public interface IFeeInvoicePdfGenerator
 {
@@ -77,6 +78,8 @@ public sealed class FeeInvoicePdfGenerator : IFeeInvoicePdfGenerator
                         Row("Due amount", $"{model.DueAmount:N2}");
                         Row("Status", model.Status);
                         Row("Payment method", model.PaymentMethod);
+                        if (!string.IsNullOrWhiteSpace(model.Ref))
+                            Row("Reference", model.Ref.Trim());
                     });
                 });
 

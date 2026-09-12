@@ -34,4 +34,33 @@ public sealed class FeeInvoicePdfGeneratorTests
 
         Assert.NotEmpty(bytes);
     }
+
+    [Fact]
+    public void Generate_does_not_throw_with_a_reference_set()
+    {
+        // QuestPDF embeds a subset font with its own glyph encoding, so the rendered text is not
+        // reliably searchable in the raw or decompressed PDF bytes — see PayInvoiceNotifyTests'
+        // CapturingPdfGenerator for the real assertion on what the Ref value actually is.
+        var gen = new FeeInvoicePdfGenerator();
+        var bytes = gen.Generate(new FeeInvoicePdfModel(
+            SchoolName: "Riverdale School", LogoUrl: null, StudentName: "Aarav Sharma",
+            Period: "Term 2 2026", Amount: 8500m, PaidAmount: 8500m, DueAmount: 0m,
+            Status: "paid", PaymentMethod: "Razorpay", PaymentDate: new DateTime(2026, 3, 15),
+            Ref: "pay_QWERTY12345"));
+
+        Assert.NotEmpty(bytes);
+    }
+
+    [Fact]
+    public void Generate_does_not_throw_without_a_reference()
+    {
+        var gen = new FeeInvoicePdfGenerator();
+        var bytes = gen.Generate(new FeeInvoicePdfModel(
+            SchoolName: "Riverdale School", LogoUrl: null, StudentName: "Aarav Sharma",
+            Period: "Term 2 2026", Amount: 8500m, PaidAmount: 8500m, DueAmount: 0m,
+            Status: "paid", PaymentMethod: "Cash", PaymentDate: new DateTime(2026, 3, 15),
+            Ref: null));
+
+        Assert.NotEmpty(bytes);
+    }
 }
