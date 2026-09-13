@@ -222,14 +222,83 @@ public sealed class FeeService(
             : ApiResult<FeeStructureResponse>.Ok(ToResponse(row));
     }
 
+    /// <summary>Publishing merges this draft's per-class fee-head amounts into whatever is
+    /// currently the live version, instead of replacing it outright — publish Transport, then
+    /// later publish Exam, and both stay billed together. A (class, head) pair present in both
+    /// takes the draft's (newer) amount; everything else from the previously-live version is
+    /// carried forward untouched. This never rewrites already-generated invoices — those keep
+    /// their own snapshotted FeeInvoiceLines regardless of what gets published later.</summary>
     public async Task<ApiResult<FeeStructurePublishResponse>> PublishStructureAsync(Guid id, CancellationToken ct = default)
     {
         if (tenant.TenantId is not { } tid)
             return ApiResult<FeeStructurePublishResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
-        var row = await structures.PublishAsync(tid, id, ct);
-        return row is null || !row.Found
-            ? ApiResult<FeeStructurePublishResponse>.Fail(new Error("not_found", "Fee structure version not found"), 404)
-            : ApiResult<FeeStructurePublishResponse>.Ok(new FeeStructurePublishResponse(row.Id!.Value, "active"));
+
+        var draft = await structures.GetByIdAsync(id, ct);
+        if (draft is null)
+            return ApiResult<FeeStructurePublishResponse>.Fail(new Error("not_found", "Fee structure version not found"), 404);
+
+        if (string.Equals(draft.Status, "active", StringComparison.OrdinalIgnoreCase))
+            return ApiResult<FeeStructurePublishResponse>.Ok(new FeeStructurePublishResponse(draft.Id, "active"));
+
+        var current = await structures.GetAsync(ct);
+        var mergedAmountsJson = current is null
+            ? draft.AmountsJson
+            : MergeAmountsJson(current.AmountsJson, draft.AmountsJson);
+
+        var req = new UpsertFeeStructureRequest(
+            draft.Id, draft.Name, draft.AcademicYear, draft.ClassGrade, draft.Section, draft.Currency,
+            DateOnly.FromDateTime(draft.EffectiveFrom),
+            draft.EffectiveTo is { } et ? DateOnly.FromDateTime(et) : null,
+            "active", draft.Description, null, mergedAmountsJson);
+
+        var saved = await structures.UpsertAsync(tid, req, mergedAmountsJson, ct);
+        return saved is null
+            ? ApiResult<FeeStructurePublishResponse>.Fail(new Error("internal_error", "publish failed"), 500)
+            : ApiResult<FeeStructurePublishResponse>.Ok(new FeeStructurePublishResponse(saved.Id, "active"));
+    }
+
+    /// <summary>Deep-merges two amounts matrices (class → headId → rate): every (class, head)
+    /// pair from <paramref name="overlayJson"/> (the draft being published) wins; every pair
+    /// only present in <paramref name="baseJson"/> (the previously-live version) is carried
+    /// forward unchanged. A class whose value is a bare number (the legacy flat-rate shape) is
+    /// taken wholesale from whichever side has it — overlay wins if both do.</summary>
+    private static string MergeAmountsJson(string? baseJson, string? overlayJson)
+    {
+        var merged = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
+
+        void Apply(string? json)
+        {
+            if (string.IsNullOrWhiteSpace(json)) return;
+            try
+            {
+                using var doc = JsonDocument.Parse(json);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object) return;
+                foreach (var classProp in doc.RootElement.EnumerateObject())
+                {
+                    if (classProp.Value.ValueKind == JsonValueKind.Number && classProp.Value.TryGetDecimal(out var flat))
+                    {
+                        merged[classProp.Name] = flat;
+                        continue;
+                    }
+                    if (classProp.Value.ValueKind != JsonValueKind.Object) continue;
+                    if (!merged.TryGetValue(classProp.Name, out var existing) || existing is not Dictionary<string, decimal> headMap)
+                    {
+                        headMap = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+                        merged[classProp.Name] = headMap;
+                    }
+                    foreach (var headProp in classProp.Value.EnumerateObject())
+                    {
+                        if (headProp.Value.ValueKind == JsonValueKind.Number && headProp.Value.TryGetDecimal(out var rate))
+                            headMap[headProp.Name] = rate;
+                    }
+                }
+            }
+            catch (JsonException) { /* ignore malformed input, merge what we can */ }
+        }
+
+        Apply(baseJson);
+        Apply(overlayJson);
+        return JsonSerializer.Serialize(merged);
     }
 
     public async Task<ApiResult> DeleteStructureAsync(Guid id, CancellationToken ct = default)
@@ -506,7 +575,11 @@ public sealed class FeeService(
                     var revenue = rate * enrolled;
                     total += revenue;
                     var headId = Guid.TryParse(byHead.Name, out var g) ? g : (Guid?)null;
-                    var headName = headNameById.TryGetValue(byHead.Name, out var nm) ? nm : byHead.Name;
+                    var headName = headNameById.TryGetValue(byHead.Name, out var nm)
+                        ? nm
+                        : headId is { } deletedId
+                            ? $"Deleted fee head ({deletedId.ToString()[..8]})"
+                            : byHead.Name;
                     byHeadName[headName] = byHeadName.GetValueOrDefault(headName) + revenue;
                     headIdByName[headName] = headId;
                     studentsByHeadName[headName] = studentsByHeadName.GetValueOrDefault(headName) + enrolled;

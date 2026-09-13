@@ -227,6 +227,62 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Publishing_a_second_fee_head_s_draft_merges_it_with_the_first_instead_of_replacing_it()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+
+        await Data(await client.PutAsJsonAsync("/v1/fees/structure", new
+        {
+            name = "Transport", academic_year = "2025-26", currency = "INR", effective_from = "2025-04-01",
+            status = "active", amounts_json = """{"X-A":{"transport-head":19000}}""",
+        }), HttpStatusCode.OK);
+
+        var examDraft = await Data(await client.PutAsJsonAsync("/v1/fees/structure", new
+        {
+            name = "Exam", academic_year = "2025-26", currency = "INR", effective_from = "2025-04-01",
+            status = "inactive", amounts_json = """{"X-A":{"exam-head":6500}}""",
+        }), HttpStatusCode.OK);
+        var examDraftId = examDraft.GetProperty("id").GetGuid();
+
+        await Data(await client.PostAsync($"/v1/fees/structures/{examDraftId}/publish", new StringContent("")), HttpStatusCode.OK);
+
+        var current = await Data(await client.GetAsync("/v1/fees/structure"), HttpStatusCode.OK);
+        current.GetProperty("id").GetGuid().Should().Be(examDraftId, "publishing updates the draft's own row in place");
+        var xa = current.GetProperty("amounts").GetProperty("X-A");
+        xa.GetProperty("transport-head").GetDecimal().Should().Be(19000, "the previously-live Transport head must survive the merge");
+        xa.GetProperty("exam-head").GetDecimal().Should().Be(6500, "the newly-published Exam head must be present too");
+    }
+
+    [Fact]
+    public async Task Publishing_a_draft_that_repeats_a_head_overrides_only_that_head_s_rate()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+
+        await Data(await client.PutAsJsonAsync("/v1/fees/structure", new
+        {
+            name = "Original rates", academic_year = "2025-26", currency = "INR", effective_from = "2025-04-01",
+            status = "active", amounts_json = """{"X-A":{"tuition":1000},"X-B":{"tuition":1000}}""",
+        }), HttpStatusCode.OK);
+
+        var raiseDraft = await Data(await client.PutAsJsonAsync("/v1/fees/structure", new
+        {
+            name = "Raise X-A only", academic_year = "2025-26", currency = "INR", effective_from = "2025-04-01",
+            status = "inactive", amounts_json = """{"X-A":{"tuition":1500}}""",
+        }), HttpStatusCode.OK);
+        var raiseDraftId = raiseDraft.GetProperty("id").GetGuid();
+
+        await Data(await client.PostAsync($"/v1/fees/structures/{raiseDraftId}/publish", new StringContent("")), HttpStatusCode.OK);
+
+        var current = await Data(await client.GetAsync("/v1/fees/structure"), HttpStatusCode.OK);
+        current.GetProperty("amounts").GetProperty("X-A").GetProperty("tuition").GetDecimal().Should().Be(1500, "the draft's newer rate wins for the class/head it touched");
+        current.GetProperty("amounts").GetProperty("X-B").GetProperty("tuition").GetDecimal().Should().Be(1000, "a class/head the draft never mentioned is carried forward untouched");
+    }
+
+    [Fact]
     public async Task A_draft_version_can_be_deleted()
     {
         await using var app = App();
@@ -350,5 +406,30 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
         headAmounts[0].GetProperty("head_name").GetString().Should().Be("Exam Fee");
         headAmounts[0].GetProperty("head_id").GetGuid().Should().Be(headId);
         headAmounts[0].GetProperty("amount").GetDecimal().Should().Be(8000);
+    }
+
+    [Fact]
+    public async Task History_list_s_head_breakdown_shows_a_readable_label_for_a_head_that_was_since_deleted()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+        await CreateStudentAsync(client, "ADM-HIST-5", "X", "A", 1);
+
+        var head = await Data(await client.PostAsJsonAsync("/v1/fees/heads", new { name = "Tour Fee" }), HttpStatusCode.Created);
+        var headId = head.GetProperty("id").GetGuid();
+
+        var saved = await SaveStructureAsync(client, "Structure with a soon-deleted head", "2025-26",
+            amountsJson: $"{{\"X-A\":{{\"{headId}\":6500}}}}");
+
+        (await client.DeleteAsync($"/v1/fees/heads/{headId}")).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var entry = await HistoryEntryAsync(client, saved.GetProperty("id").GetGuid());
+        var headAmounts = entry.GetProperty("head_amounts").EnumerateArray().ToList();
+        headAmounts.Should().HaveCount(1);
+        headAmounts[0].GetProperty("head_name").GetString().Should().NotBe(headId.ToString(),
+            "a deleted head must not surface its raw GUID as the display name");
+        headAmounts[0].GetProperty("head_name").GetString().Should().Contain("Deleted fee head");
+        headAmounts[0].GetProperty("amount").GetDecimal().Should().Be(6500);
     }
 }
