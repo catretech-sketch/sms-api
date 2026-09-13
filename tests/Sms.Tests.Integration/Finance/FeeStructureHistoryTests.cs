@@ -58,6 +58,16 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
             amounts_json = amountsJson,
         }), HttpStatusCode.OK);
 
+    private static async Task<Guid> CreateStudentAsync(HttpClient client, string admissionNo, string grade, string section, int roll) =>
+        (await Data(await client.PostAsJsonAsync("/v1/students", new
+        {
+            admission_no = admissionNo,
+            name = "History Test Kid " + admissionNo,
+            grade,
+            section,
+            roll,
+        }), HttpStatusCode.Created)).GetProperty("id").GetGuid();
+
     private static async Task<JsonElement> HistoryEntryAsync(HttpClient client, Guid id)
     {
         var history = await Data(await client.GetAsync("/v1/fees/structures"), HttpStatusCode.OK);
@@ -102,6 +112,7 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
         await using var app = App();
         var tenantId = Guid.NewGuid();
         var client = PrincipalClient(app, tenantId);
+        await CreateStudentAsync(client, "ADM-HIST-1", "X", "A", 1);
 
         await SaveStructureAsync(client, "Version A", "2024-25");
         await SaveStructureAsync(client, "Version B", "2025-26");
@@ -116,22 +127,41 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
             entry.TryGetProperty("amounts", out _).Should().BeFalse("the history list must stay light — no per-class breakdown");
             entry.TryGetProperty("created_at", out var createdAt).Should().BeTrue();
             createdAt.ValueKind.Should().NotBe(JsonValueKind.Null);
-            entry.GetProperty("total_amount").GetDecimal().Should().Be(1000);
+            entry.GetProperty("total_amount").GetDecimal().Should().Be(1000, "1 enrolled student × the 1000 rate for X-A");
         }
     }
 
     [Fact]
-    public async Task History_list_shows_a_quick_total_summed_across_every_class_and_head()
+    public async Task History_list_shows_projected_revenue_rate_times_enrolled_students_per_class()
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
         var client = PrincipalClient(app, tenantId);
+        await CreateStudentAsync(client, "ADM-HIST-2A", "X", "A", 1);
+        await CreateStudentAsync(client, "ADM-HIST-2B", "X", "A", 2);
+        await CreateStudentAsync(client, "ADM-HIST-2C", "X", "B", 1);
 
         var saved = await SaveStructureAsync(client, "Multi-head structure", "2025-26",
             amountsJson: """{"X-A":{"tuition":1000,"transport":500},"X-B":{"tuition":1000}}""");
 
+        // X-A rate 1500 × 2 students = 3000; X-B rate 1000 × 1 student = 1000; total 4000.
         var entry = await HistoryEntryAsync(client, saved.GetProperty("id").GetGuid());
-        entry.GetProperty("total_amount").GetDecimal().Should().Be(2500);
+        entry.GetProperty("total_amount").GetDecimal().Should().Be(4000);
+    }
+
+    [Fact]
+    public async Task History_list_shows_zero_revenue_for_a_class_with_no_enrolled_students()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+        // No students seeded at all.
+
+        var saved = await SaveStructureAsync(client, "Unenrolled class structure", "2025-26",
+            amountsJson: """{"X-A":{"tuition":1000}}""");
+
+        var entry = await HistoryEntryAsync(client, saved.GetProperty("id").GetGuid());
+        entry.GetProperty("total_amount").GetDecimal().Should().Be(0, "no students are enrolled in X-A, so projected revenue is 0");
     }
 
     [Fact]
@@ -228,6 +258,7 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
         await using var app = App();
         var tenantId = Guid.NewGuid();
         var client = PrincipalClient(app, tenantId);
+        await CreateStudentAsync(client, "ADM-HIST-3", "X", "A", 1);
 
         var draft = await SaveStructureAsync(client, "Original name", "2025-26", "inactive");
         var draftId = draft.GetProperty("id").GetGuid();
@@ -242,7 +273,7 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
         history.GetArrayLength().Should().Be(1, "editing an unpublished draft must not leave a second row behind");
         var entry = history.EnumerateArray().Single();
         entry.GetProperty("name").GetString().Should().Be("Edited name");
-        entry.GetProperty("total_amount").GetDecimal().Should().Be(2000);
+        entry.GetProperty("total_amount").GetDecimal().Should().Be(2000, "1 enrolled student × the edited 2000 rate for X-A");
     }
 
     [Fact]
