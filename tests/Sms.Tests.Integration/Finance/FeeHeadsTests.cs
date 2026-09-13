@@ -52,4 +52,29 @@ public class FeeHeadsTests(SqlServerFixture fx)
         rows.GetArrayLength().Should().Be(1);
         rows[0].GetProperty("is_transport_fee_head").GetBoolean().Should().BeTrue();
     }
+
+    [Fact]
+    public async Task Create_head_with_a_description_then_list_and_update_it()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = PrincipalClient(app, tenantId);
+
+        var created = await client.PostAsJsonAsync("/v1/fees/heads",
+            new { name = "Trip", description = "Annual educational trip to Mumbai, Nov 2026" });
+        created.StatusCode.Should().Be(HttpStatusCode.Created);
+        using var createdDoc = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        var headId = createdDoc.RootElement.GetProperty("data").GetProperty("id").GetGuid();
+
+        var list = await client.GetAsync("/v1/fees/heads");
+        using var listDoc = JsonDocument.Parse(await list.Content.ReadAsStringAsync());
+        var row = listDoc.RootElement.GetProperty("data").EnumerateArray().Single(r => r.GetProperty("id").GetGuid() == headId);
+        row.GetProperty("description").GetString().Should().Be("Annual educational trip to Mumbai, Nov 2026");
+
+        var updated = await client.PatchAsJsonAsync($"/v1/fees/heads/{headId}", new { description = "Trip moved to Dec 2026" });
+        updated.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var updatedDoc = JsonDocument.Parse(await updated.Content.ReadAsStringAsync());
+        updatedDoc.RootElement.GetProperty("data").GetProperty("description").GetString().Should().Be("Trip moved to Dec 2026");
+    }
 }

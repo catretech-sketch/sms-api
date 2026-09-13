@@ -390,6 +390,8 @@ public sealed class FeeService(
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         var headNameById = allHeads
             .ToDictionary(h => h.Id.ToString(), h => h.Name, StringComparer.OrdinalIgnoreCase);
+        var headDescriptionById = allHeads
+            .ToDictionary(h => h.Id.ToString(), h => h.Description, StringComparer.OrdinalIgnoreCase);
         var transportAssignments = (await studentBus.ListActiveFeeHeadIdsAsync(ct))
             .ToDictionary(r => r.StudentId, r => r.FeeHeadId);
 
@@ -406,7 +408,7 @@ public sealed class FeeService(
             if (!matched) continue;
 
             var studentTransportFeeHeadId = transportAssignments.TryGetValue(student.Id, out var fh) ? fh : (Guid?)null;
-            var (amount, lines) = AmountForWithLines(amounts, label, grade, transportHeadIds, studentTransportFeeHeadId, headNameById);
+            var (amount, lines) = AmountForWithLines(amounts, label, grade, transportHeadIds, studentTransportFeeHeadId, headNameById, headDescriptionById);
             if (amount <= 0) continue;
             if (await invoices.ExistsForStudentPeriodAsync(student.Id, period, ct))
                 continue;
@@ -679,14 +681,15 @@ public sealed class FeeService(
     private static (decimal Total, List<FeeInvoiceLineInput> Lines) AmountForWithLines(
         JsonElement amounts, string classLabel, string grade,
         IReadOnlySet<string> transportHeadIds, Guid? studentTransportFeeHeadId,
-        IReadOnlyDictionary<string, string> headNameById)
+        IReadOnlyDictionary<string, string> headNameById,
+        IReadOnlyDictionary<string, string?> headDescriptionById)
     {
         if (amounts.ValueKind != JsonValueKind.Object) return (0, []);
-        if (TrySumHeads(amounts, classLabel, transportHeadIds, studentTransportFeeHeadId, headNameById, out var byClass, out var classLines)
+        if (TrySumHeads(amounts, classLabel, transportHeadIds, studentTransportFeeHeadId, headNameById, headDescriptionById, out var byClass, out var classLines)
             && byClass > 0)
             return (byClass, classLines);
         if (!string.IsNullOrWhiteSpace(grade)
-            && TrySumHeads(amounts, grade, transportHeadIds, studentTransportFeeHeadId, headNameById, out var byGrade, out var gradeLines))
+            && TrySumHeads(amounts, grade, transportHeadIds, studentTransportFeeHeadId, headNameById, headDescriptionById, out var byGrade, out var gradeLines))
             return (byGrade, gradeLines);
         return (0, []);
     }
@@ -702,6 +705,7 @@ public sealed class FeeService(
         JsonElement amounts, string key,
         IReadOnlySet<string> transportHeadIds, Guid? studentTransportFeeHeadId,
         IReadOnlyDictionary<string, string> headNameById,
+        IReadOnlyDictionary<string, string?> headDescriptionById,
         out decimal total, out List<FeeInvoiceLineInput> lines)
     {
         total = 0;
@@ -729,7 +733,8 @@ public sealed class FeeService(
                     : headId is { } deletedId
                         ? $"Deleted fee head ({deletedId.ToString()[..8]})"
                         : head.Name;
-                lines.Add(new FeeInvoiceLineInput(headId, headName, n));
+                var description = headDescriptionById.TryGetValue(head.Name, out var desc) ? desc : null;
+                lines.Add(new FeeInvoiceLineInput(headId, headName, n, description));
             }
             return true;
         }

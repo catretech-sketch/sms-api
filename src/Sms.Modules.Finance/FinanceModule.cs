@@ -51,11 +51,11 @@ public sealed class FeeRepository(IDbConnectionFactory factory) : BaseRepository
 /// <summary>One fee-head line making up an invoice's total, e.g. "Transport Fee — 500".
 /// Amount is snapshotted at invoice-generation time — later Fee Head renames/amount edits
 /// must never change an already-generated invoice's lines.</summary>
-public sealed record FeeInvoiceLineResponse(Guid? HeadId, string HeadName, decimal Amount);
+public sealed record FeeInvoiceLineResponse(Guid? HeadId, string HeadName, decimal Amount, string? Description = null);
 
 /// <summary>Input to CreateWithLinesAsync — same shape as the response, kept as a separate
 /// type so the generation path isn't coupled to the wire-serialized response record.</summary>
-public sealed record FeeInvoiceLineInput(Guid? HeadId, string HeadName, decimal Amount);
+public sealed record FeeInvoiceLineInput(Guid? HeadId, string HeadName, decimal Amount, string? Description = null);
 
 public sealed record FeeInvoiceResponse(
     Guid Id, Guid TenantId, Guid StudentId, string? Period, DateTime? DueDate, decimal Amount,
@@ -180,13 +180,14 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
             {
                 await conn.ExecuteAsync(new CommandDefinition(
                     """
-                    INSERT dbo.FeeInvoiceLines (Id, TenantId, InvoiceId, FeeHeadId, FeeHeadName, Amount)
-                    VALUES (@id, @tenantId, @invoiceId, @headId, @headName, @amount)
+                    INSERT dbo.FeeInvoiceLines (Id, TenantId, InvoiceId, FeeHeadId, FeeHeadName, Amount, FeeHeadDescription)
+                    VALUES (@id, @tenantId, @invoiceId, @headId, @headName, @amount, @description)
                     """,
                     new
                     {
                         id = Guid.NewGuid(), tenantId, invoiceId,
                         headId = line.HeadId, headName = line.HeadName, amount = line.Amount,
+                        description = line.Description,
                     }, tx, cancellationToken: ct));
             }
 
@@ -344,7 +345,7 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
         }
     }
 
-    private const string LineCols = "InvoiceId, FeeHeadId AS HeadId, FeeHeadName AS HeadName, Amount";
+    private const string LineCols = "InvoiceId, FeeHeadId AS HeadId, FeeHeadName AS HeadName, Amount, FeeHeadDescription AS Description";
 
     public async Task<FeeInvoiceResponse?> GetAsync(Guid id, CancellationToken ct = default)
     {
@@ -419,8 +420,9 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory) : BaseRep
         public Guid? HeadId { get; set; }
         public string HeadName { get; set; } = "";
         public decimal Amount { get; set; }
+        public string? Description { get; set; }
 
-        public FeeInvoiceLineResponse ToResponse() => new(HeadId, HeadName, Amount);
+        public FeeInvoiceLineResponse ToResponse() => new(HeadId, HeadName, Amount, Description);
     }
 
     private sealed class FeeInvoiceSqlRow
@@ -605,10 +607,14 @@ public sealed class PayrollRepository(IDbConnectionFactory factory) : BaseReposi
 
 // ---- Fee heads (catalog of fee types) ----
 public sealed record FeeHeadResponse(
-    Guid Id, Guid TenantId, string Name, string? Code, bool Active, bool IsSystem, bool IsTransportFeeHead);
+    Guid Id, Guid TenantId, string Name, string? Code, bool Active, bool IsSystem, bool IsTransportFeeHead,
+    string? Description = null);
 
-public sealed record CreateFeeHeadRequest(string Name, string? Code, bool IsTransportFeeHead = false);
-public sealed record UpdateFeeHeadRequest(string? Name, string? Code, bool? Active, bool? IsTransportFeeHead = null);
+public sealed record CreateFeeHeadRequest(string Name, string? Code, bool IsTransportFeeHead = false, string? Description = null);
+/// <summary>Description follows the same "non-null means set it" convention as Code — sending
+/// a non-null Description (including "") updates it; omitting it (null) leaves it untouched.</summary>
+public sealed record UpdateFeeHeadRequest(
+    string? Name, string? Code, bool? Active, bool? IsTransportFeeHead = null, string? Description = null);
 
 public sealed class FeeHeadRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
@@ -624,6 +630,7 @@ public sealed class FeeHeadRepository(IDbConnectionFactory factory) : BaseReposi
             Active = true,
             IsSystem = false,
             r.IsTransportFeeHead,
+            Description = string.IsNullOrWhiteSpace(r.Description) ? null : r.Description.Trim(),
         }, ct);
 
     public Task<FeeHeadResponse?> UpdateAsync(
@@ -637,6 +644,8 @@ public sealed class FeeHeadRepository(IDbConnectionFactory factory) : BaseReposi
             CodeSpecified = r.Code is not null,
             r.Active,
             r.IsTransportFeeHead,
+            Description = r.Description is null ? null : (string.IsNullOrWhiteSpace(r.Description) ? null : r.Description.Trim()),
+            DescriptionSpecified = r.Description is not null,
         }, ct);
 
     public async Task<bool> IsTransportFeeHeadAsync(Guid id, Guid tenantId, CancellationToken ct = default) =>

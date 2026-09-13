@@ -75,12 +75,13 @@ public class FeeInvoiceLinesTests(SqlServerFixture fx)
         return student.GetProperty("id").GetGuid();
     }
 
-    private static async Task<Guid> CreateHeadAsync(HttpClient client, string name, bool isTransport = false)
+    private static async Task<Guid> CreateHeadAsync(HttpClient client, string name, bool isTransport = false, string? description = null)
     {
         var head = await Data(await client.PostAsJsonAsync("/v1/fees/heads", new
         {
             name,
             is_transport_fee_head = isTransport,
+            description,
         }), HttpStatusCode.Created);
         return head.GetProperty("id").GetGuid();
     }
@@ -183,6 +184,30 @@ public class FeeInvoiceLinesTests(SqlServerFixture fx)
             "a deleted head must not surface its raw GUID as the invoice line's label");
         line.GetProperty("head_name").GetString().Should().Contain("Deleted fee head");
         line.GetProperty("amount").GetDecimal().Should().Be(1000);
+    }
+
+    [Fact]
+    public async Task A_head_s_description_snapshots_onto_the_invoice_line_and_survives_the_head_being_redescribed()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = PrincipalClient(app, tenantId);
+
+        var studentId = await CreateStudentAsync(client, "ADM-LINES-DESC", 1);
+        var tripId = await CreateHeadAsync(client, "Trip Fee", description: "Annual educational trip to Mumbai");
+        await UpsertStructureAsync(client, AmountsJson((tripId, 1000)));
+
+        await GenerateInvoicesAsync(client);
+
+        // Redescribing the head afterward must not change the already-generated invoice's line.
+        (await client.PatchAsJsonAsync($"/v1/fees/heads/{tripId}", new { description = "Trip cancelled" }))
+            .StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var invoice = await GetInvoiceAsync(client, studentId);
+        var line = invoice.GetProperty("lines").EnumerateArray().Single();
+        line.GetProperty("description").GetString().Should().Be("Annual educational trip to Mumbai",
+            "the line snapshots the head's description at generation time, unaffected by later edits");
     }
 
     [Fact]
