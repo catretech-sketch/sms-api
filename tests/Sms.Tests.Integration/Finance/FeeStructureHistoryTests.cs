@@ -145,8 +145,16 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
             amountsJson: """{"X-A":{"tuition":1000,"transport":500},"X-B":{"tuition":1000}}""");
 
         // X-A rate 1500 × 2 students = 3000; X-B rate 1000 × 1 student = 1000; total 4000.
+        // tuition: (1000×2) + (1000×1) = 3000; transport: 500×2 = 1000.
         var entry = await HistoryEntryAsync(client, saved.GetProperty("id").GetGuid());
         entry.GetProperty("total_amount").GetDecimal().Should().Be(4000);
+
+        var headAmounts = entry.GetProperty("head_amounts").EnumerateArray().ToList();
+        headAmounts.Should().HaveCount(2);
+        headAmounts.Single(h => h.GetProperty("head_name").GetString() == "tuition")
+            .GetProperty("amount").GetDecimal().Should().Be(3000);
+        headAmounts.Single(h => h.GetProperty("head_name").GetString() == "transport")
+            .GetProperty("amount").GetDecimal().Should().Be(1000);
     }
 
     [Fact]
@@ -320,5 +328,27 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
         var liveEntry = history.EnumerateArray().Single(e => e.GetProperty("id").GetGuid() == publishedId);
         liveEntry.GetProperty("name").GetString().Should().Be("Live version", "the published row must be untouched");
         liveEntry.GetProperty("status").GetString().Should().Be("active");
+    }
+
+    [Fact]
+    public async Task History_list_s_head_breakdown_resolves_a_real_fee_head_id_to_its_current_name()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+        await CreateStudentAsync(client, "ADM-HIST-4", "X", "A", 1);
+
+        var head = await Data(await client.PostAsJsonAsync("/v1/fees/heads", new { name = "Exam Fee" }), HttpStatusCode.Created);
+        var headId = head.GetProperty("id").GetGuid();
+
+        var saved = await SaveStructureAsync(client, "Named head structure", "2025-26",
+            amountsJson: $"{{\"X-A\":{{\"{headId}\":8000}}}}");
+
+        var entry = await HistoryEntryAsync(client, saved.GetProperty("id").GetGuid());
+        var headAmounts = entry.GetProperty("head_amounts").EnumerateArray().ToList();
+        headAmounts.Should().HaveCount(1);
+        headAmounts[0].GetProperty("head_name").GetString().Should().Be("Exam Fee");
+        headAmounts[0].GetProperty("head_id").GetGuid().Should().Be(headId);
+        headAmounts[0].GetProperty("amount").GetDecimal().Should().Be(8000);
     }
 }

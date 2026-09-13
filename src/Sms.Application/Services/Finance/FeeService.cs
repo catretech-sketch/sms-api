@@ -208,8 +208,10 @@ public sealed class FeeService(
         var studentCountByClass = students
             .GroupBy(ClassKey, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(g => g.Key, g => g.Count(), StringComparer.OrdinalIgnoreCase);
+        var headNameById = (await heads.ListAsync(ct))
+            .ToDictionary(h => h.Id.ToString(), h => h.Name, StringComparer.OrdinalIgnoreCase);
         return ApiResult<IReadOnlyList<FeeStructureSummaryResponse>>.Ok(
-            rows.Select(r => ToSummary(r, studentCountByClass)).ToList());
+            rows.Select(r => ToSummary(r, studentCountByClass, headNameById)).ToList());
     }
 
     public async Task<ApiResult<FeeStructureResponse>> GetStructureByIdAsync(Guid id, CancellationToken ct = default)
@@ -452,50 +454,72 @@ public sealed class FeeService(
     }
 
     private static FeeStructureSummaryResponse ToSummary(
-        FeeStructureListRow row, IReadOnlyDictionary<string, int> studentCountByClass) => new(
-        row.Id, row.Name, row.AcademicYear, row.ClassGrade, row.Section, row.Currency,
-        DateOnly.FromDateTime(row.EffectiveFrom), row.EffectiveTo is { } et ? DateOnly.FromDateTime(et) : null,
-        row.Status, row.Description, row.CreatedAt, ProjectedRevenue(row.AmountsJson, studentCountByClass));
-
-    /// For each class in the amounts JSON, sums that class's fee heads into a per-student rate,
-    /// then multiplies by how many students are CURRENTLY enrolled in that class — same
-    /// "rate × headcount" idea as the Structure tab's "Expected annual collection" figure. This
-    /// is a live estimate against today's roster, not the actual amount ever invoiced (that's
-    /// only known once invoices are generated, and is fixed per invoice via FeeInvoiceLines).
-    private static decimal ProjectedRevenue(string? amountsJson, IReadOnlyDictionary<string, int> studentCountByClass)
+        FeeStructureListRow row, IReadOnlyDictionary<string, int> studentCountByClass,
+        IReadOnlyDictionary<string, string> headNameById)
     {
-        if (string.IsNullOrWhiteSpace(amountsJson)) return 0;
+        var (total, headAmounts) = ProjectedRevenue(row.AmountsJson, studentCountByClass, headNameById);
+        return new(
+            row.Id, row.Name, row.AcademicYear, row.ClassGrade, row.Section, row.Currency,
+            DateOnly.FromDateTime(row.EffectiveFrom), row.EffectiveTo is { } et ? DateOnly.FromDateTime(et) : null,
+            row.Status, row.Description, row.CreatedAt, total, headAmounts);
+    }
+
+    /// For each class in the amounts JSON, resolves each fee head's rate, multiplies by however
+    /// many students are CURRENTLY enrolled in that class (same "rate × headcount" idea as the
+    /// Structure tab's "Expected annual collection" figure), and accumulates both a grand total
+    /// and a per-fee-head total (e.g. "Exam Fee — ₹8,000") across every class that charges it.
+    /// This is a live estimate against today's roster, not the actual amount ever invoiced
+    /// (that's only known once invoices are generated, and is fixed per invoice via
+    /// FeeInvoiceLines).
+    private static (decimal Total, List<FeeStructureHeadAmountResponse> HeadAmounts) ProjectedRevenue(
+        string? amountsJson, IReadOnlyDictionary<string, int> studentCountByClass,
+        IReadOnlyDictionary<string, string> headNameById)
+    {
+        if (string.IsNullOrWhiteSpace(amountsJson)) return (0, []);
         try
         {
             using var doc = JsonDocument.Parse(amountsJson);
-            if (doc.RootElement.ValueKind != JsonValueKind.Object) return 0;
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return (0, []);
             decimal total = 0;
+            var byHeadName = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+            var headIdByName = new Dictionary<string, Guid?>(StringComparer.OrdinalIgnoreCase);
+
             foreach (var byClass in doc.RootElement.EnumerateObject())
             {
-                var classRate = SumClassAmounts(byClass.Value);
-                if (classRate <= 0) continue;
                 var enrolled = studentCountByClass.TryGetValue(byClass.Name, out var n) ? n : 0;
-                total += classRate * enrolled;
+                if (enrolled <= 0) continue;
+
+                if (byClass.Value.ValueKind == JsonValueKind.Number && byClass.Value.TryGetDecimal(out var flat))
+                {
+                    total += flat * enrolled;
+                    byHeadName["Fee"] = byHeadName.GetValueOrDefault("Fee") + flat * enrolled;
+                    headIdByName["Fee"] = null;
+                    continue;
+                }
+                if (byClass.Value.ValueKind != JsonValueKind.Object) continue;
+
+                foreach (var byHead in byClass.Value.EnumerateObject())
+                {
+                    if (byHead.Value.ValueKind != JsonValueKind.Number || !byHead.Value.TryGetDecimal(out var rate)) continue;
+                    var revenue = rate * enrolled;
+                    total += revenue;
+                    var headId = Guid.TryParse(byHead.Name, out var g) ? g : (Guid?)null;
+                    var headName = headNameById.TryGetValue(byHead.Name, out var nm) ? nm : byHead.Name;
+                    byHeadName[headName] = byHeadName.GetValueOrDefault(headName) + revenue;
+                    headIdByName[headName] = headId;
+                }
             }
-            return total;
+
+            var headAmounts = byHeadName
+                .Select(kv => new FeeStructureHeadAmountResponse(headIdByName[kv.Key], kv.Key, kv.Value))
+                .OrderByDescending(h => h.Amount)
+                .ToList();
+            return (total, headAmounts);
         }
         catch (JsonException)
         {
-            return 0;
+            return (0, []);
         }
-    }
-
-    /// Sums every fee head's rate for one class key (or the flat legacy shape: a single number
-    /// for the whole class, no per-head breakdown).
-    private static decimal SumClassAmounts(JsonElement byClassValue)
-    {
-        if (byClassValue.ValueKind == JsonValueKind.Number && byClassValue.TryGetDecimal(out var flat)) return flat;
-        if (byClassValue.ValueKind != JsonValueKind.Object) return 0;
-        decimal sum = 0;
-        foreach (var byHead in byClassValue.EnumerateObject())
-            if (byHead.Value.ValueKind == JsonValueKind.Number && byHead.Value.TryGetDecimal(out var n))
-                sum += n;
-        return sum;
     }
 
     private static FeeStructureResponse ToResponse(FeeStructureRow row)
