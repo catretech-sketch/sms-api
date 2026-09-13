@@ -724,7 +724,11 @@ public sealed class FeeService(
                 total += n;
                 if (n <= 0) continue;
                 var headId = Guid.TryParse(head.Name, out var g) ? g : (Guid?)null;
-                var headName = headNameById.TryGetValue(head.Name, out var nm) ? nm : head.Name;
+                var headName = headNameById.TryGetValue(head.Name, out var nm)
+                    ? nm
+                    : headId is { } deletedId
+                        ? $"Deleted fee head ({deletedId.ToString()[..8]})"
+                        : head.Name;
                 lines.Add(new FeeInvoiceLineInput(headId, headName, n));
             }
             return true;

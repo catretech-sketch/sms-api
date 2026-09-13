@@ -162,6 +162,30 @@ public class FeeInvoiceLinesTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task A_line_for_a_head_deleted_before_generation_gets_a_readable_label_not_its_raw_guid()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var client = PrincipalClient(app, tenantId);
+
+        var studentId = await CreateStudentAsync(client, "ADM-LINES-DEL", 1);
+        var tripId = await CreateHeadAsync(client, "Trip Fee");
+        await UpsertStructureAsync(client, AmountsJson((tripId, 1000)));
+
+        (await client.DeleteAsync($"/v1/fees/heads/{tripId}")).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        await GenerateInvoicesAsync(client);
+
+        var invoice = await GetInvoiceAsync(client, studentId);
+        var line = invoice.GetProperty("lines").EnumerateArray().Single();
+        line.GetProperty("head_name").GetString().Should().NotBe(tripId.ToString(),
+            "a deleted head must not surface its raw GUID as the invoice line's label");
+        line.GetProperty("head_name").GetString().Should().Contain("Deleted fee head");
+        line.GetProperty("amount").GetDecimal().Should().Be(1000);
+    }
+
+    [Fact]
     public async Task Invoice_total_always_equals_the_sum_of_its_lines()
     {
         await using var app = App();
