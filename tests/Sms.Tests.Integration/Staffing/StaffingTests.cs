@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Dapper;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Sms.Shared.Kernel.Auth;
@@ -67,6 +68,42 @@ public class StaffingTests(SqlServerFixture fx)
         var updated = await Data(await client.PatchAsJsonAsync($"/v1/teachers/{id}",
             new { status = "inactive" }), HttpStatusCode.OK);
         updated.GetProperty("status").GetString().Should().Be("inactive");
+    }
+
+    [Fact]
+    public async Task Teacher_get_and_list_report_the_linked_UserId_when_present()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = TenantClient(app, tenantId);
+
+        var created = await Data(await client.PostAsJsonAsync("/v1/teachers", new
+        {
+            name = "L. Menon", gender = "F", department = "Science", designation = "Teacher",
+            subjects = Array.Empty<string>(), phone = "+91 90000 22222", email = "menon@school.edu",
+            exp = 5, rating = 4.0, result = 88, load = 20, avatar_hue = 100, top = false
+        }), HttpStatusCode.Created);
+        var id = created.GetProperty("id").GetGuid();
+        created.GetProperty("user_id").ValueKind.Should().Be(JsonValueKind.Null);
+
+        var linkedUserId = Guid.NewGuid();
+        await using (var conn = new Microsoft.Data.SqlClient.SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, Name, Email) VALUES (@Id, @TenantId, 'Linked User', @Email)",
+                new { Id = linkedUserId, TenantId = tenantId, Email = $"linked-{linkedUserId}@test.local" });
+            await conn.ExecuteAsync("UPDATE dbo.Teachers SET UserId = @UserId WHERE Id = @Id",
+                new { UserId = linkedUserId, Id = id });
+        }
+
+        (await Data(await client.GetAsync($"/v1/teachers/{id}"), HttpStatusCode.OK))
+            .GetProperty("user_id").GetGuid().Should().Be(linkedUserId);
+
+        var list = await Data(await client.GetAsync("/v1/teachers"), HttpStatusCode.OK);
+        list.EnumerateArray().First(e => e.GetProperty("id").GetGuid() == id)
+            .GetProperty("user_id").GetGuid().Should().Be(linkedUserId);
     }
 
     [Fact]

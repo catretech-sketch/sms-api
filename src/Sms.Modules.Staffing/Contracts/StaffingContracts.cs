@@ -5,13 +5,13 @@ public sealed record TeacherResponse(
     Guid Id, Guid TenantId, string Name, string? Gender, string? Department, string? Designation,
     IReadOnlyList<string> Subjects, string? ClassTeacher, string? Phone, string? Email, int Exp, decimal Rating,
     decimal AttendancePct, decimal Result, int Load, string Status, int AvatarHue, bool Top,
-    string? EmployeeCode = null, string? PhotoUrl = null);
+    string? EmployeeCode = null, string? PhotoUrl = null, Guid? UserId = null);
 
 public sealed record TeacherRow(
     Guid Id, Guid TenantId, string Name, string? Gender, string? Department, string? Designation,
     string? SubjectsCsv, string? ClassTeacher, string? Phone, string? Email, int Exp, decimal Rating,
     decimal AttendancePct, decimal Result, int Load, string Status, int AvatarHue, bool Top,
-    string? EmployeeCode = null, string? PhotoUrl = null);
+    string? EmployeeCode = null, string? PhotoUrl = null, Guid? UserId = null);
 
 public sealed record CreateTeacherRequest(
     string Name, string? Gender, string? Department, string? Designation, IReadOnlyList<string>? Subjects,
@@ -53,5 +53,5 @@ public static class StaffingMappers
         r.Id, r.TenantId, r.Name, r.Gender, r.Department, r.Designation,
         string.IsNullOrEmpty(r.SubjectsCsv) ? [] : r.SubjectsCsv.Split(','),
         r.ClassTeacher, r.Phone, r.Email, r.Exp, r.Rating, r.AttendancePct, r.Result, r.Load,
-        r.Status, r.AvatarHue, r.Top, r.EmployeeCode, r.PhotoUrl);
+        r.Status, r.AvatarHue, r.Top, r.EmployeeCode, r.PhotoUrl, r.UserId);
 }

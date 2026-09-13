@@ -44,6 +44,11 @@ public sealed class StudentBusRepository(IDbConnectionFactory factory) : BaseRep
         (await QueryInlineAsync<int>(
             "SELECT COUNT(1) FROM dbo.Students WHERE Id = @studentId", new { studentId }, ct)).First() > 0;
 
+    public async Task<bool> IsStudentOnBusAsync(Guid studentId, Guid busId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<int>(
+            "SELECT COUNT(1) FROM dbo.StudentBusAssignments WHERE StudentId = @studentId AND BusId = @busId",
+            new { studentId, busId }, ct)).First() > 0;
+
     public async Task<IReadOnlyList<StudentBusAssignmentResponse>> ListByBusAsync(Guid busId, CancellationToken ct = default)
     {
         var rows = await QueryInlineAsync<AssignmentRow>(

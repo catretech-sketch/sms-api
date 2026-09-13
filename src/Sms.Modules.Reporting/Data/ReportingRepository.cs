@@ -1,11 +1,12 @@
 using System.Data;
 using Dapper;
+using Sms.Modules.Attendance;
 using Sms.Modules.Reporting.Contracts;
 using Sms.Shared.Kernel.Data;
 
 namespace Sms.Modules.Reporting.Data;
 
-public sealed class ReportingRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+public sealed class ReportingRepository(IDbConnectionFactory factory, CheckInRepository checkIns) : BaseRepository(factory)
 {
     public async Task<DashboardStatsResponse> GetDashboardStatsAsync(DateTime today, CancellationToken ct = default)
     {
@@ -275,6 +276,34 @@ ORDER BY c.Name", new { from = d, toExclusive = d.AddDays(1) }, ct);
             : 0m;
         var staff = await LoadStaffAsync(startUtc, endUtc, ct);
         return new PrincipalAttendanceResponse(d, presentTotal, studentTotal, overall, classes, staff);
+    }
+
+    /// One staff/teacher person's check-in/out history across days, for the principal's staff
+    /// attendance drill-down. Looks the person up in Teachers first, then Staff (RLS already
+    /// scopes both to the caller's tenant, so a personId from another school resolves to no
+    /// rows — same "not found" behavior as a missing id).
+    public async Task<IReadOnlyList<TeacherAttendanceDayResponse>> GetStaffAttendanceHistoryAsync(
+        Guid personId, int limit, TimeSpan utcOffset, CancellationToken ct = default)
+    {
+        var users = await QueryInlineAsync<UserRow>(
+            "SELECT Id, Email, Phone, Name FROM dbo.Users", null, ct);
+
+        var teacherRow = (await QueryInlineAsync<RosterPersonRow>(@"
+SELECT t.Id AS PersonId, t.Name, t.Email,
+       CAST(NULL AS nvarchar(50)) AS Phone, CAST(NULL AS nvarchar(200)) AS SubjectsCsv,
+       CAST(NULL AS nvarchar(64)) AS Designation, CAST(NULL AS nvarchar(64)) AS Role, t.UserId
+FROM dbo.Teachers t WHERE t.Id = @personId", new { personId }, ct)).FirstOrDefault();
+
+        var person = teacherRow ?? (await QueryInlineAsync<RosterPersonRow>(@"
+SELECT s.Id AS PersonId, s.Name, s.Email,
+       CAST(NULL AS nvarchar(50)) AS Phone, CAST(NULL AS nvarchar(200)) AS SubjectsCsv,
+       CAST(NULL AS nvarchar(64)) AS Designation, CAST(NULL AS nvarchar(64)) AS Role, s.UserId
+FROM dbo.Staff s WHERE s.Id = @personId", new { personId }, ct)).FirstOrDefault();
+
+        if (person is null) return Array.Empty<TeacherAttendanceDayResponse>();
+
+        var userIds = CandidateUserIds(person, users).ToList();
+        return await checkIns.GetHistoryAsync(userIds, limit, utcOffset, ct);
     }
 
     private static string Initials(string? name)

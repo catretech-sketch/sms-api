@@ -76,6 +76,36 @@ public class TransportAuthorizationResolverTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Teacher_can_view_a_bus_they_are_a_traveling_teacher_on_even_without_a_duty_assignment()
+    {
+        var tenantId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var otherBusId = Guid.NewGuid();
+        var teacherId = Guid.NewGuid();
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, 'BUS-1'), (@OtherId, @TenantId, 'BUS-2')",
+                new { Id = busId, OtherId = otherBusId, TenantId = tenantId });
+            // Deliberately NOT inserted into dbo.BusAssignments (no duty assignment) —
+            // access here must come solely from the traveling-teacher grant.
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.BusTravelingTeachers (Id, TenantId, BusId, TeacherUserId) VALUES (@Id, @TenantId, @BusId, @TeacherUserId)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, BusId = busId, TeacherUserId = teacherId });
+        }
+
+        await using var app = App();
+        using var scope = app.Services.CreateScope();
+        var resolver = scope.ServiceProvider.GetRequiredService<ITransportAuthorizationResolver>();
+
+        (await resolver.CanViewBusAsync(teacherId, tenantId, [Policies.Teacher], busId, default)).Should().BeTrue();
+        (await resolver.CanViewBusAsync(teacherId, tenantId, [Policies.Teacher], otherBusId, default)).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Driver_can_view_only_the_bus_of_their_own_active_trip()
     {
         var tenantId = Guid.NewGuid();

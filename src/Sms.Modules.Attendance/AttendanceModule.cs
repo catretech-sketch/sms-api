@@ -142,12 +142,21 @@ public sealed class CheckInRepository(IDbConnectionFactory factory) : BaseReposi
         return new TeacherAttendanceDayResponse(day, ci, co);
     }
 
+    public Task<IReadOnlyList<TeacherAttendanceDayResponse>> GetHistoryAsync(
+        Guid userId, int limit, TimeSpan utcOffset, CancellationToken ct = default) =>
+        GetHistoryAsync(new[] { userId }, limit, utcOffset, ct);
+
+    /// Same per-day in/out grouping as the single-user overload, merged across every login
+    /// user linked to one roster row (a teacher/staff person can have more than one account —
+    /// see ReportingRepository.CandidateUserIds).
     public async Task<IReadOnlyList<TeacherAttendanceDayResponse>> GetHistoryAsync(
-        Guid userId, int limit, TimeSpan utcOffset, CancellationToken ct = default)
+        IReadOnlyCollection<Guid> userIds, int limit, TimeSpan utcOffset, CancellationToken ct = default)
     {
+        if (userIds.Count == 0) return Array.Empty<TeacherAttendanceDayResponse>();
+
         var rows = await QueryInlineAsync<CheckInRow>(
             "SELECT Kind, At, Lat, Lng, AccuracyMeters, DistanceMeters, Verified FROM dbo.CheckIns " +
-            "WHERE UserId = @userId ORDER BY At DESC", new { userId }, ct);
+            "WHERE UserId IN @userIds ORDER BY At DESC", new { userIds }, ct);
 
         return rows.GroupBy(r => DateOnly.FromDateTime(r.At.Add(utcOffset)))
             .OrderByDescending(g => g.Key)

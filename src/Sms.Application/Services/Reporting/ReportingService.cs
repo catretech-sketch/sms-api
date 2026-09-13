@@ -1,4 +1,5 @@
 using Sms.Application.Common;
+using Sms.Modules.Attendance;
 using Sms.Modules.Reporting.Contracts;
 using Sms.Modules.Reporting.Data;
 using Sms.Shared.Kernel.Authz;
@@ -13,6 +14,8 @@ public interface IReportingService
     Task<ApiResult<PrincipalOverviewResponse>> GetPrincipalOverviewAsync(int? offsetMinutes = null, CancellationToken ct = default);
     Task<ApiResult<PrincipalAttendanceResponse>> GetPrincipalAttendanceAsync(
         DateTime? date = null, int? offsetMinutes = null, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<TeacherAttendanceDayResponse>>> GetStaffAttendanceHistoryAsync(
+        Guid personId, int? limit = null, int? offsetMinutes = null, CancellationToken ct = default);
 }
 
 public sealed class ReportingService(ReportingRepository repo, ITenantFeatureSet features, IClock clock) : IReportingService
@@ -61,5 +64,14 @@ public sealed class ReportingService(ReportingRepository repo, ITenantFeatureSet
         if (GeofenceAllowed) return ApiResult<PrincipalAttendanceResponse>.Ok(raw);
         var staff = raw.Staff.Select(StripGeoVerification).ToList();
         return ApiResult<PrincipalAttendanceResponse>.Ok(raw with { Staff = staff });
+    }
+
+    public async Task<ApiResult<IReadOnlyList<TeacherAttendanceDayResponse>>> GetStaffAttendanceHistoryAsync(
+        Guid personId, int? limit = null, int? offsetMinutes = null, CancellationToken ct = default)
+    {
+        var take = limit is > 0 and <= 366 ? limit.Value : 30;
+        var offset = ParseUtcOffset(offsetMinutes);
+        return ApiResult<IReadOnlyList<TeacherAttendanceDayResponse>>.Ok(
+            await repo.GetStaffAttendanceHistoryAsync(personId, take, offset, ct));
     }
 }

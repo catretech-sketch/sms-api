@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -93,6 +94,86 @@ public class BusConductorAssignmentTests(SqlServerFixture fx)
         var trip = await Data(await driver.PostAsJsonAsync("/v1/staff/trips",
             new { direction = "pickup", bus_no = busNo }), HttpStatusCode.Created);
         trip.GetProperty("conductor_id").GetGuid().Should().Be(conductorUserId);
+    }
+
+    [Fact]
+    public async Task AssignTeacher_replaces_the_previous_duty_teacher_on_the_same_bus_instead_of_stacking_rows()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var firstTeacher = Guid.NewGuid();
+        var secondTeacher = Guid.NewGuid();
+
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        await Seed(fx.ConnectionString, tenantId, conn => conn.ExecuteAsync(
+            "INSERT dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, 'BUS-DUP-TEST')",
+            new { Id = busId, TenantId = tenantId }));
+
+        var admin = PrincipalClient(app, tenantId);
+        await admin.PutAsJsonAsync($"/v1/transport/buses/{busId}/teacher", new { teacher_user_id = firstTeacher });
+        await admin.PutAsJsonAsync($"/v1/transport/buses/{busId}/teacher", new { teacher_user_id = secondTeacher });
+
+        var buses = await Data(await admin.GetAsync("/v1/transport/buses"), HttpStatusCode.OK);
+        buses.EnumerateArray().Count(b => b.GetProperty("bus_id").GetGuid() == busId).Should().Be(1);
+        buses.EnumerateArray().First(b => b.GetProperty("bus_id").GetGuid() == busId)
+            .GetProperty("teacher_user_id").GetGuid().Should().Be(secondTeacher);
+    }
+
+    [Fact]
+    public async Task ListBuses_reports_the_assigned_conductor_staff_id()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var conductorStaffId = Guid.NewGuid();
+
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        await Seed(fx.ConnectionString, tenantId, conn => conn.ExecuteAsync(
+            "INSERT dbo.Staff (Id, TenantId, Name) VALUES (@Id, @TenantId, @Name)",
+            new { Id = conductorStaffId, TenantId = tenantId, Name = "Reena Gupta" }));
+
+        var admin = PrincipalClient(app, tenantId);
+        var busNo = $"KA-{Guid.NewGuid():N}"[..12];
+        var created = await Data(await admin.PostAsJsonAsync("/v1/transport/buses",
+            new { bus_no = busNo, conductor_staff_id = conductorStaffId }), HttpStatusCode.Created);
+        busId = created.GetProperty("bus_id").GetGuid();
+
+        var buses = await Data(await admin.GetAsync("/v1/transport/buses"), HttpStatusCode.OK);
+        buses.EnumerateArray().First(b => b.GetProperty("bus_id").GetGuid() == busId)
+            .GetProperty("conductor_staff_id").GetGuid().Should().Be(conductorStaffId);
+    }
+
+    [Fact]
+    public async Task ListBuses_falls_back_to_the_Teachers_row_name_when_the_linked_Users_row_has_no_Name()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var teacherUserId = Guid.NewGuid();
+
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        await Seed(fx.ConnectionString, tenantId, async conn =>
+        {
+            await conn.ExecuteAsync(
+                "INSERT dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, 'BUS-NAME-TEST')",
+                new { Id = busId, TenantId = tenantId });
+            // Users.Name is deliberately left NULL — mirrors real accepted-invite accounts where
+            // it's never backfilled, only Email is set.
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, Email) VALUES (@Id, @TenantId, @Email)",
+                new { Id = teacherUserId, TenantId = tenantId, Email = $"noname-{teacherUserId}@test.local" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Teachers (Id, TenantId, Name, UserId) VALUES (@Id, @TenantId, 'Kavya Nair', @UserId)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, UserId = teacherUserId });
+        });
+
+        var admin = PrincipalClient(app, tenantId);
+        await admin.PutAsJsonAsync($"/v1/transport/buses/{busId}/teacher", new { teacher_user_id = teacherUserId });
+
+        var buses = await Data(await admin.GetAsync("/v1/transport/buses"), HttpStatusCode.OK);
+        buses.EnumerateArray().First(b => b.GetProperty("bus_id").GetGuid() == busId)
+            .GetProperty("teacher_name").GetString().Should().Be("Kavya Nair");
     }
 
     [Fact]

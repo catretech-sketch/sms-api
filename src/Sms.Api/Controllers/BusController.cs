@@ -14,6 +14,10 @@ public sealed class BusController(IBusService bus) : ApiControllerBase
     public async Task<IActionResult> GetAssigned(CancellationToken ct) =>
         FromResult(await bus.GetAssignedAsync(ct));
 
+    [HttpGet("traveling")]
+    public async Task<IActionResult> GetTraveling(CancellationToken ct) =>
+        FromResult(await bus.GetTravelingBusesAsync(ct));
+
     [HttpGet("{busId:guid}/roster")]
     public async Task<IActionResult> GetRoster(Guid busId, CancellationToken ct) =>
         FromResult(await bus.GetRosterAsync(busId, ct));

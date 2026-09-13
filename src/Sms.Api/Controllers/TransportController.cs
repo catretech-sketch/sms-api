@@ -13,11 +13,11 @@ public sealed record AssignBusTeacherRequest(Guid TeacherUserId);
 
 public sealed record CreateBusRequest(
     string BusNo, string? RouteName, Guid? RouteId, string? Driver, string? DriverPhone, Guid? DriverStaffId,
-    Guid? ConductorStaffId = null);
+    Guid? ConductorStaffId = null, int? Capacity = null);
 
 public sealed record UpdateBusRequest(
     string? BusNo, Guid? RouteId, Guid? DriverStaffId, bool ClearDriver = false,
-    Guid? ConductorStaffId = null, bool ClearConductor = false);
+    Guid? ConductorStaffId = null, bool ClearConductor = false, int? Capacity = null, bool ClearCapacity = false);
 
 public sealed record CreateRouteRequest(string Name, int? Stops);
 
@@ -48,12 +48,12 @@ public sealed class TransportController(IBusService bus, IStudentBusService stud
 
     [HttpPost("buses")]
     public async Task<IActionResult> CreateBus([FromBody] CreateBusRequest req, CancellationToken ct) =>
-        FromResult(await bus.CreateBusAsync(req.BusNo, req.RouteName, req.RouteId, req.Driver, req.DriverPhone, req.DriverStaffId, req.ConductorStaffId, ct));
+        FromResult(await bus.CreateBusAsync(req.BusNo, req.RouteName, req.RouteId, req.Driver, req.DriverPhone, req.DriverStaffId, req.ConductorStaffId, req.Capacity, ct));
 
     [HttpPut("buses/{busId:guid}")]
     public async Task<IActionResult> UpdateBus(
         Guid busId, [FromBody] UpdateBusRequest req, CancellationToken ct) =>
-        FromResult(await bus.UpdateBusAsync(busId, req.BusNo, req.RouteId, req.DriverStaffId, req.ClearDriver, req.ConductorStaffId, req.ClearConductor, ct));
+        FromResult(await bus.UpdateBusAsync(busId, req.BusNo, req.RouteId, req.DriverStaffId, req.ClearDriver, req.ConductorStaffId, req.ClearConductor, req.Capacity, req.ClearCapacity, ct));
 
     [HttpGet("buses/{busId:guid}/assignment-history")]
     public async Task<IActionResult> AssignmentHistory(Guid busId, CancellationToken ct) =>
@@ -67,6 +67,18 @@ public sealed class TransportController(IBusService bus, IStudentBusService stud
     [HttpDelete("buses/{busId:guid}/teacher")]
     public async Task<IActionResult> UnassignTeacher(Guid busId, CancellationToken ct) =>
         FromResult(await bus.UnassignTeacherAsync(busId, ct));
+
+    [HttpGet("buses/{busId:guid}/traveling-teachers")]
+    public async Task<IActionResult> ListTravelingTeachers(Guid busId, CancellationToken ct) =>
+        FromResult(await bus.ListTravelingTeachersAsync(busId, ct));
+
+    [HttpPut("buses/{busId:guid}/traveling-teachers/{teacherUserId:guid}")]
+    public async Task<IActionResult> AddTravelingTeacher(Guid busId, Guid teacherUserId, CancellationToken ct) =>
+        FromResult(await bus.AddTravelingTeacherAsync(busId, teacherUserId, ct));
+
+    [HttpDelete("buses/{busId:guid}/traveling-teachers/{teacherUserId:guid}")]
+    public async Task<IActionResult> RemoveTravelingTeacher(Guid busId, Guid teacherUserId, CancellationToken ct) =>
+        FromResult(await bus.RemoveTravelingTeacherAsync(busId, teacherUserId, ct));
 
     [HttpGet("buses/{busId:guid}/students")]
     public async Task<IActionResult> BusStudents(Guid busId, CancellationToken ct) =>
@@ -88,6 +100,10 @@ public sealed class TransportController(IBusService bus, IStudentBusService stud
     [HttpPost("routes")]
     public async Task<IActionResult> CreateRoute([FromBody] CreateRouteRequest req, CancellationToken ct) =>
         FromResult(await bus.CreateRouteAsync(req.Name, req.Stops ?? 1));
+
+    [HttpDelete("routes/{routeId:guid}")]
+    public async Task<IActionResult> DeleteRoute(Guid routeId, CancellationToken ct) =>
+        FromResult(await bus.DeleteRouteAsync(routeId, ct));
 
     [HttpGet("routes/{routeId:guid}/stops")]
     public async Task<IActionResult> ListRouteStops(Guid routeId, CancellationToken ct) =>

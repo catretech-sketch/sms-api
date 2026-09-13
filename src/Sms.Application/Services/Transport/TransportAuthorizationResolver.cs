@@ -46,6 +46,7 @@ public sealed class TransportAuthorizationResolver(
         if (callerRoles.Contains(Policies.Teacher) || callerRoles.Contains(Policies.Staff))
         {
             if (await buses.IsDutyTeacherForBusAsync(callerUserId, busId, ct)) return true;
+            if (await buses.IsTravelingTeacherForBusAsync(callerUserId, busId, ct)) return true;
         }
 
         if (callerRoles.Contains(Policies.Driver) || callerRoles.Contains("conductor") || callerRoles.Contains(Policies.Staff))

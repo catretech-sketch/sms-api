@@ -67,7 +67,7 @@ public sealed class TeacherRepository(IDbConnectionFactory factory) : BaseReposi
     }
 
     public async Task<TeacherResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
-        (await QueryInlineAsync<TeacherRow>($"SELECT {TeacherSelectCols}, {PhotoExpr} {FromJoin} WHERE t.Id = @id", new { id }, ct))
+        (await QueryInlineAsync<TeacherRow>($"SELECT {TeacherSelectCols}, {PhotoExpr}, t.UserId {FromJoin} WHERE t.Id = @id", new { id }, ct))
         .FirstOrDefault()?.ToResponse();
 
     /// Null when this teacher row has never been linked to a Users row (not yet
@@ -131,7 +131,7 @@ public sealed class TeacherRepository(IDbConnectionFactory factory) : BaseReposi
         string? q, string? dept, string? status, CancellationToken ct = default)
     {
         var rows = await QueryInlineAsync<TeacherRow>(
-            $"SELECT {ColsBeforePhone}{PhoneExprList}, {ColsAfterPhone}, {PhotoExprList} {FromJoinList} WHERE " +
+            $"SELECT {ColsBeforePhone}{PhoneExprList}, {ColsAfterPhone}, {PhotoExprList}, t.UserId {FromJoinList} WHERE " +
             "(@q IS NULL OR t.Name LIKE '%' + @q + '%' OR t.Department LIKE '%' + @q + '%' OR t.EmployeeCode LIKE '%' + @q + '%') " +
             "AND (@dept IS NULL OR t.Department = @dept) AND (@status IS NULL OR t.Status = @status) ORDER BY t.Name",
             new { q, dept, status }, ct);

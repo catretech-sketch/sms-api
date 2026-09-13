@@ -30,4 +30,10 @@ public sealed class ReportingController(IReportingService reporting) : ApiContro
     public async Task<IActionResult> GetPrincipalAttendance(
         [FromQuery] DateTime? date, [FromQuery] int? offset_minutes, CancellationToken ct) =>
         FromResult(await reporting.GetPrincipalAttendanceAsync(date, offset_minutes, ct));
+
+    [HttpGet("principal/staff/{personId:guid}/attendance/history")]
+    [Authorize(Policy = Policies.Principal)]
+    public async Task<IActionResult> GetStaffAttendanceHistory(
+        Guid personId, [FromQuery] int? limit, [FromQuery] int? offset_minutes, CancellationToken ct) =>
+        FromResult(await reporting.GetStaffAttendanceHistoryAsync(personId, limit, offset_minutes, ct));
 }

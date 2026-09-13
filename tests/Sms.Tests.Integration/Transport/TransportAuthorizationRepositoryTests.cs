@@ -89,6 +89,44 @@ public class TransportAuthorizationRepositoryTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task IsTravelingTeacherForBusAsync_true_only_for_added_teachers_and_supports_multiple_teachers_per_bus()
+    {
+        var tenantId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var teacherId = Guid.NewGuid();
+        var secondTeacherId = Guid.NewGuid();
+        var strangerId = Guid.NewGuid();
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, 'BUS-1')",
+                new { Id = busId, TenantId = tenantId });
+        }
+
+        await using var app = App();
+        using var scope = app.Services.CreateScope();
+        var tenant = scope.ServiceProvider.GetRequiredService<ITenantContext>();
+        tenant.Set(tenantId, null, isPlatform: false);
+        var repo = scope.ServiceProvider.GetRequiredService<BusRepository>();
+
+        (await repo.IsTravelingTeacherForBusAsync(teacherId, busId, default)).Should().BeFalse();
+
+        await repo.AddTravelingTeacherAsync(tenantId, busId, teacherId, default);
+        await repo.AddTravelingTeacherAsync(tenantId, busId, secondTeacherId, default);
+
+        (await repo.IsTravelingTeacherForBusAsync(teacherId, busId, default)).Should().BeTrue();
+        (await repo.IsTravelingTeacherForBusAsync(secondTeacherId, busId, default)).Should().BeTrue();
+        (await repo.IsTravelingTeacherForBusAsync(strangerId, busId, default)).Should().BeFalse();
+
+        await repo.RemoveTravelingTeacherAsync(tenantId, busId, teacherId, default);
+        (await repo.IsTravelingTeacherForBusAsync(teacherId, busId, default)).Should().BeFalse();
+        (await repo.IsTravelingTeacherForBusAsync(secondTeacherId, busId, default)).Should().BeTrue();
+    }
+
+    [Fact]
     public async Task GetActiveDriverOrConductorRoleByBusAsync_and_GetBusIdAsync()
     {
         var tenantId = Guid.NewGuid();

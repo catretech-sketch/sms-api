@@ -19,15 +19,21 @@ public interface IBusService
     Task<ApiResult<IReadOnlyList<TransportBusResponse>>> ListBusesAsync(CancellationToken ct = default);
     Task<ApiResult<BusTeacherAssignmentResponse>> AssignTeacherAsync(Guid busId, Guid teacherUserId, CancellationToken ct = default);
     Task<ApiResult> UnassignTeacherAsync(Guid busId, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<TravelingTeacherResponse>>> ListTravelingTeachersAsync(Guid busId, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<TravelingTeacherResponse>>> AddTravelingTeacherAsync(Guid busId, Guid teacherUserId, CancellationToken ct = default);
+    Task<ApiResult> RemoveTravelingTeacherAsync(Guid busId, Guid teacherUserId, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<BusResponse>>> GetTravelingBusesAsync(CancellationToken ct = default);
     Task<ApiResult<FleetBusResponse>> CreateBusAsync(
         string busNo, string? routeName, Guid? routeId, string? driver, string? driverPhone, Guid? driverStaffId,
-        Guid? conductorStaffId = null, CancellationToken ct = default);
+        Guid? conductorStaffId = null, int? capacity = null, CancellationToken ct = default);
     Task<ApiResult<TransportBusResponse>> UpdateBusAsync(
         Guid busId, string? busNo, Guid? routeId, Guid? driverStaffId, bool clearDriver,
-        Guid? conductorStaffId = null, bool clearConductor = false, CancellationToken ct = default);
+        Guid? conductorStaffId = null, bool clearConductor = false, int? capacity = null,
+        bool clearCapacity = false, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<BusDriverAssignmentResponse>>> GetAssignmentHistoryAsync(Guid busId, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<TransportRouteListItem>>> ListRoutesAsync(CancellationToken ct = default);
     Task<ApiResult<TransportRouteListItem>> CreateRouteAsync(string name, int stops, CancellationToken ct = default);
+    Task<ApiResult> DeleteRouteAsync(Guid routeId, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<RouteStopListItem>>> ListRouteStopsAsync(Guid routeId, CancellationToken ct = default);
     Task<ApiResult<RouteStopListItem>> CreateRouteStopAsync(Guid routeId, string name, double lat, double lng, CancellationToken ct = default);
     Task<ApiResult<RouteStopListItem>> UpdateRouteStopAsync(Guid routeId, Guid stopId, string name, double lat, double lng, CancellationToken ct = default);
@@ -114,9 +120,47 @@ public sealed class BusService(
         return ApiResult.NoContent();
     }
 
+    public async Task<ApiResult<IReadOnlyList<TravelingTeacherResponse>>> ListTravelingTeachersAsync(Guid busId, CancellationToken ct = default)
+    {
+        if (!OperationsAllowed) return FeatureGate.Locked<IReadOnlyList<TravelingTeacherResponse>>(FeatureCatalog.Operations);
+        if (!await repo.BusExistsAsync(busId, ct))
+            return ApiResult<IReadOnlyList<TravelingTeacherResponse>>.Fail(new Error("not_found", "bus not found"), 404);
+        return ApiResult<IReadOnlyList<TravelingTeacherResponse>>.Ok(await repo.ListTravelingTeachersAsync(busId, ct));
+    }
+
+    public async Task<ApiResult<IReadOnlyList<TravelingTeacherResponse>>> AddTravelingTeacherAsync(
+        Guid busId, Guid teacherUserId, CancellationToken ct = default)
+    {
+        if (!OperationsAllowed) return FeatureGate.Locked<IReadOnlyList<TravelingTeacherResponse>>(FeatureCatalog.Operations);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<IReadOnlyList<TravelingTeacherResponse>>.Fail(new Error("forbidden", "no tenant context"), 403);
+        if (!await repo.BusExistsAsync(busId, ct))
+            return ApiResult<IReadOnlyList<TravelingTeacherResponse>>.Fail(new Error("not_found", "bus not found"), 404);
+        await repo.AddTravelingTeacherAsync(tid, busId, teacherUserId, ct);
+        return ApiResult<IReadOnlyList<TravelingTeacherResponse>>.Ok(await repo.ListTravelingTeachersAsync(busId, ct));
+    }
+
+    public async Task<ApiResult> RemoveTravelingTeacherAsync(Guid busId, Guid teacherUserId, CancellationToken ct = default)
+    {
+        if (!OperationsAllowed) return FeatureGate.Locked(FeatureCatalog.Operations);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+        if (!await repo.BusExistsAsync(busId, ct))
+            return ApiResult.Fail(new Error("not_found", "bus not found"), 404);
+        await repo.RemoveTravelingTeacherAsync(tid, busId, teacherUserId, ct);
+        return ApiResult.NoContent();
+    }
+
+    public async Task<ApiResult<IReadOnlyList<BusResponse>>> GetTravelingBusesAsync(CancellationToken ct = default)
+    {
+        if (tenant.UserId is not { } uid)
+            return ApiResult<IReadOnlyList<BusResponse>>.Fail(new Error("forbidden", "no user context"), 403);
+        return ApiResult<IReadOnlyList<BusResponse>>.Ok(await repo.ListTravelingBusesForTeacherAsync(uid, ct));
+    }
+
     public async Task<ApiResult<FleetBusResponse>> CreateBusAsync(
         string busNo, string? routeName, Guid? routeId, string? driver, string? driverPhone, Guid? driverStaffId,
-        Guid? conductorStaffId = null, CancellationToken ct = default)
+        Guid? conductorStaffId = null, int? capacity = null, CancellationToken ct = default)
     {
         if (!OperationsAllowed) return FeatureGate.Locked<FleetBusResponse>(FeatureCatalog.Operations);
         if (tenant.TenantId is not { } tid)
@@ -130,15 +174,18 @@ public sealed class BusService(
             return ApiResult<FleetBusResponse>.Fail(new Error("not_found", "driver staff not found"), 404);
         if (conductorStaffId is Guid cid && !await repo.StaffExistsAsync(cid, ct))
             return ApiResult<FleetBusResponse>.Fail(new Error("not_found", "conductor staff not found"), 404);
-        var row = await repo.CreateBusAsync(tid, trimmed, routeName?.Trim(), routeId, driver?.Trim(), driverPhone?.Trim(), driverStaffId, conductorStaffId, tenant.UserId, ct);
+        var row = await repo.CreateBusAsync(tid, trimmed, routeName?.Trim(), routeId, driver?.Trim(), driverPhone?.Trim(), driverStaffId, conductorStaffId, capacity, tenant.UserId, ct);
         if (row is null)
             return ApiResult<FleetBusResponse>.Fail(new Error("server_error", "could not create bus"), 500);
+        await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
         return ApiResult<FleetBusResponse>.Ok(ToFleetBus(row), 201);
     }
 
     public async Task<ApiResult<TransportBusResponse>> UpdateBusAsync(
         Guid busId, string? busNo, Guid? routeId, Guid? driverStaffId, bool clearDriver,
-        Guid? conductorStaffId = null, bool clearConductor = false, CancellationToken ct = default)
+        Guid? conductorStaffId = null, bool clearConductor = false, int? capacity = null,
+        bool clearCapacity = false, CancellationToken ct = default)
     {
         if (!OperationsAllowed) return FeatureGate.Locked<TransportBusResponse>(FeatureCatalog.Operations);
         if (tenant.TenantId is not { } tid)
@@ -154,12 +201,14 @@ public sealed class BusService(
         var trimmed = busNo?.Trim();
         if (trimmed is { Length: 0 })
             return ApiResult<TransportBusResponse>.Fail(new Error("validation", "bus number is required"), 400);
-        var row = await repo.UpdateBusAsync(tid, busId, trimmed, routeId, driverStaffId, clearDriver, conductorStaffId, clearConductor, tenant.UserId, ct);
+        var row = await repo.UpdateBusAsync(tid, busId, trimmed, routeId, driverStaffId, clearDriver, conductorStaffId, clearConductor, capacity, clearCapacity, tenant.UserId, ct);
         if (row is null)
             return ApiResult<TransportBusResponse>.Fail(new Error("not_found", "bus not found"), 404);
+        await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
         return ApiResult<TransportBusResponse>.Ok(new TransportBusResponse(
             row.BusId, row.BusNo, row.RouteId, row.RouteName, row.DriverStaffId, row.Driver, row.DriverPhone,
-            row.StopCount, row.StudentsAssigned, null, null, row.ConductorStaffId));
+            row.StopCount, row.StudentsAssigned, null, null, row.ConductorStaffId, row.Capacity));
     }
 
     public async Task<ApiResult<IReadOnlyList<BusDriverAssignmentResponse>>> GetAssignmentHistoryAsync(
@@ -193,6 +242,19 @@ public sealed class BusService(
         return ApiResult<TransportRouteListItem>.Ok(row, 201);
     }
 
+    public async Task<ApiResult> DeleteRouteAsync(Guid routeId, CancellationToken ct = default)
+    {
+        if (!OperationsAllowed) return FeatureGate.Locked(FeatureCatalog.Operations);
+        if (!await repo.RouteExistsAsync(routeId, ct))
+            return ApiResult.Fail(new Error("not_found", "route not found"), 404);
+        var busCount = await repo.BusCountForRouteAsync(routeId, ct);
+        if (busCount > 0)
+            return ApiResult.Fail(new Error(
+                "route_in_use", $"{busCount} bus{(busCount == 1 ? "" : "es")} assigned to this route. Reassign them before deleting."), 409);
+        await repo.DeleteRouteAsync(routeId, ct);
+        return ApiResult.NoContent();
+    }
+
     public async Task<ApiResult<IReadOnlyList<RouteStopListItem>>> ListRouteStopsAsync(Guid routeId, CancellationToken ct = default)
     {
         if (!OperationsAllowed) return FeatureGate.Locked<IReadOnlyList<RouteStopListItem>>(FeatureCatalog.Operations);
@@ -213,15 +275,19 @@ public sealed class BusService(
         if (trimmed.Length == 0)
             return ApiResult<RouteStopListItem>.Fail(new Error("validation", "stop name is required"), 400);
         var row = await repo.CreateRouteStopAsync(tid, routeId, trimmed, lat, lng, ct);
-        return row is null
-            ? ApiResult<RouteStopListItem>.Fail(new Error("server_error", "could not create stop"), 500)
-            : ApiResult<RouteStopListItem>.Ok(row, 201);
+        if (row is null)
+            return ApiResult<RouteStopListItem>.Fail(new Error("server_error", "could not create stop"), 500);
+        await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
+        return ApiResult<RouteStopListItem>.Ok(row, 201);
     }
 
     public async Task<ApiResult<RouteStopListItem>> UpdateRouteStopAsync(
         Guid routeId, Guid stopId, string name, double lat, double lng, CancellationToken ct = default)
     {
         if (!OperationsAllowed) return FeatureGate.Locked<RouteStopListItem>(FeatureCatalog.Operations);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<RouteStopListItem>.Fail(new Error("forbidden", "no tenant context"), 403);
         if (!await repo.RouteExistsAsync(routeId, ct))
             return ApiResult<RouteStopListItem>.Fail(new Error("not_found", "route not found"), 404);
         if (!await repo.RouteStopExistsAsync(stopId, ct))
@@ -230,29 +296,39 @@ public sealed class BusService(
         if (trimmed.Length == 0)
             return ApiResult<RouteStopListItem>.Fail(new Error("validation", "stop name is required"), 400);
         var row = await repo.UpdateRouteStopAsync(stopId, trimmed, lat, lng, ct);
-        return row is null
-            ? ApiResult<RouteStopListItem>.Fail(new Error("not_found", "stop not found"), 404)
-            : ApiResult<RouteStopListItem>.Ok(row);
+        if (row is null)
+            return ApiResult<RouteStopListItem>.Fail(new Error("not_found", "stop not found"), 404);
+        await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
+        return ApiResult<RouteStopListItem>.Ok(row);
     }
 
     public async Task<ApiResult> DeleteRouteStopAsync(Guid routeId, Guid stopId, CancellationToken ct = default)
     {
         if (!OperationsAllowed) return FeatureGate.Locked(FeatureCatalog.Operations);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
         if (!await repo.RouteExistsAsync(routeId, ct))
             return ApiResult.Fail(new Error("not_found", "route not found"), 404);
         if (!await repo.RouteStopExistsAsync(stopId, ct))
             return ApiResult.Fail(new Error("not_found", "stop not found"), 404);
         if (!await repo.DeleteRouteStopAsync(routeId, stopId, ct))
             return ApiResult.Fail(new Error("not_found", "stop not found"), 404);
+        await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
         return ApiResult.NoContent();
     }
 
     public async Task<ApiResult> ReorderRouteStopsAsync(Guid routeId, IReadOnlyList<Guid> stopIds, CancellationToken ct = default)
     {
         if (!OperationsAllowed) return FeatureGate.Locked(FeatureCatalog.Operations);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
         if (!await repo.RouteExistsAsync(routeId, ct))
             return ApiResult.Fail(new Error("not_found", "route not found"), 404);
         await repo.ReorderRouteStopsAsync(routeId, stopIds, ct);
+        await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
         return ApiResult.NoContent();
     }
 
@@ -318,7 +394,7 @@ public sealed class BusService(
         new(r.BusId, r.RouteId, r.BusNo, r.RouteName, r.Driver, r.DriverPhone,
             r.StopCount, r.StudentsRiding, r.Status,
             null, null, null, null, null,
-            ConductorStaffId: r.ConductorStaffId);
+            ConductorStaffId: r.ConductorStaffId, Capacity: r.Capacity);
 
     /// Duty teachers may only access the bus they are assigned to via BusAssignments.
     private async Task<ApiResult?> EnsureBusDutyAsync(Guid busId, CancellationToken ct)
