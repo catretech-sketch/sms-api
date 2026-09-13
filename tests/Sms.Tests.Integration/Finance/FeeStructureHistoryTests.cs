@@ -45,7 +45,8 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
     }
 
     private static async Task<JsonElement> SaveStructureAsync(
-        HttpClient client, string name, string academicYear, string status = "active") =>
+        HttpClient client, string name, string academicYear, string status = "active",
+        string amountsJson = """{"X-A":{"tuition":1000}}""") =>
         await Data(await client.PutAsJsonAsync("/v1/fees/structure", new
         {
             name,
@@ -53,7 +54,7 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
             currency = "INR",
             effective_from = "2025-04-01",
             status,
-            amounts_json = """{"X-A":{"tuition":1000}}""",
+            amounts_json = amountsJson,
         }), HttpStatusCode.OK);
 
     private static async Task<JsonElement> HistoryEntryAsync(HttpClient client, Guid id)
@@ -111,10 +112,25 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
 
         foreach (var entry in history.EnumerateArray())
         {
-            entry.TryGetProperty("amounts", out _).Should().BeFalse("the history list must stay light — no amounts payload");
+            entry.TryGetProperty("amounts", out _).Should().BeFalse("the history list must stay light — no per-class breakdown");
             entry.TryGetProperty("created_at", out var createdAt).Should().BeTrue();
             createdAt.ValueKind.Should().NotBe(JsonValueKind.Null);
+            entry.GetProperty("total_amount").GetDecimal().Should().Be(1000);
         }
+    }
+
+    [Fact]
+    public async Task History_list_shows_a_quick_total_summed_across_every_class_and_head()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+
+        var saved = await SaveStructureAsync(client, "Multi-head structure", "2025-26",
+            amountsJson: """{"X-A":{"tuition":1000,"transport":500},"X-B":{"tuition":1000}}""");
+
+        var entry = await HistoryEntryAsync(client, saved.GetProperty("id").GetGuid());
+        entry.GetProperty("total_amount").GetDecimal().Should().Be(2500);
     }
 
     [Fact]

@@ -673,12 +673,12 @@ public sealed record FeeStructureSummaryResponse(
     Guid Id, string Name, string AcademicYear,
     [property: JsonPropertyName("class")] string? ClassGrade,
     string? Section, string Currency, DateOnly EffectiveFrom, DateOnly? EffectiveTo,
-    string Status, string? Description, DateTime CreatedAt);
+    string Status, string? Description, DateTime CreatedAt, decimal TotalAmount);
 
 public sealed record FeeStructureListRow(
     Guid Id, Guid TenantId, string Name, string AcademicYear, string? ClassGrade, string? Section,
     string Currency, DateTime EffectiveFrom, DateTime? EffectiveTo, string Status,
-    string? Description, DateTime CreatedAt);
+    string? Description, DateTime CreatedAt, string? AmountsJson);
 
 public sealed record FeeStructurePublishRow(bool Found, Guid? Id);
 public sealed record FeeStructureDeleteRow(bool Deleted, string? Reason);

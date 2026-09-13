@@ -449,7 +449,37 @@ public sealed class FeeService(
     private static FeeStructureSummaryResponse ToSummary(FeeStructureListRow row) => new(
         row.Id, row.Name, row.AcademicYear, row.ClassGrade, row.Section, row.Currency,
         DateOnly.FromDateTime(row.EffectiveFrom), row.EffectiveTo is { } et ? DateOnly.FromDateTime(et) : null,
-        row.Status, row.Description, row.CreatedAt);
+        row.Status, row.Description, row.CreatedAt, SumAmounts(row.AmountsJson));
+
+    /// Sums every leaf numeric value across every class/head in the amounts JSON, giving the
+    /// Saved versions list a quick total without exposing the full per-class/per-head breakdown.
+    private static decimal SumAmounts(string? amountsJson)
+    {
+        if (string.IsNullOrWhiteSpace(amountsJson)) return 0;
+        try
+        {
+            using var doc = JsonDocument.Parse(amountsJson);
+            if (doc.RootElement.ValueKind != JsonValueKind.Object) return 0;
+            decimal total = 0;
+            foreach (var byClass in doc.RootElement.EnumerateObject())
+            {
+                if (byClass.Value.ValueKind == JsonValueKind.Number && byClass.Value.TryGetDecimal(out var flat))
+                {
+                    total += flat;
+                    continue;
+                }
+                if (byClass.Value.ValueKind != JsonValueKind.Object) continue;
+                foreach (var byHead in byClass.Value.EnumerateObject())
+                    if (byHead.Value.ValueKind == JsonValueKind.Number && byHead.Value.TryGetDecimal(out var n))
+                        total += n;
+            }
+            return total;
+        }
+        catch (JsonException)
+        {
+            return 0;
+        }
+    }
 
     private static FeeStructureResponse ToResponse(FeeStructureRow row)
     {
