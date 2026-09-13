@@ -446,4 +446,64 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
         headAmounts[0].GetProperty("head_name").GetString().Should().Contain("Deleted fee head");
         headAmounts[0].GetProperty("amount").GetDecimal().Should().Be(6500);
     }
+
+    /// End-to-end acceptance test: fee publishing is completely independent of Term. Publish
+    /// takes no Term, stores no TermId, and any number of versions stay Published at once.
+    /// Term is chosen only when generating invoices, and it determines which currently-
+    /// Published fees get billed — never the other way around. Already-generated invoices for
+    /// an earlier Term are never touched by a fee published afterwards.
+    [Fact]
+    public async Task Publishing_fees_is_independent_of_term_and_billing_picks_up_whatever_is_published_at_generation_time()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+        await CreateStudentAsync(client, "ADM-HIST-6", "X", "A", 1);
+
+        // 1-3: create and publish 4 independent fee structures — no Term involved anywhere.
+        var feeIds = new List<Guid>();
+        foreach (var (name, rate) in new[] { ("Fee A", 100m), ("Fee B", 200m), ("Fee C", 300m), ("Fee D", 400m) })
+        {
+            var draft = await SaveStructureAsync(client, name, "2025-26", "inactive", amountsJson: $"{{\"X-A\":{{\"{name}\":{rate}}}}}");
+            var id = draft.GetProperty("id").GetGuid();
+            var publishRes = await client.PostAsync($"/v1/fees/structures/{id}/publish", new StringContent(""));
+            publishRes.StatusCode.Should().Be(HttpStatusCode.OK);
+            feeIds.Add(id);
+        }
+
+        // 3: all 4 show Published, and publishing D did not change A/B/C (or vice versa).
+        var history = await Data(await client.GetAsync("/v1/fees/structures"), HttpStatusCode.OK);
+        foreach (var id in feeIds)
+        {
+            history.EnumerateArray().Single(e => e.GetProperty("id").GetGuid() == id)
+                .GetProperty("status").GetString().Should().Be("active", "every one of the 4 fees must be Published simultaneously");
+        }
+
+        // 6-7: select Term 1 and generate — it must pick up all 4 currently-Published fees.
+        var gen1 = await Data(await client.PostAsJsonAsync("/v1/fees/invoices/generate",
+            new { academic_year = "2025-26", term = "Term 1", classes = new[] { "X-A" } }), HttpStatusCode.OK);
+        gen1.GetProperty("created").GetInt32().Should().Be(1);
+
+        var student = await Data(await client.GetAsync("/v1/fees/invoices"), HttpStatusCode.OK);
+        var term1Invoice = student.EnumerateArray().Single(i => i.GetProperty("period").GetString() == "2025-26 Term 1");
+        term1Invoice.GetProperty("amount").GetDecimal().Should().Be(1000, "100+200+300+400 — every currently-Published fee");
+
+        // 8-9: publish a 5th fee AFTER Term 1 was generated — Term 1 must stay exactly as it was.
+        var lateDraft = await SaveStructureAsync(client, "Fee E (late)", "2025-26", "inactive", amountsJson: """{"X-A":{"Fee E":500}}""");
+        var lateId = lateDraft.GetProperty("id").GetGuid();
+        (await client.PostAsync($"/v1/fees/structures/{lateId}/publish", new StringContent(""))).StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var afterLatePublish = await Data(await client.GetAsync("/v1/fees/invoices"), HttpStatusCode.OK);
+        var term1Again = afterLatePublish.EnumerateArray().Single(i => i.GetProperty("period").GetString() == "2025-26 Term 1");
+        term1Again.GetProperty("amount").GetDecimal().Should().Be(1000, "Fee E must NOT be inserted into the already-generated Term 1 invoice");
+
+        // 10: the next unbilled Term picks up Fee E (and everything else still Published).
+        var gen2 = await Data(await client.PostAsJsonAsync("/v1/fees/invoices/generate",
+            new { academic_year = "2025-26", term = "Term 2", classes = new[] { "X-A" } }), HttpStatusCode.OK);
+        gen2.GetProperty("created").GetInt32().Should().Be(1);
+
+        var afterTerm2 = await Data(await client.GetAsync("/v1/fees/invoices"), HttpStatusCode.OK);
+        var term2Invoice = afterTerm2.EnumerateArray().Single(i => i.GetProperty("period").GetString() == "2025-26 Term 2");
+        term2Invoice.GetProperty("amount").GetDecimal().Should().Be(1500, "100+200+300+400+500 — Fee E is now included too");
+    }
 }
