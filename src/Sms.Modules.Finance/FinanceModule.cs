@@ -100,12 +100,22 @@ public sealed class FeeRepository(IDbConnectionFactory factory, IAuditLogger aud
 }
 
 // ---- Fee invoices (student/parent bills) ----
+
+/// <summary>One fee-head line making up an invoice's total, e.g. "Transport Fee — 500".
+/// Amount is snapshotted at invoice-generation time — later Fee Head renames/amount edits
+/// must never change an already-generated invoice's lines.</summary>
+public sealed record FeeInvoiceLineResponse(Guid? HeadId, string HeadName, decimal Amount, string? Description = null);
+
+/// <summary>Input to CreateWithLinesAsync — same shape as the response, kept as a separate
+/// type so the generation path isn't coupled to the wire-serialized response record.</summary>
+public sealed record FeeInvoiceLineInput(Guid? HeadId, string HeadName, decimal Amount, string? Description = null);
+
 public sealed record FeeInvoiceResponse(
     Guid Id, Guid TenantId, Guid StudentId, string? Period, DateTime? DueDate, decimal Amount,
     string Status, DateTime? PaidOn, string? Method,
     string? StudentName = null, string? ClassLabel = null, string? AdmissionNo = null,
     string? Grade = null, int? AvatarHue = null, string? PhotoUrl = null,
-    decimal PaidAmount = 0);
+    decimal PaidAmount = 0, IReadOnlyList<FeeInvoiceLineResponse> Lines = null!);
 
 public sealed record CreateFeeInvoiceRequest(Guid StudentId, string? Period, DateTime? DueDate, decimal Amount);
 
@@ -193,6 +203,57 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
         var core = await QuerySingleProcAsync<FeeInvoiceCore>("dbo.FeeInvoice_Create",
             new { TenantId = tenantId, r.StudentId, r.Period, r.DueDate, r.Amount }, ct);
         return core is null ? null : await GetAsync(core.Id, ct);
+    }
+
+    /// <summary>Invoice generation's path: creates the invoice AND its per-fee-head line items in one
+    /// transaction. Amount is the sum of the lines — the caller must not pass a total that disagrees
+    /// with them. Manual invoice creation (<see cref="CreateAsync"/>) is untouched and keeps
+    /// producing invoices with no lines, exactly as before.</summary>
+    public async Task<FeeInvoiceResponse?> CreateWithLinesAsync(
+        Guid tenantId, Guid studentId, string? period, DateTime? dueDate,
+        IReadOnlyList<FeeInvoiceLineInput> lines, CancellationToken ct = default)
+    {
+        await EnsurePaidAmountColumnAsync(ct);
+        if (lines.Count == 0) return null;
+        var total = lines.Sum(l => l.Amount);
+        if (total <= 0) return null;
+
+        var invoiceId = Guid.NewGuid();
+        await using var conn = await Factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        try
+        {
+            await conn.ExecuteAsync(new CommandDefinition(
+                """
+                INSERT dbo.FeeInvoices (Id, TenantId, StudentId, Period, DueDate, Amount)
+                VALUES (@invoiceId, @tenantId, @studentId, @period, @dueDate, @total)
+                """,
+                new { invoiceId, tenantId, studentId, period, dueDate, total }, tx, cancellationToken: ct));
+
+            foreach (var line in lines)
+            {
+                await conn.ExecuteAsync(new CommandDefinition(
+                    """
+                    INSERT dbo.FeeInvoiceLines (Id, TenantId, InvoiceId, FeeHeadId, FeeHeadName, Amount, FeeHeadDescription)
+                    VALUES (@id, @tenantId, @invoiceId, @headId, @headName, @amount, @description)
+                    """,
+                    new
+                    {
+                        id = Guid.NewGuid(), tenantId, invoiceId,
+                        headId = line.HeadId, headName = line.HeadName, amount = line.Amount,
+                        description = line.Description,
+                    }, tx, cancellationToken: ct));
+            }
+
+            await tx.CommitAsync(ct);
+        }
+        catch
+        {
+            await tx.RollbackAsync(ct);
+            throw;
+        }
+
+        return await GetAsync(invoiceId, ct);
     }
 
     public async Task<FeeInvoiceResponse?> MarkPaidAsync(Guid id, string method, CancellationToken ct = default)
@@ -406,13 +467,19 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
         }
     }
 
+    private const string LineCols = "InvoiceId, FeeHeadId AS HeadId, FeeHeadName AS HeadName, Amount, FeeHeadDescription AS Description";
+
     public async Task<FeeInvoiceResponse?> GetAsync(Guid id, CancellationToken ct = default)
     {
         await EnsurePaidAmountColumnAsync(ct);
         var row = (await QueryInlineAsync<FeeInvoiceSqlRow>(
             $"{SelectJoined} WHERE i.Id = @id", new { id }, ct))
             .FirstOrDefault();
-        return row?.ToResponse();
+        if (row is null) return null;
+        var lines = await QueryInlineAsync<FeeInvoiceLineRow>(
+            $"SELECT {LineCols} FROM dbo.FeeInvoiceLines WHERE InvoiceId = @id ORDER BY CreatedAt",
+            new { id }, ct);
+        return row.ToResponse(lines.Select(l => l.ToResponse()).ToList());
     }
 
     public async Task<IReadOnlyList<FeeInvoiceResponse>> ListAsync(Guid? studentId, CancellationToken ct = default)
@@ -421,7 +488,18 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
         var rows = await QueryInlineAsync<FeeInvoiceSqlRow>(
             $"{SelectJoined} WHERE (@studentId IS NULL OR i.StudentId = @studentId) ORDER BY i.DueDate DESC",
             new { studentId }, ct);
-        return rows.Select(r => r.ToResponse()).ToList();
+        if (rows.Count == 0) return [];
+
+        var ids = rows.Select(r => r.Id).ToList();
+        var allLines = await QueryInlineAsync<FeeInvoiceLineRow>(
+            $"SELECT {LineCols} FROM dbo.FeeInvoiceLines WHERE InvoiceId IN @ids ORDER BY CreatedAt",
+            new { ids }, ct);
+        var byInvoice = allLines
+            .GroupBy(l => l.InvoiceId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<FeeInvoiceLineResponse>)g.Select(l => l.ToResponse()).ToList());
+
+        return rows.Select(r => r.ToResponse(
+            byInvoice.TryGetValue(r.Id, out var ls) ? ls : [])).ToList();
     }
 
     public async Task<bool> ExistsForStudentPeriodAsync(Guid studentId, string period, CancellationToken ct = default)
@@ -458,6 +536,17 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
         Guid Id, Guid TenantId, Guid StudentId, string? Period, DateTime? DueDate, decimal Amount,
         string Status, DateTime? PaidOn, string? Method);
 
+    private sealed class FeeInvoiceLineRow
+    {
+        public Guid InvoiceId { get; set; }
+        public Guid? HeadId { get; set; }
+        public string HeadName { get; set; } = "";
+        public decimal Amount { get; set; }
+        public string? Description { get; set; }
+
+        public FeeInvoiceLineResponse ToResponse() => new(HeadId, HeadName, Amount, Description);
+    }
+
     private sealed class FeeInvoiceSqlRow
     {
         public Guid Id { get; set; }
@@ -477,9 +566,9 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
         public string? PhotoUrl { get; set; }
         public decimal PaidAmount { get; set; }
 
-        public FeeInvoiceResponse ToResponse() => new(
+        public FeeInvoiceResponse ToResponse(IReadOnlyList<FeeInvoiceLineResponse> lines) => new(
             Id, TenantId, StudentId, Period, DueDate, Amount, Status, PaidOn, Method,
-            StudentName, ClassLabel, AdmissionNo, Grade, AvatarHue, PhotoUrl, PaidAmount);
+            StudentName, ClassLabel, AdmissionNo, Grade, AvatarHue, PhotoUrl, PaidAmount, lines);
     }
 }
 
@@ -640,10 +729,14 @@ public sealed class PayrollRepository(IDbConnectionFactory factory) : BaseReposi
 
 // ---- Fee heads (catalog of fee types) ----
 public sealed record FeeHeadResponse(
-    Guid Id, Guid TenantId, string Name, string? Code, bool Active, bool IsSystem, bool IsTransportFeeHead);
+    Guid Id, Guid TenantId, string Name, string? Code, bool Active, bool IsSystem, bool IsTransportFeeHead,
+    string? Description = null);
 
-public sealed record CreateFeeHeadRequest(string Name, string? Code, bool IsTransportFeeHead = false);
-public sealed record UpdateFeeHeadRequest(string? Name, string? Code, bool? Active, bool? IsTransportFeeHead = null);
+public sealed record CreateFeeHeadRequest(string Name, string? Code, bool IsTransportFeeHead = false, string? Description = null);
+/// <summary>Description follows the same "non-null means set it" convention as Code — sending
+/// a non-null Description (including "") updates it; omitting it (null) leaves it untouched.</summary>
+public sealed record UpdateFeeHeadRequest(
+    string? Name, string? Code, bool? Active, bool? IsTransportFeeHead = null, string? Description = null);
 
 public sealed class FeeHeadRepository(IDbConnectionFactory factory) : BaseRepository(factory)
 {
@@ -659,6 +752,7 @@ public sealed class FeeHeadRepository(IDbConnectionFactory factory) : BaseReposi
             Active = true,
             IsSystem = false,
             r.IsTransportFeeHead,
+            Description = string.IsNullOrWhiteSpace(r.Description) ? null : r.Description.Trim(),
         }, ct);
 
     public Task<FeeHeadResponse?> UpdateAsync(
@@ -670,9 +764,16 @@ public sealed class FeeHeadRepository(IDbConnectionFactory factory) : BaseReposi
             Name = string.IsNullOrWhiteSpace(r.Name) ? null : r.Name.Trim(),
             Code = r.Code is null ? null : (string.IsNullOrWhiteSpace(r.Code) ? null : r.Code.Trim()),
             CodeSpecified = r.Code is not null,
-            Active = r.Active,
+            r.Active,
             r.IsTransportFeeHead,
+            Description = r.Description is null ? null : (string.IsNullOrWhiteSpace(r.Description) ? null : r.Description.Trim()),
+            DescriptionSpecified = r.Description is not null,
         }, ct);
+
+    public async Task<bool> IsTransportFeeHeadAsync(Guid id, Guid tenantId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<int>(
+            "SELECT COUNT(1) FROM dbo.FeeHeads WHERE Id = @id AND TenantId = @tenantId AND IsTransportFeeHead = 1",
+            new { id, tenantId }, ct)).First() > 0;
 
     public async Task<bool> DeleteAsync(Guid id, Guid tenantId, CancellationToken ct = default)
     {
@@ -688,13 +789,37 @@ public sealed class FeeHeadRepository(IDbConnectionFactory factory) : BaseReposi
 public sealed record FeeStructureRow(
     Guid Id, Guid TenantId, string Name, string AcademicYear, string? ClassGrade, string? Section,
     string Currency, DateTime EffectiveFrom, DateTime? EffectiveTo, string Status,
-    string? Description, string AmountsJson);
+    string? Description, string AmountsJson, DateTime CreatedAt);
 
 public sealed record FeeStructureResponse(
     Guid? Id, Guid? TenantId, string Name, string AcademicYear,
     [property: JsonPropertyName("class")] string? ClassGrade,
     string? Section, string Currency, DateOnly EffectiveFrom, DateOnly? EffectiveTo,
     string Status, string? Description, JsonElement Amounts);
+
+/// <summary>One saved fee-structure version in the History list — no amounts, kept light.
+/// View the full amount breakdown via GET /fees/structure/{id} if/when that's added; today the
+/// list exists so an admin can see every version was actually saved, in order.</summary>
+public sealed record FeeStructureSummaryResponse(
+    Guid Id, string Name, string AcademicYear,
+    [property: JsonPropertyName("class")] string? ClassGrade,
+    string? Section, string Currency, DateOnly EffectiveFrom, DateOnly? EffectiveTo,
+    string Status, string? Description, DateTime CreatedAt, decimal TotalAmount,
+    IReadOnlyList<FeeStructureHeadAmountResponse> HeadAmounts);
+
+/// <summary>One fee head's projected revenue for a saved structure version — e.g. "Exam Fee —
+/// ₹8,000" — summed (rate × enrolled students) across every class that charges it.</summary>
+public sealed record FeeStructureHeadAmountResponse(
+    Guid? HeadId, string HeadName, decimal Amount, decimal PerStudentAmount);
+
+public sealed record FeeStructureListRow(
+    Guid Id, Guid TenantId, string Name, string AcademicYear, string? ClassGrade, string? Section,
+    string Currency, DateTime EffectiveFrom, DateTime? EffectiveTo, string Status,
+    string? Description, DateTime CreatedAt, string? AmountsJson);
+
+public sealed record FeeStructurePublishRow(bool Found, Guid? Id);
+public sealed record FeeStructureDeleteRow(bool Deleted, string? Reason);
+public sealed record FeeStructurePublishResponse(Guid Id, string Status);
 
 public sealed record UpsertFeeStructureRequest(
     Guid? Id,
@@ -714,6 +839,47 @@ public sealed class FeeStructureRepository(IDbConnectionFactory factory) : BaseR
 {
     public Task<FeeStructureRow?> GetAsync(CancellationToken ct = default) =>
         QuerySingleProcAsync<FeeStructureRow>("dbo.FeeStructure_Get", ct: ct);
+
+    public Task<IReadOnlyList<FeeStructureListRow>> ListHistoryAsync(CancellationToken ct = default) =>
+        QueryProcAsync<FeeStructureListRow>("dbo.FeeStructure_List", ct: ct);
+
+    public async Task<FeeStructureRow?> GetByIdAsync(Guid id, CancellationToken ct = default) =>
+        (await QueryInlineAsync<FeeStructureRow>(
+            """
+            SELECT Id, TenantId, Name, AcademicYear, ClassGrade, Section, Currency,
+                   EffectiveFrom, EffectiveTo, Status, Description, AmountsJson, CreatedAt
+            FROM dbo.FeeStructures WHERE Id = @id
+            """,
+            new { id }, ct)).FirstOrDefault();
+
+    /// <summary>Every currently-Published (Status = active) version for this tenant — there is
+    /// no "only one live row" rule, so this can return more than one. Ordered oldest-first so a
+    /// caller merging their amounts together can apply them in order and let the most recently
+    /// created version win any (class, head) pair more than one of them sets.</summary>
+    public Task<IReadOnlyList<FeeStructureRow>> ListActiveAsync(Guid tenantId, CancellationToken ct = default) =>
+        QueryInlineAsync<FeeStructureRow>(
+            """
+            SELECT Id, TenantId, Name, AcademicYear, ClassGrade, Section, Currency,
+                   EffectiveFrom, EffectiveTo, Status, Description, AmountsJson, CreatedAt
+            FROM dbo.FeeStructures WHERE TenantId = @tenantId AND LOWER(Status) = N'active'
+            ORDER BY CreatedAt ASC, Id ASC
+            """,
+            new { tenantId }, ct);
+
+    /// <summary>Publishes this version (Status = active). Does not touch any other version's
+    /// status — many versions can be Published at the same time.</summary>
+    public Task<FeeStructurePublishRow?> PublishAsync(Guid tenantId, Guid id, CancellationToken ct = default) =>
+        QuerySingleProcAsync<FeeStructurePublishRow>("dbo.FeeStructure_Publish", new { TenantId = tenantId, Id = id }, ct);
+
+    /// <summary>Explicitly retires this version (Status = inactive). Does not touch any other
+    /// version's status.</summary>
+    public Task<FeeStructurePublishRow?> UnpublishAsync(Guid tenantId, Guid id, CancellationToken ct = default) =>
+        QuerySingleProcAsync<FeeStructurePublishRow>("dbo.FeeStructure_Unpublish", new { TenantId = tenantId, Id = id }, ct);
+
+    /// <summary>Deletes a draft version outright. Refuses (Deleted = false, Reason = "is_active")
+    /// to delete the currently-published version — publish something else first.</summary>
+    public Task<FeeStructureDeleteRow?> DeleteAsync(Guid tenantId, Guid id, CancellationToken ct = default) =>
+        QuerySingleProcAsync<FeeStructureDeleteRow>("dbo.FeeStructure_Delete", new { TenantId = tenantId, Id = id }, ct);
 
     public Task<FeeStructureRow?> UpsertAsync(
         Guid tenantId, UpsertFeeStructureRequest r, string amountsJson, CancellationToken ct = default) =>

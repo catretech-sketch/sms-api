@@ -116,6 +116,34 @@ public sealed class FeeController(IFeeService fees, ISisService sis, IFeeOnlineP
     public async Task<IActionResult> GetStructure(CancellationToken ct) =>
         FromResult(await fees.GetStructureAsync(ct));
 
+    [HttpGet("fees/structures")]
+    public async Task<IActionResult> ListStructureHistory(CancellationToken ct)
+    {
+        var result = await fees.ListStructureHistoryAsync(ct);
+        if (result.Error is { } error)
+            return StatusCode(result.StatusCode, ErrorEnvelope.From(error));
+        return CursorOk(result.Data!);
+    }
+
+    [HttpGet("fees/structures/{id:guid}")]
+    public async Task<IActionResult> GetStructureVersion(Guid id, CancellationToken ct) =>
+        FromResult(await fees.GetStructureByIdAsync(id, ct));
+
+    [HttpPost("fees/structures/{id:guid}/publish")]
+    [Authorize(Policy = Policies.Principal)]
+    public async Task<IActionResult> PublishStructure(Guid id, CancellationToken ct) =>
+        FromResult(await fees.PublishStructureAsync(id, ct));
+
+    [HttpPost("fees/structures/{id:guid}/unpublish")]
+    [Authorize(Policy = Policies.Principal)]
+    public async Task<IActionResult> UnpublishStructure(Guid id, CancellationToken ct) =>
+        FromResult(await fees.UnpublishStructureAsync(id, ct));
+
+    [HttpDelete("fees/structures/{id:guid}")]
+    [Authorize(Policy = Policies.Principal)]
+    public async Task<IActionResult> DeleteStructure(Guid id, CancellationToken ct) =>
+        FromResult(await fees.DeleteStructureAsync(id, ct));
+
     [HttpPut("fees/structure")]
     [Authorize(Policy = Policies.Principal)]
     public async Task<IActionResult> UpsertStructure([FromBody] UpsertFeeStructureRequest req, CancellationToken ct) =>

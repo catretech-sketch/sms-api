@@ -32,6 +32,7 @@ public sealed record FleetBusResponse(
     Guid? TeacherUserId = null, string? TeacherName = null, Guid? ConductorStaffId = null, int? Capacity = null);
 
 public sealed record TransportRouteListItem(Guid Id, string Name, int Stops);
+public sealed record RouteBusCandidate(Guid BusId, int? Capacity, int Occupied);
 public sealed record RouteStopListItem(Guid Id, Guid RouteId, string Name, int Sequence, double Lat, double Lng);
 public sealed record CreatedBusRow(
     Guid BusId, string BusNo, Guid? RouteId, string? RouteName, string? Driver, string? DriverPhone,
@@ -202,6 +203,23 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
             "SELECT COUNT(*) FROM dbo.StudentBusAssignments WHERE BusId = @busId", new { busId }, ct)).First();
         return (capacity, occupied);
     }
+
+    public async Task<IReadOnlyList<RouteBusCandidate>> ListBusesForRouteAsync(Guid routeId, CancellationToken ct = default) =>
+        await QueryInlineAsync<RouteBusCandidate>(
+            @"SELECT b.Id AS BusId, b.Capacity,
+                     (SELECT COUNT(*) FROM dbo.StudentBusAssignments sba WHERE sba.BusId = b.Id) AS Occupied
+              FROM dbo.Buses b
+              WHERE b.RouteId = @routeId
+              ORDER BY b.Id", new { routeId }, ct);
+
+    // RLS-scoped existence guard: stops can live in either the route-based RouteStops table or the
+    // legacy per-bus BusStops table (see StudentBusModule.ListMappedAsync's dual
+    // COALESCE(rs.Name, bs.Name) lookup) — a stop id is valid for opt-in if it exists in either.
+    public async Task<bool> StopExistsAsync(Guid stopId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<int>(
+            @"SELECT (SELECT COUNT(1) FROM dbo.RouteStops WHERE Id = @stopId) +
+                     (SELECT COUNT(1) FROM dbo.BusStops WHERE Id = @stopId)",
+            new { stopId }, ct)).First() > 0;
 
     public async Task<IReadOnlyList<BusDriverAssignmentResponse>> ListAssignmentHistoryAsync(
         Guid tenantId, Guid busId, CancellationToken ct = default) =>

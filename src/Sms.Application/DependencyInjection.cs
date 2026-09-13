@@ -52,6 +52,7 @@ public static class DependencyInjection
         services.AddScoped<ITransportFleetBroadcaster, NoOpTransportFleetBroadcaster>();
         services.AddScoped<IBusService, BusService>();
         services.AddScoped<IStudentBusService, StudentBusService>();
+        services.AddScoped<IStudentTransportService, StudentTransportService>();
         services.AddScoped<IHostelService, HostelService>();
         services.AddScoped<ISportsService, SportsService>();
         services.AddScoped<IThreadService, ThreadService>();
