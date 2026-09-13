@@ -46,9 +46,10 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
 
     private static async Task<JsonElement> SaveStructureAsync(
         HttpClient client, string name, string academicYear, string status = "active",
-        string amountsJson = """{"X-A":{"tuition":1000}}""") =>
+        string amountsJson = """{"X-A":{"tuition":1000}}""", Guid? id = null) =>
         await Data(await client.PutAsJsonAsync("/v1/fees/structure", new
         {
+            id,
             name,
             academic_year = academicYear,
             currency = "INR",
@@ -219,5 +220,74 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
 
         var history = await Data(await client.GetAsync("/v1/fees/structures"), HttpStatusCode.OK);
         history.EnumerateArray().Any(e => e.GetProperty("id").GetGuid() == publishedId).Should().BeTrue("a refused delete must not remove the row");
+    }
+
+    [Fact]
+    public async Task Editing_a_draft_and_saving_updates_it_in_place_instead_of_creating_another_one()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+
+        var draft = await SaveStructureAsync(client, "Original name", "2025-26", "inactive");
+        var draftId = draft.GetProperty("id").GetGuid();
+
+        var edited = await SaveStructureAsync(
+            client, "Edited name", "2025-26", "inactive",
+            amountsJson: """{"X-A":{"tuition":2000}}""", id: draftId);
+
+        edited.GetProperty("id").GetGuid().Should().Be(draftId, "editing a draft must update the same row, not create a new one");
+
+        var history = await Data(await client.GetAsync("/v1/fees/structures"), HttpStatusCode.OK);
+        history.GetArrayLength().Should().Be(1, "editing an unpublished draft must not leave a second row behind");
+        var entry = history.EnumerateArray().Single();
+        entry.GetProperty("name").GetString().Should().Be("Edited name");
+        entry.GetProperty("total_amount").GetDecimal().Should().Be(2000);
+    }
+
+    [Fact]
+    public async Task Editing_a_draft_and_publishing_updates_it_in_place_and_retires_the_previous_live_version()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+
+        var published = await SaveStructureAsync(client, "Old live version", "2025-26", "active");
+        var draft = await SaveStructureAsync(client, "Draft to publish", "2025-26", "inactive");
+        var draftId = draft.GetProperty("id").GetGuid();
+
+        var republished = await SaveStructureAsync(client, "Draft to publish", "2025-26", "active", id: draftId);
+        republished.GetProperty("id").GetGuid().Should().Be(draftId, "publishing a draft in-edit must update that same row, not create another one");
+
+        var history = await Data(await client.GetAsync("/v1/fees/structures"), HttpStatusCode.OK);
+        history.GetArrayLength().Should().Be(2, "no extra row should appear");
+
+        var publishedEntry = history.EnumerateArray().Single(e => e.GetProperty("id").GetGuid() == draftId);
+        publishedEntry.GetProperty("status").GetString().Should().Be("active");
+        var retiredEntry = history.EnumerateArray().Single(e => e.GetProperty("id").GetGuid() == published.GetProperty("id").GetGuid());
+        retiredEntry.GetProperty("status").GetString().Should().Be("inactive", "the previously live version is retired");
+    }
+
+    [Fact]
+    public async Task Saving_with_the_published_version_s_id_still_creates_a_new_version_instead_of_mutating_it()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+
+        var published = await SaveStructureAsync(client, "Live version", "2025-26", "active");
+        var publishedId = published.GetProperty("id").GetGuid();
+
+        // Simulates a plain "Save only" from the default (non-editing) view, which still
+        // happens to carry the currently-loaded (live) structure's id.
+        var saved = await SaveStructureAsync(client, "New draft", "2025-26", "inactive", id: publishedId);
+
+        saved.GetProperty("id").GetGuid().Should().NotBe(publishedId, "the live version must never be mutated in place");
+
+        var history = await Data(await client.GetAsync("/v1/fees/structures"), HttpStatusCode.OK);
+        history.GetArrayLength().Should().Be(2);
+        var liveEntry = history.EnumerateArray().Single(e => e.GetProperty("id").GetGuid() == publishedId);
+        liveEntry.GetProperty("name").GetString().Should().Be("Live version", "the published row must be untouched");
+        liveEntry.GetProperty("status").GetString().Should().Be("active");
     }
 }
