@@ -28,6 +28,7 @@ public interface IFeeService
     Task<ApiResult<IReadOnlyList<FeeStructureSummaryResponse>>> ListStructureHistoryAsync(CancellationToken ct = default);
     Task<ApiResult<FeeStructureResponse>> GetStructureByIdAsync(Guid id, CancellationToken ct = default);
     Task<ApiResult<FeeStructurePublishResponse>> PublishStructureAsync(Guid id, CancellationToken ct = default);
+    Task<ApiResult<FeeStructurePublishResponse>> UnpublishStructureAsync(Guid id, CancellationToken ct = default);
     Task<ApiResult> DeleteStructureAsync(Guid id, CancellationToken ct = default);
     Task<ApiResult<FeeStructureResponse>> UpsertStructureAsync(UpsertFeeStructureRequest req, CancellationToken ct = default);
     Task<ApiResult<GenerateFeeInvoicesResponse>> GenerateInvoicesAsync(
@@ -222,46 +223,42 @@ public sealed class FeeService(
             : ApiResult<FeeStructureResponse>.Ok(ToResponse(row));
     }
 
-    /// <summary>Publishing merges this draft's per-class fee-head amounts into whatever is
-    /// currently the live version, instead of replacing it outright — publish Transport, then
-    /// later publish Exam, and both stay billed together. A (class, head) pair present in both
-    /// takes the draft's (newer) amount; everything else from the previously-live version is
-    /// carried forward untouched. This never rewrites already-generated invoices — those keep
-    /// their own snapshotted FeeInvoiceLines regardless of what gets published later.</summary>
+    /// <summary>Publishes this version (Status = active). Many versions can be Published at
+    /// the same time — this never changes any other version's status. Invoice generation
+    /// (<see cref="GenerateInvoicesAsync"/>) merges every currently-Published version's amounts
+    /// together, so publishing a second, independent fee (e.g. Transport, then Exam) adds to
+    /// what's billed instead of replacing it.</summary>
     public async Task<ApiResult<FeeStructurePublishResponse>> PublishStructureAsync(Guid id, CancellationToken ct = default)
     {
         if (tenant.TenantId is not { } tid)
             return ApiResult<FeeStructurePublishResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
+        var row = await structures.PublishAsync(tid, id, ct);
+        return row is null || !row.Found
+            ? ApiResult<FeeStructurePublishResponse>.Fail(new Error("not_found", "Fee structure version not found"), 404)
+            : ApiResult<FeeStructurePublishResponse>.Ok(new FeeStructurePublishResponse(row.Id!.Value, "active"));
+    }
 
-        var draft = await structures.GetByIdAsync(id, ct);
-        if (draft is null)
-            return ApiResult<FeeStructurePublishResponse>.Fail(new Error("not_found", "Fee structure version not found"), 404);
-
-        if (string.Equals(draft.Status, "active", StringComparison.OrdinalIgnoreCase))
-            return ApiResult<FeeStructurePublishResponse>.Ok(new FeeStructurePublishResponse(draft.Id, "active"));
-
-        var current = await structures.GetAsync(ct);
-        var mergedAmountsJson = current is null
-            ? draft.AmountsJson
-            : MergeAmountsJson(current.AmountsJson, draft.AmountsJson);
-
-        var req = new UpsertFeeStructureRequest(
-            draft.Id, draft.Name, draft.AcademicYear, draft.ClassGrade, draft.Section, draft.Currency,
-            DateOnly.FromDateTime(draft.EffectiveFrom),
-            draft.EffectiveTo is { } et ? DateOnly.FromDateTime(et) : null,
-            "active", draft.Description, null, mergedAmountsJson);
-
-        var saved = await structures.UpsertAsync(tid, req, mergedAmountsJson, ct);
-        return saved is null
-            ? ApiResult<FeeStructurePublishResponse>.Fail(new Error("internal_error", "publish failed"), 500)
-            : ApiResult<FeeStructurePublishResponse>.Ok(new FeeStructurePublishResponse(saved.Id, "active"));
+    /// <summary>Explicitly un-publishes this version (Status = inactive) — the only way a
+    /// version stops being billed is a user clicking Unpublish; publishing another version
+    /// never does this automatically.</summary>
+    public async Task<ApiResult<FeeStructurePublishResponse>> UnpublishStructureAsync(Guid id, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<FeeStructurePublishResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
+        var row = await structures.UnpublishAsync(tid, id, ct);
+        return row is null || !row.Found
+            ? ApiResult<FeeStructurePublishResponse>.Fail(new Error("not_found", "Fee structure version not found"), 404)
+            : ApiResult<FeeStructurePublishResponse>.Ok(new FeeStructurePublishResponse(row.Id!.Value, "inactive"));
     }
 
     /// <summary>Deep-merges two amounts matrices (class → headId → rate): every (class, head)
-    /// pair from <paramref name="overlayJson"/> (the draft being published) wins; every pair
-    /// only present in <paramref name="baseJson"/> (the previously-live version) is carried
-    /// forward unchanged. A class whose value is a bare number (the legacy flat-rate shape) is
-    /// taken wholesale from whichever side has it — overlay wins if both do.</summary>
+    /// pair from <paramref name="overlayJson"/> wins; every pair only present in
+    /// <paramref name="baseJson"/> is carried forward unchanged. A class whose value is a bare
+    /// number (the legacy flat-rate shape) is taken wholesale from whichever side has it —
+    /// overlay wins if both do. Used to combine every currently-Published fee structure's
+    /// amounts into one matrix for invoice generation, so no fee head is lost and the same
+    /// (class, head) pair set by more than one Published version is never double-counted —
+    /// the most-recently-created version (applied last, as the overlay) wins.</summary>
     private static string MergeAmountsJson(string? baseJson, string? overlayJson)
     {
         var merged = new Dictionary<string, object>(StringComparer.OrdinalIgnoreCase);
@@ -358,17 +355,24 @@ public sealed class FeeService(
             return ApiResult<GenerateFeeInvoicesResponse>.Fail(
                 new Error("validation_error", "Select at least one class or grade"), 400);
 
-        var structure = await structures.GetAsync(ct);
-        if (structure is null)
+        // Every currently-Published fee structure applies — there is no single "live" row.
+        // Merge them all together (oldest first, so the most recently created one wins any
+        // (class, head) pair more than one of them sets) rather than reading just one.
+        var activeStructures = await structures.ListActiveAsync(tid, ct);
+        if (activeStructures.Count == 0)
             return ApiResult<GenerateFeeInvoicesResponse>.Fail(
                 new Error("not_found", "No fee structure saved"), 404);
+
+        var combinedAmountsJson = activeStructures
+            .Select(s => s.AmountsJson)
+            .Aggregate((string?)null, (merged, next) => merged is null ? next : MergeAmountsJson(merged, next));
 
         JsonElement amounts;
         try
         {
-            amounts = string.IsNullOrWhiteSpace(structure.AmountsJson)
+            amounts = string.IsNullOrWhiteSpace(combinedAmountsJson)
                 ? JsonDocument.Parse("{}").RootElement.Clone()
-                : JsonDocument.Parse(structure.AmountsJson).RootElement.Clone();
+                : JsonDocument.Parse(combinedAmountsJson).RootElement.Clone();
         }
         catch (JsonException)
         {

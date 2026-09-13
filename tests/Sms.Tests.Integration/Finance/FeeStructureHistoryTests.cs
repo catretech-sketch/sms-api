@@ -190,7 +190,7 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task Saving_as_active_retires_the_previously_published_version()
+    public async Task Saving_a_second_version_as_active_leaves_the_first_one_published()
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
@@ -201,12 +201,12 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
 
         var firstEntry = await HistoryEntryAsync(client, first.GetProperty("id").GetGuid());
         var secondEntry = await HistoryEntryAsync(client, second.GetProperty("id").GetGuid());
-        firstEntry.GetProperty("status").GetString().Should().Be("inactive", "publishing a new version retires the previous one");
+        firstEntry.GetProperty("status").GetString().Should().Be("active", "there is no 'only one Published row' rule");
         secondEntry.GetProperty("status").GetString().Should().Be("active");
     }
 
     [Fact]
-    public async Task Publishing_a_draft_makes_it_the_current_structure_and_retires_the_previous_one()
+    public async Task Publishing_a_draft_leaves_every_other_published_version_unchanged()
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
@@ -214,72 +214,86 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
 
         var published = await SaveStructureAsync(client, "Published version", "2025-26", "active");
         var draft = await SaveStructureAsync(client, "Draft version", "2025-26", "inactive");
-
         var draftId = draft.GetProperty("id").GetGuid();
+
         await Data(await client.PostAsync($"/v1/fees/structures/{draftId}/publish", new StringContent("")), HttpStatusCode.OK);
 
-        var current = await Data(await client.GetAsync("/v1/fees/structure"), HttpStatusCode.OK);
-        current.GetProperty("id").GetGuid().Should().Be(draftId);
-        current.GetProperty("name").GetString().Should().Be("Draft version");
+        var draftEntry = await HistoryEntryAsync(client, draftId);
+        draftEntry.GetProperty("status").GetString().Should().Be("active", "the draft itself is now published");
 
         var publishedEntry = await HistoryEntryAsync(client, published.GetProperty("id").GetGuid());
-        publishedEntry.GetProperty("status").GetString().Should().Be("inactive", "publishing the draft retires the previously published version");
+        publishedEntry.GetProperty("status").GetString().Should().Be("active", "publishing another version must not unpublish this one");
     }
 
     [Fact]
-    public async Task Publishing_a_second_fee_head_s_draft_merges_it_with_the_first_instead_of_replacing_it()
+    public async Task Multiple_fee_structures_can_be_published_at_the_same_time()
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
         var client = PrincipalClient(app, tenantId);
 
-        await Data(await client.PutAsJsonAsync("/v1/fees/structure", new
-        {
-            name = "Transport", academic_year = "2025-26", currency = "INR", effective_from = "2025-04-01",
-            status = "active", amounts_json = """{"X-A":{"transport-head":19000}}""",
-        }), HttpStatusCode.OK);
+        var transport = await SaveStructureAsync(client, "Transport", "2025-26", "active",
+            amountsJson: """{"X-A":{"transport-head":19000}}""");
+        var exam = await SaveStructureAsync(client, "Exam", "2025-26", "inactive",
+            amountsJson: """{"X-A":{"exam-head":6500}}""");
+        var examId = exam.GetProperty("id").GetGuid();
 
-        var examDraft = await Data(await client.PutAsJsonAsync("/v1/fees/structure", new
-        {
-            name = "Exam", academic_year = "2025-26", currency = "INR", effective_from = "2025-04-01",
-            status = "inactive", amounts_json = """{"X-A":{"exam-head":6500}}""",
-        }), HttpStatusCode.OK);
-        var examDraftId = examDraft.GetProperty("id").GetGuid();
+        await Data(await client.PostAsync($"/v1/fees/structures/{examId}/publish", new StringContent("")), HttpStatusCode.OK);
 
-        await Data(await client.PostAsync($"/v1/fees/structures/{examDraftId}/publish", new StringContent("")), HttpStatusCode.OK);
-
-        var current = await Data(await client.GetAsync("/v1/fees/structure"), HttpStatusCode.OK);
-        current.GetProperty("id").GetGuid().Should().Be(examDraftId, "publishing updates the draft's own row in place");
-        var xa = current.GetProperty("amounts").GetProperty("X-A");
-        xa.GetProperty("transport-head").GetDecimal().Should().Be(19000, "the previously-live Transport head must survive the merge");
-        xa.GetProperty("exam-head").GetDecimal().Should().Be(6500, "the newly-published Exam head must be present too");
+        var history = await Data(await client.GetAsync("/v1/fees/structures"), HttpStatusCode.OK);
+        var activeStatuses = history.EnumerateArray()
+            .Where(e => e.GetProperty("id").GetGuid() == transport.GetProperty("id").GetGuid() || e.GetProperty("id").GetGuid() == examId)
+            .Select(e => e.GetProperty("status").GetString())
+            .ToList();
+        activeStatuses.Should().AllBe("active", "Transport and Exam are both published at the same time");
     }
 
     [Fact]
-    public async Task Publishing_a_draft_that_repeats_a_head_overrides_only_that_head_s_rate()
+    public async Task Explicit_unpublish_retires_only_that_version()
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
         var client = PrincipalClient(app, tenantId);
 
-        await Data(await client.PutAsJsonAsync("/v1/fees/structure", new
+        var a = await SaveStructureAsync(client, "Fee A", "2025-26", "active");
+        var b = await SaveStructureAsync(client, "Fee B", "2025-26", "active");
+        var aId = a.GetProperty("id").GetGuid();
+        var bId = b.GetProperty("id").GetGuid();
+
+        await Data(await client.PostAsync($"/v1/fees/structures/{aId}/unpublish", new StringContent("")), HttpStatusCode.OK);
+
+        var aEntry = await HistoryEntryAsync(client, aId);
+        var bEntry = await HistoryEntryAsync(client, bId);
+        aEntry.GetProperty("status").GetString().Should().Be("inactive", "explicitly unpublishing A must retire only A");
+        bEntry.GetProperty("status").GetString().Should().Be("active", "B was never touched");
+    }
+
+    [Fact]
+    public async Task Invoice_generation_bills_every_published_structure_without_double_counting_a_repeated_head()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+        await CreateStudentAsync(client, "ADM-HIST-6", "X", "A", 1);
+
+        await SaveStructureAsync(client, "Transport", "2025-26", "active",
+            amountsJson: """{"X-A":{"transport":19000}}""");
+        await SaveStructureAsync(client, "Exam", "2025-26", "active",
+            amountsJson: """{"X-A":{"exam":6500}}""");
+        // A third, more-recently-published structure that repeats "transport" at a different
+        // rate must win that one head, not add to it (no double counting).
+        await SaveStructureAsync(client, "Transport revised", "2025-26", "active",
+            amountsJson: """{"X-A":{"transport":21000}}""");
+
+        var generated = await Data(await client.PostAsJsonAsync("/v1/fees/invoices/generate", new
         {
-            name = "Original rates", academic_year = "2025-26", currency = "INR", effective_from = "2025-04-01",
-            status = "active", amounts_json = """{"X-A":{"tuition":1000},"X-B":{"tuition":1000}}""",
+            academic_year = "2025-26", term = "Term 1", classes = new[] { "X-A" },
         }), HttpStatusCode.OK);
+        generated.GetProperty("created").GetInt32().Should().Be(1);
 
-        var raiseDraft = await Data(await client.PutAsJsonAsync("/v1/fees/structure", new
-        {
-            name = "Raise X-A only", academic_year = "2025-26", currency = "INR", effective_from = "2025-04-01",
-            status = "inactive", amounts_json = """{"X-A":{"tuition":1500}}""",
-        }), HttpStatusCode.OK);
-        var raiseDraftId = raiseDraft.GetProperty("id").GetGuid();
-
-        await Data(await client.PostAsync($"/v1/fees/structures/{raiseDraftId}/publish", new StringContent("")), HttpStatusCode.OK);
-
-        var current = await Data(await client.GetAsync("/v1/fees/structure"), HttpStatusCode.OK);
-        current.GetProperty("amounts").GetProperty("X-A").GetProperty("tuition").GetDecimal().Should().Be(1500, "the draft's newer rate wins for the class/head it touched");
-        current.GetProperty("amounts").GetProperty("X-B").GetProperty("tuition").GetDecimal().Should().Be(1000, "a class/head the draft never mentioned is carried forward untouched");
+        var invoices = await Data(await client.GetAsync("/v1/fees/invoices"), HttpStatusCode.OK);
+        var invoice = invoices.EnumerateArray().Single();
+        invoice.GetProperty("amount").GetDecimal().Should().Be(27500, "21,000 (revised transport, not 19,000 + 21,000) + 6,500 exam");
     }
 
     [Fact]
@@ -341,7 +355,7 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task Editing_a_draft_and_publishing_updates_it_in_place_and_retires_the_previous_live_version()
+    public async Task Editing_a_draft_and_publishing_updates_it_in_place_and_leaves_the_other_live_version_published()
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
@@ -359,8 +373,8 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
 
         var publishedEntry = history.EnumerateArray().Single(e => e.GetProperty("id").GetGuid() == draftId);
         publishedEntry.GetProperty("status").GetString().Should().Be("active");
-        var retiredEntry = history.EnumerateArray().Single(e => e.GetProperty("id").GetGuid() == published.GetProperty("id").GetGuid());
-        retiredEntry.GetProperty("status").GetString().Should().Be("inactive", "the previously live version is retired");
+        var otherEntry = history.EnumerateArray().Single(e => e.GetProperty("id").GetGuid() == published.GetProperty("id").GetGuid());
+        otherEntry.GetProperty("status").GetString().Should().Be("active", "publishing this draft must not unpublish the other live version");
     }
 
     [Fact]

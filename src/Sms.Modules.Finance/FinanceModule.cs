@@ -721,10 +721,29 @@ public sealed class FeeStructureRepository(IDbConnectionFactory factory) : BaseR
             """,
             new { id }, ct)).FirstOrDefault();
 
-    /// <summary>Publishes this version (Status = active) and retires whichever version was
-    /// previously the tenant's one live version back to inactive.</summary>
+    /// <summary>Every currently-Published (Status = active) version for this tenant — there is
+    /// no "only one live row" rule, so this can return more than one. Ordered oldest-first so a
+    /// caller merging their amounts together can apply them in order and let the most recently
+    /// created version win any (class, head) pair more than one of them sets.</summary>
+    public Task<IReadOnlyList<FeeStructureRow>> ListActiveAsync(Guid tenantId, CancellationToken ct = default) =>
+        QueryInlineAsync<FeeStructureRow>(
+            """
+            SELECT Id, TenantId, Name, AcademicYear, ClassGrade, Section, Currency,
+                   EffectiveFrom, EffectiveTo, Status, Description, AmountsJson, CreatedAt
+            FROM dbo.FeeStructures WHERE TenantId = @tenantId AND LOWER(Status) = N'active'
+            ORDER BY CreatedAt ASC, Id ASC
+            """,
+            new { tenantId }, ct);
+
+    /// <summary>Publishes this version (Status = active). Does not touch any other version's
+    /// status — many versions can be Published at the same time.</summary>
     public Task<FeeStructurePublishRow?> PublishAsync(Guid tenantId, Guid id, CancellationToken ct = default) =>
         QuerySingleProcAsync<FeeStructurePublishRow>("dbo.FeeStructure_Publish", new { TenantId = tenantId, Id = id }, ct);
+
+    /// <summary>Explicitly retires this version (Status = inactive). Does not touch any other
+    /// version's status.</summary>
+    public Task<FeeStructurePublishRow?> UnpublishAsync(Guid tenantId, Guid id, CancellationToken ct = default) =>
+        QuerySingleProcAsync<FeeStructurePublishRow>("dbo.FeeStructure_Unpublish", new { TenantId = tenantId, Id = id }, ct);
 
     /// <summary>Deletes a draft version outright. Refuses (Deleted = false, Reason = "is_active")
     /// to delete the currently-published version — publish something else first.</summary>

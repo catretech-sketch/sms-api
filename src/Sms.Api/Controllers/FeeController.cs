@@ -108,6 +108,11 @@ public sealed class FeeController(IFeeService fees, ISisService sis) : ApiContro
     public async Task<IActionResult> PublishStructure(Guid id, CancellationToken ct) =>
         FromResult(await fees.PublishStructureAsync(id, ct));
 
+    [HttpPost("fees/structures/{id:guid}/unpublish")]
+    [Authorize(Policy = Policies.Principal)]
+    public async Task<IActionResult> UnpublishStructure(Guid id, CancellationToken ct) =>
+        FromResult(await fees.UnpublishStructureAsync(id, ct));
+
     [HttpDelete("fees/structures/{id:guid}")]
     [Authorize(Policy = Policies.Principal)]
     public async Task<IActionResult> DeleteStructure(Guid id, CancellationToken ct) =>
