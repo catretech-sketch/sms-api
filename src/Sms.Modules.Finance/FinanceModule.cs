@@ -678,7 +678,8 @@ public sealed record FeeStructureSummaryResponse(
 
 /// <summary>One fee head's projected revenue for a saved structure version — e.g. "Exam Fee —
 /// ₹8,000" — summed (rate × enrolled students) across every class that charges it.</summary>
-public sealed record FeeStructureHeadAmountResponse(Guid? HeadId, string HeadName, decimal Amount);
+public sealed record FeeStructureHeadAmountResponse(
+    Guid? HeadId, string HeadName, decimal Amount, decimal PerStudentAmount);
 
 public sealed record FeeStructureListRow(
     Guid Id, Guid TenantId, string Name, string AcademicYear, string? ClassGrade, string? Section,

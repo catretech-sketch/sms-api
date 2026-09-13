@@ -483,6 +483,7 @@ public sealed class FeeService(
             decimal total = 0;
             var byHeadName = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
             var headIdByName = new Dictionary<string, Guid?>(StringComparer.OrdinalIgnoreCase);
+            var studentsByHeadName = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var byClass in doc.RootElement.EnumerateObject())
             {
@@ -494,6 +495,7 @@ public sealed class FeeService(
                     total += flat * enrolled;
                     byHeadName["Fee"] = byHeadName.GetValueOrDefault("Fee") + flat * enrolled;
                     headIdByName["Fee"] = null;
+                    studentsByHeadName["Fee"] = studentsByHeadName.GetValueOrDefault("Fee") + enrolled;
                     continue;
                 }
                 if (byClass.Value.ValueKind != JsonValueKind.Object) continue;
@@ -507,11 +509,17 @@ public sealed class FeeService(
                     var headName = headNameById.TryGetValue(byHead.Name, out var nm) ? nm : byHead.Name;
                     byHeadName[headName] = byHeadName.GetValueOrDefault(headName) + revenue;
                     headIdByName[headName] = headId;
+                    studentsByHeadName[headName] = studentsByHeadName.GetValueOrDefault(headName) + enrolled;
                 }
             }
 
             var headAmounts = byHeadName
-                .Select(kv => new FeeStructureHeadAmountResponse(headIdByName[kv.Key], kv.Key, kv.Value))
+                .Select(kv =>
+                {
+                    var students = studentsByHeadName.GetValueOrDefault(kv.Key);
+                    var perStudent = students > 0 ? kv.Value / students : 0;
+                    return new FeeStructureHeadAmountResponse(headIdByName[kv.Key], kv.Key, kv.Value, perStudent);
+                })
                 .OrderByDescending(h => h.Amount)
                 .ToList();
             return (total, headAmounts);
