@@ -44,16 +44,23 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
         return doc.RootElement.GetProperty("data").Clone();
     }
 
-    private static async Task<JsonElement> SaveStructureAsync(HttpClient client, string name, string academicYear) =>
+    private static async Task<JsonElement> SaveStructureAsync(
+        HttpClient client, string name, string academicYear, string status = "active") =>
         await Data(await client.PutAsJsonAsync("/v1/fees/structure", new
         {
             name,
             academic_year = academicYear,
             currency = "INR",
             effective_from = "2025-04-01",
-            status = "active",
+            status,
             amounts_json = """{"X-A":{"tuition":1000}}""",
         }), HttpStatusCode.OK);
+
+    private static async Task<JsonElement> HistoryEntryAsync(HttpClient client, Guid id)
+    {
+        var history = await Data(await client.GetAsync("/v1/fees/structures"), HttpStatusCode.OK);
+        return history.EnumerateArray().Single(e => e.GetProperty("id").GetGuid() == id);
+    }
 
     [Fact]
     public async Task Saving_twice_creates_two_history_entries_instead_of_overwriting()
@@ -125,5 +132,76 @@ public class FeeStructureHistoryTests(SqlServerFixture fx)
         fetched.GetProperty("id").GetGuid().Should().Be(oldId);
         fetched.GetProperty("name").GetString().Should().Be("Old version");
         fetched.GetProperty("amounts").GetProperty("X-A").GetProperty("tuition").GetDecimal().Should().Be(1000);
+    }
+
+    [Fact]
+    public async Task Saving_as_active_retires_the_previously_published_version()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+
+        var first = await SaveStructureAsync(client, "First live version", "2025-26", "active");
+        var second = await SaveStructureAsync(client, "Second live version", "2025-26", "active");
+
+        var firstEntry = await HistoryEntryAsync(client, first.GetProperty("id").GetGuid());
+        var secondEntry = await HistoryEntryAsync(client, second.GetProperty("id").GetGuid());
+        firstEntry.GetProperty("status").GetString().Should().Be("inactive", "publishing a new version retires the previous one");
+        secondEntry.GetProperty("status").GetString().Should().Be("active");
+    }
+
+    [Fact]
+    public async Task Publishing_a_draft_makes_it_the_current_structure_and_retires_the_previous_one()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+
+        var published = await SaveStructureAsync(client, "Published version", "2025-26", "active");
+        var draft = await SaveStructureAsync(client, "Draft version", "2025-26", "inactive");
+
+        var draftId = draft.GetProperty("id").GetGuid();
+        await Data(await client.PostAsync($"/v1/fees/structures/{draftId}/publish", new StringContent("")), HttpStatusCode.OK);
+
+        var current = await Data(await client.GetAsync("/v1/fees/structure"), HttpStatusCode.OK);
+        current.GetProperty("id").GetGuid().Should().Be(draftId);
+        current.GetProperty("name").GetString().Should().Be("Draft version");
+
+        var publishedEntry = await HistoryEntryAsync(client, published.GetProperty("id").GetGuid());
+        publishedEntry.GetProperty("status").GetString().Should().Be("inactive", "publishing the draft retires the previously published version");
+    }
+
+    [Fact]
+    public async Task A_draft_version_can_be_deleted()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+
+        var draft = await SaveStructureAsync(client, "Throwaway draft", "2025-26", "inactive");
+        var draftId = draft.GetProperty("id").GetGuid();
+
+        var res = await client.DeleteAsync($"/v1/fees/structures/{draftId}");
+        res.StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var history = await Data(await client.GetAsync("/v1/fees/structures"), HttpStatusCode.OK);
+        history.EnumerateArray().Any(e => e.GetProperty("id").GetGuid() == draftId).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task The_currently_published_version_cannot_be_deleted()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        var client = PrincipalClient(app, tenantId);
+
+        var published = await SaveStructureAsync(client, "Live version", "2025-26", "active");
+        var publishedId = published.GetProperty("id").GetGuid();
+
+        var res = await client.DeleteAsync($"/v1/fees/structures/{publishedId}");
+        res.StatusCode.Should().Be(HttpStatusCode.Conflict);
+
+        var history = await Data(await client.GetAsync("/v1/fees/structures"), HttpStatusCode.OK);
+        history.EnumerateArray().Any(e => e.GetProperty("id").GetGuid() == publishedId).Should().BeTrue("a refused delete must not remove the row");
     }
 }

@@ -680,6 +680,10 @@ public sealed record FeeStructureListRow(
     string Currency, DateTime EffectiveFrom, DateTime? EffectiveTo, string Status,
     string? Description, DateTime CreatedAt);
 
+public sealed record FeeStructurePublishRow(bool Found, Guid? Id);
+public sealed record FeeStructureDeleteRow(bool Deleted, string? Reason);
+public sealed record FeeStructurePublishResponse(Guid Id, string Status);
+
 public sealed record UpsertFeeStructureRequest(
     Guid? Id,
     string Name,
@@ -710,6 +714,16 @@ public sealed class FeeStructureRepository(IDbConnectionFactory factory) : BaseR
             FROM dbo.FeeStructures WHERE Id = @id
             """,
             new { id }, ct)).FirstOrDefault();
+
+    /// <summary>Publishes this version (Status = active) and retires whichever version was
+    /// previously the tenant's one live version back to inactive.</summary>
+    public Task<FeeStructurePublishRow?> PublishAsync(Guid tenantId, Guid id, CancellationToken ct = default) =>
+        QuerySingleProcAsync<FeeStructurePublishRow>("dbo.FeeStructure_Publish", new { TenantId = tenantId, Id = id }, ct);
+
+    /// <summary>Deletes a draft version outright. Refuses (Deleted = false, Reason = "is_active")
+    /// to delete the currently-published version — publish something else first.</summary>
+    public Task<FeeStructureDeleteRow?> DeleteAsync(Guid tenantId, Guid id, CancellationToken ct = default) =>
+        QuerySingleProcAsync<FeeStructureDeleteRow>("dbo.FeeStructure_Delete", new { TenantId = tenantId, Id = id }, ct);
 
     public Task<FeeStructureRow?> UpsertAsync(
         Guid tenantId, UpsertFeeStructureRequest r, string amountsJson, CancellationToken ct = default) =>

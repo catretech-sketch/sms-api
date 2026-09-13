@@ -27,6 +27,8 @@ public interface IFeeService
     Task<ApiResult<FeeStructureResponse>> GetStructureAsync(CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<FeeStructureSummaryResponse>>> ListStructureHistoryAsync(CancellationToken ct = default);
     Task<ApiResult<FeeStructureResponse>> GetStructureByIdAsync(Guid id, CancellationToken ct = default);
+    Task<ApiResult<FeeStructurePublishResponse>> PublishStructureAsync(Guid id, CancellationToken ct = default);
+    Task<ApiResult> DeleteStructureAsync(Guid id, CancellationToken ct = default);
     Task<ApiResult<FeeStructureResponse>> UpsertStructureAsync(UpsertFeeStructureRequest req, CancellationToken ct = default);
     Task<ApiResult<GenerateFeeInvoicesResponse>> GenerateInvoicesAsync(
         GenerateFeeInvoicesRequest req, CancellationToken ct = default);
@@ -211,6 +213,32 @@ public sealed class FeeService(
         return row is null
             ? ApiResult<FeeStructureResponse>.Fail(new Error("not_found", "Fee structure version not found"), 404)
             : ApiResult<FeeStructureResponse>.Ok(ToResponse(row));
+    }
+
+    public async Task<ApiResult<FeeStructurePublishResponse>> PublishStructureAsync(Guid id, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<FeeStructurePublishResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
+        var row = await structures.PublishAsync(tid, id, ct);
+        return row is null || !row.Found
+            ? ApiResult<FeeStructurePublishResponse>.Fail(new Error("not_found", "Fee structure version not found"), 404)
+            : ApiResult<FeeStructurePublishResponse>.Ok(new FeeStructurePublishResponse(row.Id!.Value, "active"));
+    }
+
+    public async Task<ApiResult> DeleteStructureAsync(Guid id, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+        var row = await structures.DeleteAsync(tid, id, ct);
+        if (row is null || !row.Deleted)
+        {
+            return row?.Reason switch
+            {
+                "is_active" => ApiResult.Fail(new Error("conflict", "Cannot delete the currently published version — publish another version first."), 409),
+                _ => ApiResult.Fail(new Error("not_found", "Fee structure version not found"), 404),
+            };
+        }
+        return ApiResult.NoContent();
     }
 
     public async Task<ApiResult<FeeStructureResponse>> UpsertStructureAsync(
