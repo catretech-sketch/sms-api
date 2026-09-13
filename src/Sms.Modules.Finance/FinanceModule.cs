@@ -658,13 +658,27 @@ public sealed class FeeHeadRepository(IDbConnectionFactory factory) : BaseReposi
 public sealed record FeeStructureRow(
     Guid Id, Guid TenantId, string Name, string AcademicYear, string? ClassGrade, string? Section,
     string Currency, DateTime EffectiveFrom, DateTime? EffectiveTo, string Status,
-    string? Description, string AmountsJson);
+    string? Description, string AmountsJson, DateTime CreatedAt);
 
 public sealed record FeeStructureResponse(
     Guid? Id, Guid? TenantId, string Name, string AcademicYear,
     [property: JsonPropertyName("class")] string? ClassGrade,
     string? Section, string Currency, DateOnly EffectiveFrom, DateOnly? EffectiveTo,
     string Status, string? Description, JsonElement Amounts);
+
+/// <summary>One saved fee-structure version in the History list — no amounts, kept light.
+/// View the full amount breakdown via GET /fees/structure/{id} if/when that's added; today the
+/// list exists so an admin can see every version was actually saved, in order.</summary>
+public sealed record FeeStructureSummaryResponse(
+    Guid Id, string Name, string AcademicYear,
+    [property: JsonPropertyName("class")] string? ClassGrade,
+    string? Section, string Currency, DateOnly EffectiveFrom, DateOnly? EffectiveTo,
+    string Status, string? Description, DateTime CreatedAt);
+
+public sealed record FeeStructureListRow(
+    Guid Id, Guid TenantId, string Name, string AcademicYear, string? ClassGrade, string? Section,
+    string Currency, DateTime EffectiveFrom, DateTime? EffectiveTo, string Status,
+    string? Description, DateTime CreatedAt);
 
 public sealed record UpsertFeeStructureRequest(
     Guid? Id,
@@ -684,6 +698,18 @@ public sealed class FeeStructureRepository(IDbConnectionFactory factory) : BaseR
 {
     public Task<FeeStructureRow?> GetAsync(CancellationToken ct = default) =>
         QuerySingleProcAsync<FeeStructureRow>("dbo.FeeStructure_Get", ct: ct);
+
+    public Task<IReadOnlyList<FeeStructureListRow>> ListHistoryAsync(CancellationToken ct = default) =>
+        QueryProcAsync<FeeStructureListRow>("dbo.FeeStructure_List", ct: ct);
+
+    public async Task<FeeStructureRow?> GetByIdAsync(Guid id, CancellationToken ct = default) =>
+        (await QueryInlineAsync<FeeStructureRow>(
+            """
+            SELECT Id, TenantId, Name, AcademicYear, ClassGrade, Section, Currency,
+                   EffectiveFrom, EffectiveTo, Status, Description, AmountsJson, CreatedAt
+            FROM dbo.FeeStructures WHERE Id = @id
+            """,
+            new { id }, ct)).FirstOrDefault();
 
     public Task<FeeStructureRow?> UpsertAsync(
         Guid tenantId, UpsertFeeStructureRequest r, string amountsJson, CancellationToken ct = default) =>

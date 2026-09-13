@@ -25,6 +25,8 @@ public interface IFeeService
     Task<ApiResult> DeleteHeadAsync(Guid id, CancellationToken ct = default);
 
     Task<ApiResult<FeeStructureResponse>> GetStructureAsync(CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<FeeStructureSummaryResponse>>> ListStructureHistoryAsync(CancellationToken ct = default);
+    Task<ApiResult<FeeStructureResponse>> GetStructureByIdAsync(Guid id, CancellationToken ct = default);
     Task<ApiResult<FeeStructureResponse>> UpsertStructureAsync(UpsertFeeStructureRequest req, CancellationToken ct = default);
     Task<ApiResult<GenerateFeeInvoicesResponse>> GenerateInvoicesAsync(
         GenerateFeeInvoicesRequest req, CancellationToken ct = default);
@@ -195,6 +197,20 @@ public sealed class FeeService(
     {
         var row = await structures.GetAsync(ct);
         return ApiResult<FeeStructureResponse>.Ok(row is null ? EmptyStructure() : ToResponse(row));
+    }
+
+    public async Task<ApiResult<IReadOnlyList<FeeStructureSummaryResponse>>> ListStructureHistoryAsync(CancellationToken ct = default)
+    {
+        var rows = await structures.ListHistoryAsync(ct);
+        return ApiResult<IReadOnlyList<FeeStructureSummaryResponse>>.Ok(rows.Select(ToSummary).ToList());
+    }
+
+    public async Task<ApiResult<FeeStructureResponse>> GetStructureByIdAsync(Guid id, CancellationToken ct = default)
+    {
+        var row = await structures.GetByIdAsync(id, ct);
+        return row is null
+            ? ApiResult<FeeStructureResponse>.Fail(new Error("not_found", "Fee structure version not found"), 404)
+            : ApiResult<FeeStructureResponse>.Ok(ToResponse(row));
     }
 
     public async Task<ApiResult<FeeStructureResponse>> UpsertStructureAsync(
@@ -401,6 +417,11 @@ public sealed class FeeService(
             Description: null,
             Amounts: JsonDocument.Parse("{}").RootElement.Clone());
     }
+
+    private static FeeStructureSummaryResponse ToSummary(FeeStructureListRow row) => new(
+        row.Id, row.Name, row.AcademicYear, row.ClassGrade, row.Section, row.Currency,
+        DateOnly.FromDateTime(row.EffectiveFrom), row.EffectiveTo is { } et ? DateOnly.FromDateTime(et) : null,
+        row.Status, row.Description, row.CreatedAt);
 
     private static FeeStructureResponse ToResponse(FeeStructureRow row)
     {

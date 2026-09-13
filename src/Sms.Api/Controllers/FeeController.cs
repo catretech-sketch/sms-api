@@ -90,6 +90,19 @@ public sealed class FeeController(IFeeService fees, ISisService sis) : ApiContro
     public async Task<IActionResult> GetStructure(CancellationToken ct) =>
         FromResult(await fees.GetStructureAsync(ct));
 
+    [HttpGet("fees/structures")]
+    public async Task<IActionResult> ListStructureHistory(CancellationToken ct)
+    {
+        var result = await fees.ListStructureHistoryAsync(ct);
+        if (result.Error is { } error)
+            return StatusCode(result.StatusCode, ErrorEnvelope.From(error));
+        return CursorOk(result.Data!);
+    }
+
+    [HttpGet("fees/structures/{id:guid}")]
+    public async Task<IActionResult> GetStructureVersion(Guid id, CancellationToken ct) =>
+        FromResult(await fees.GetStructureByIdAsync(id, ct));
+
     [HttpPut("fees/structure")]
     [Authorize(Policy = Policies.Principal)]
     public async Task<IActionResult> UpsertStructure([FromBody] UpsertFeeStructureRequest req, CancellationToken ct) =>
