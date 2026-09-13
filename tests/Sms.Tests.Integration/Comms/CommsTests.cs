@@ -81,4 +81,35 @@ public class CommsTests(SqlServerFixture fx)
         list.EnumerateArray().Select(e => e.GetProperty("id").GetGuid())
             .Should().Contain(created.GetProperty("id").GetGuid());
     }
+
+    /// The frontend's fee-notification path (Save & generate, and the Send reminders button)
+    /// both go through notifyFeeAudience -> POST /v1/announcements with the same shape used
+    /// here — this proves a fee notification actually lands in the Communication ›
+    /// Announcements list the school sees, not just some fire-and-forget call.
+    [Fact]
+    public async Task Fee_notification_via_announcements_shows_up_in_the_announcements_list()
+    {
+        await using var app = App();
+        var client = TenantClient(app, Guid.NewGuid(), Guid.NewGuid(), [Policies.Principal]);
+
+        var created = await Data(await client.PostAsJsonAsync("/v1/announcements", new
+        {
+            title = "New fee invoices generated",
+            body = "Greenwood School: A new fee has been published for Term 1 · 2026-27. Please check the parent app for your dues and pay at the earliest.",
+            type = "fee_invoice_created",
+            audience = "parents",
+            emails = new[] { "parent1@x.com" },
+            phones = new[] { "9000000001" },
+            channels = new[] { "email", "sms", "app" },
+            school_name = "Greenwood School",
+            event_kind = "fee_invoice_created",
+        }), HttpStatusCode.Created);
+        created.GetProperty("type").GetString().Should().Be("fee_invoice_created");
+        created.GetProperty("audience").GetString().Should().Be("parents");
+
+        var list = await Data(await client.GetAsync("/v1/announcements"), HttpStatusCode.OK);
+        var row = list.EnumerateArray().First(e => e.GetProperty("id").GetGuid() == created.GetProperty("id").GetGuid());
+        row.GetProperty("title").GetString().Should().Be("New fee invoices generated");
+        row.GetProperty("type").GetString().Should().Be("fee_invoice_created");
+    }
 }
