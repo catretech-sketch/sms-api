@@ -17,7 +17,19 @@ namespace Sms.Tests.Integration.Attendance;
 public sealed class PeriodAttendanceAdvancedSummaryTests(SqlServerFixture fx)
 {
     private const string Key = "integration-test-signing-key-32-bytes-min!!";
-    private const string Day = "2026-08-12";
+
+    // Seeded attendance date must stay comfortably inside the "last_30_days" preset (today-29..today)
+    // no matter when CI runs, and must land on a Wednesday to match the seeded TimetableSlots row.
+    // A fixed calendar date drifts out of that rolling window as real time passes — this recomputes
+    // a same-weekday date ~2 weeks back every run instead.
+    private static readonly DateTime SeedDate = MostRecentWednesdayOnOrBefore(DateTime.UtcNow.Date.AddDays(-14));
+    private static readonly string Day = SeedDate.ToString("yyyy-MM-dd");
+
+    private static DateTime MostRecentWednesdayOnOrBefore(DateTime from)
+    {
+        var offset = ((int)from.DayOfWeek - (int)DayOfWeek.Wednesday + 7) % 7;
+        return from.AddDays(-offset);
+    }
 
     private WebApplicationFactory<Program> App() =>
         new WebApplicationFactory<Program>().WithWebHostBuilder(builder =>
@@ -213,7 +225,7 @@ public sealed class PeriodAttendanceAdvancedSummaryTests(SqlServerFixture fx)
                 classBId,
                 studentAId,
                 studentBId,
-                date = new DateTime(2026, 8, 12),
+                date = SeedDate,
             });
 
         return new SummarySeed(
