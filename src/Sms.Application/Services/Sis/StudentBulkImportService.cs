@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Sms.Application.Common;
 using Sms.Application.Services.Academics;
+using Sms.Application.Services.Finance;
 using Sms.Application.Services.Transport;
 using Sms.Modules.Academics.Contracts;
 using Sms.Modules.Sis.Contracts;
@@ -16,7 +17,7 @@ public interface IStudentBulkImportService
 }
 
 public sealed class StudentBulkImportService(
-    ISisService sis, IAcademicsService academics, IStudentTransportService transport,
+    ISisService sis, IAcademicsService academics, IStudentTransportService transport, IFeeService fees,
     BulkImportRepository repo, ITenantContext tenant, ILogger<StudentBulkImportService> logger) : IStudentBulkImportService
 {
     public async Task<ApiResult<BulkImportBatchResponse>> ProcessBatchAsync(
@@ -44,6 +45,24 @@ public sealed class StudentBulkImportService(
             // A genuine cancellation (client disconnect/timeout) must propagate out of the loop
             // rather than being recorded as a false "skipped" row — see ProcessRowAsync.
             results.Add(await ProcessRowAsync(req.ImportId, req.BatchIndex, row, ct));
+        }
+
+        // Every row's create + extras + transport is already committed at this point (see
+        // ProcessRowAsync) — safe to backfill fees for the whole batch in ONE call, batched
+        // internally, rather than fee logic living inside this loop or inside bulk import at all.
+        var createdIds = results.Where(r => r.StudentId is { } id).Select(r => r.StudentId!.Value).ToList();
+        if (createdIds.Count > 0)
+        {
+            try
+            {
+                await fees.ApplyExistingFeeStructureAsync(createdIds, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                logger.LogError(ex,
+                    "Bulk import batch {BatchIndex} (import {ImportId}) fee backfill failed for {Count} students",
+                    req.BatchIndex, req.ImportId, createdIds.Count);
+            }
         }
 
         var response = new BulkImportBatchResponse(

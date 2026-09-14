@@ -511,6 +511,100 @@ public sealed class FeeInvoiceRepository(IDbConnectionFactory factory, IAuditLog
     }
 
     /// <summary>
+    /// Every distinct Period already used by ANY invoice for this academic year (Period is the
+    /// free-text "{AcademicYear} {Term}" string GenerateInvoicesAsync builds — there is no
+    /// separate stored Term/period column, so this is the only source of truth for "which
+    /// periods has this tenant actually generated for this year"). Used to backfill NEWLY
+    /// created students onto periods that already exist, without inventing a period name.
+    /// DueDate is the latest one recorded against that period, for reuse on the new invoice.
+    /// </summary>
+    public async Task<IReadOnlyList<FeeInvoicePeriodRow>> ListPeriodsForYearAsync(
+        string academicYear, CancellationToken ct = default)
+    {
+        var escaped = academicYear.Replace("[", "[[]").Replace("%", "[%]").Replace("_", "[_]");
+        var prefix = escaped + " %";
+        return await QueryInlineAsync<FeeInvoicePeriodRow>(
+            """
+            SELECT Period, MAX(DueDate) AS DueDate
+            FROM dbo.FeeInvoices
+            WHERE Period LIKE @prefix
+            GROUP BY Period
+            """,
+            new { prefix }, ct);
+    }
+
+    /// <summary>One round trip for every (StudentId, Period) pair already invoiced among the
+    /// given students — batched existence check for ApplyExistingFeeStructureAsync's backfill,
+    /// so it never issues one ExistsForStudentPeriodAsync call per student. Carries InvoiceId/
+    /// Amount/PaidAmount too, so the backfill can decide create vs. recalculate-if-unpaid vs.
+    /// leave-alone without a second round trip.</summary>
+    public async Task<IReadOnlyList<StudentInvoicePeriodRow>> ListExistingPeriodsByStudentAsync(
+        IReadOnlyList<Guid> studentIds, CancellationToken ct = default)
+    {
+        if (studentIds.Count == 0) return [];
+        await EnsurePaidAmountColumnAsync(ct);
+        return await QueryInlineAsync<StudentInvoicePeriodRow>(
+            "SELECT StudentId, Period, Id AS InvoiceId, Amount, PaidAmount FROM dbo.FeeInvoices WHERE StudentId IN @ids",
+            new { ids = studentIds }, ct);
+    }
+
+    /// <summary>
+    /// Recalculates an invoice's lines/total to the freshly computed values — ONLY while it is
+    /// still fully unpaid. The WHERE PaidAmount = 0 guard is the actual safety mechanism (not
+    /// just a pre-check the caller already did): if a payment lands between the caller reading
+    /// this invoice and this call, the UPDATE simply matches zero rows and this returns false,
+    /// so a part-/fully-paid invoice can never be silently mutated by a race. Replaces (not
+    /// appends) FeeInvoiceLines, so re-running with the same computed lines is a no-op amount-
+    /// wise and never duplicates a line.
+    /// </summary>
+    public async Task<bool> ReplaceLinesIfUnpaidAsync(
+        Guid tenantId, Guid invoiceId, decimal newAmount, IReadOnlyList<FeeInvoiceLineInput> lines,
+        CancellationToken ct = default)
+    {
+        await EnsurePaidAmountColumnAsync(ct);
+        await using var conn = await Factory.OpenAsync(ct);
+        await using var tx = await conn.BeginTransactionAsync(ct);
+        try
+        {
+            var updated = await conn.ExecuteAsync(new CommandDefinition(
+                "UPDATE dbo.FeeInvoices SET Amount = @newAmount WHERE Id = @invoiceId AND PaidAmount = 0",
+                new { newAmount, invoiceId }, tx, cancellationToken: ct));
+            if (updated == 0)
+            {
+                await tx.RollbackAsync(ct);
+                return false;
+            }
+
+            await conn.ExecuteAsync(new CommandDefinition(
+                "DELETE FROM dbo.FeeInvoiceLines WHERE InvoiceId = @invoiceId",
+                new { invoiceId }, tx, cancellationToken: ct));
+
+            foreach (var line in lines)
+            {
+                await conn.ExecuteAsync(new CommandDefinition(
+                    """
+                    INSERT dbo.FeeInvoiceLines (Id, TenantId, InvoiceId, FeeHeadId, FeeHeadName, Amount, FeeHeadDescription)
+                    VALUES (@id, @tenantId, @invoiceId, @headId, @headName, @amount, @description)
+                    """,
+                    new
+                    {
+                        id = Guid.NewGuid(), tenantId, invoiceId,
+                        headId = line.HeadId, headName = line.HeadName, amount = line.Amount,
+                        description = line.Description,
+                    }, tx, cancellationToken: ct));
+            }
+
+            await tx.CommitAsync(ct);
+            return true;
+        }
+        catch
+        {
+            await tx.RollbackAsync(ct);
+            throw;
+        }
+    }
+
+    /// <summary>
     /// Cross-tenant fee rollup (call under platform elevation so RLS does not filter peers out).
     /// </summary>
     public Task<IReadOnlyList<FeeTenantSummaryRow>> SummarizeByTenantsAsync(
@@ -595,7 +689,18 @@ public sealed record GenerateFeeInvoicesRequest(
     IReadOnlyList<string>? Grades,
     IReadOnlyList<string>? Classes);
 
-public sealed record GenerateFeeInvoicesResponse(int Created);
+public sealed record GenerateFeeInvoicesResponse(int Created, int Recalculated = 0);
+
+/// <summary>Explicit "Sync/Apply Existing Fees" request: reconciles EVERY current student in
+/// the given class/grade against whatever periods already exist for the tenant/academic-year of
+/// the currently active Fee Structure(s) — for students created before this feature shipped, or
+/// before a period existed for their class. Same rules, same idempotency, same batching as the
+/// automatic on-create backfill; no academic_year/term to pick, since periods are read from what
+/// already exists rather than invented.</summary>
+public sealed record ReconcileFeeInvoicesRequest(IReadOnlyList<string>? Grades, IReadOnlyList<string>? Classes);
+
+public sealed record FeeInvoicePeriodRow(string Period, DateTime? DueDate);
+public sealed record StudentInvoicePeriodRow(Guid StudentId, string Period, Guid InvoiceId, decimal Amount, decimal PaidAmount);
 
 // ---- Payslips (HR/payroll) ----
 public sealed record PayslipResponse(

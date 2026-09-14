@@ -154,6 +154,15 @@ public sealed class FeeController(IFeeService fees, ISisService sis, IFeeOnlineP
     public async Task<IActionResult> GenerateInvoices([FromBody] GenerateFeeInvoicesRequest req, CancellationToken ct) =>
         FromResult(await fees.GenerateInvoicesAsync(req, ct));
 
+    /// Reconciles students who already existed before a period/structure applied to them —
+    /// old bulk-imported or manually-added students with a missing invoice — onto whatever
+    /// periods the tenant/academic-year already has, for the given class/grade. Same shared
+    /// backfill (ApplyExistingFeeStructureAsync) the on-create hooks use; never invents a period.
+    [HttpPost("fees/invoices/reconcile")]
+    [Authorize(Policy = Policies.Principal)]
+    public async Task<IActionResult> ReconcileInvoices([FromBody] ReconcileFeeInvoicesRequest req, CancellationToken ct) =>
+        FromResult(await fees.ReconcileFeesForClassAsync(req.Grades, req.Classes, ct));
+
     [HttpGet("fees/reports/summary")]
     public async Task<IActionResult> ReportSummary(CancellationToken ct)
     {

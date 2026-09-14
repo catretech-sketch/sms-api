@@ -38,6 +38,10 @@ public interface IFeeService
     Task<ApiResult<FeeStructureResponse>> UpsertStructureAsync(UpsertFeeStructureRequest req, CancellationToken ct = default);
     Task<ApiResult<GenerateFeeInvoicesResponse>> GenerateInvoicesAsync(
         GenerateFeeInvoicesRequest req, CancellationToken ct = default);
+    Task<ApiResult<int>> ApplyExistingFeeStructureAsync(
+        IReadOnlyList<Guid> studentIds, CancellationToken ct = default);
+    Task<ApiResult<GenerateFeeInvoicesResponse>> ReconcileFeesForClassAsync(
+        IReadOnlyList<string>? grades, IReadOnlyList<string>? classes, CancellationToken ct = default);
     Task<ApiResult<FeeReportSummaryResponse>> GetReportSummaryAsync(CancellationToken ct = default);
 }
 
@@ -552,6 +556,174 @@ public sealed class FeeService(
         }
 
         return ApiResult<GenerateFeeInvoicesResponse>.Ok(new GenerateFeeInvoicesResponse(created));
+    }
+
+    /// <summary>
+    /// Generic "apply what's already published" backfill for students who did not exist the
+    /// last time an admin ran GenerateInvoicesAsync — called from single Add Student (once
+    /// transport is settled) and from bulk import (once per batch), never with fee logic of its
+    /// own: it reuses the exact same active-structure merge, transport-gating (AmountForWithLines)
+    /// and per-student-period idempotency (ExistsForStudentPeriodAsync, here batched) that
+    /// GenerateInvoicesAsync uses.
+    ///
+    /// Candidate periods are NOT invented: a Fee Structure carries no Term/period of its own
+    /// (Period is the free-text "{AcademicYear} {Term}" string an admin types into Generate
+    /// Invoices), so the only honest source for "which periods this tenant already bills" is
+    /// FeeInvoices itself — scoped to the academic year(s) of the CURRENTLY ACTIVE structures
+    /// (the only per-structure academic-year signal that exists; students carry no academic year
+    /// of their own). A period nobody has ever generated for ANY class this year is left alone,
+    /// same as today — it still needs one manual Generate Invoices run first.
+    /// </summary>
+    public async Task<ApiResult<int>> ApplyExistingFeeStructureAsync(
+        IReadOnlyList<Guid> studentIds, CancellationToken ct = default)
+    {
+        if (studentIds.Count == 0) return ApiResult<int>.Ok(0);
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<int>.Fail(new Error("forbidden", "no tenant context"), 403);
+
+        var idSet = studentIds.ToHashSet();
+        var targets = (await roster.ListAsync(null, null, null, null, ct))
+            .Where(s => idSet.Contains(s.Id)).ToList();
+        if (targets.Count == 0) return ApiResult<int>.Ok(0);
+
+        var (created, recalculated) = await BackfillMissingInvoicesAsync(tid, targets, ct);
+        return ApiResult<int>.Ok(created + recalculated);
+    }
+
+    /// <summary>
+    /// Same backfill as ApplyExistingFeeStructureAsync, but for students who already existed
+    /// before this feature shipped (or before a Fee Structure/period existed for their class) —
+    /// targets every CURRENT student matching the given class/grade filter (same matching rule
+    /// GenerateInvoicesAsync itself uses) instead of a specific just-created set. Reuses the
+    /// identical core so "old bulk-imported", "old manually-added" and "just created" students
+    /// are reconciled by exactly one code path — never a per-case fix.
+    /// </summary>
+    public async Task<ApiResult<GenerateFeeInvoicesResponse>> ReconcileFeesForClassAsync(
+        IReadOnlyList<string>? grades, IReadOnlyList<string>? classes, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<GenerateFeeInvoicesResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
+
+        var classKeys = NormKeys(classes);
+        var gradeKeys = NormKeys(grades);
+        if (classKeys.Count == 0 && gradeKeys.Count == 0)
+            return ApiResult<GenerateFeeInvoicesResponse>.Fail(
+                new Error("validation_error", "Select at least one class or grade"), 400);
+
+        var targets = (await roster.ListAsync(null, null, null, null, ct))
+            .Where(s => classKeys.Count > 0 ? classKeys.Contains(ClassKey(s)) : gradeKeys.Contains((s.Grade ?? "").Trim()))
+            .ToList();
+        if (targets.Count == 0) return ApiResult<GenerateFeeInvoicesResponse>.Ok(new GenerateFeeInvoicesResponse(0));
+
+        var (created, recalculated) = await BackfillMissingInvoicesAsync(tid, targets, ct);
+        return ApiResult<GenerateFeeInvoicesResponse>.Ok(new GenerateFeeInvoicesResponse(created, recalculated));
+    }
+
+    /// <summary>
+    /// Shared backfill core both public methods above delegate to — every eligibility rule
+    /// (active structures merge, transport gating, candidate periods) lives here exactly once.
+    /// Per (student, period): no invoice → create; invoice exists and fully unpaid (PaidAmount
+    /// = 0) and the freshly computed amount differs → recalculate its lines/total in place
+    /// (never a duplicate invoice, never an appended duplicate line — ReplaceLinesIfUnpaidAsync
+    /// replaces the whole line set); invoice exists with ANY payment recorded against it → left
+    /// completely alone, financially protected, no matter what changed.
+    /// </summary>
+    private async Task<(int Created, int Recalculated)> BackfillMissingInvoicesAsync(
+        Guid tid, IReadOnlyList<StudentResponse> targets, CancellationToken ct)
+    {
+        var activeStructures = await structures.ListActiveAsync(tid, ct);
+        if (activeStructures.Count == 0) return (0, 0);
+
+        var combinedAmountsJson = activeStructures
+            .Select(s => s.AmountsJson)
+            .Aggregate((string?)null, (merged, next) => merged is null ? next : MergeAmountsJson(merged, next));
+
+        JsonElement amounts;
+        try
+        {
+            amounts = string.IsNullOrWhiteSpace(combinedAmountsJson)
+                ? JsonDocument.Parse("{}").RootElement.Clone()
+                : JsonDocument.Parse(combinedAmountsJson).RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            amounts = JsonDocument.Parse("{}").RootElement.Clone();
+        }
+
+        // Tenant + academic-year scoped candidate periods — one query per distinct academic
+        // year among the currently active structures (typically one), never per student.
+        var years = activeStructures
+            .Select(s => s.AcademicYear.Trim())
+            .Where(y => y.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (years.Count == 0) return (0, 0);
+
+        var candidatePeriods = new List<FeeInvoicePeriodRow>();
+        foreach (var year in years)
+            candidatePeriods.AddRange(await invoices.ListPeriodsForYearAsync(year, ct));
+        if (candidatePeriods.Count == 0) return (0, 0);
+
+        var allHeads = await heads.ListAsync(ct);
+        var transportHeadIds = allHeads
+            .Where(h => h.IsTransportFeeHead)
+            .Select(h => h.Id.ToString())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var headNameById = allHeads
+            .ToDictionary(h => h.Id.ToString(), h => h.Name, StringComparer.OrdinalIgnoreCase);
+        var headDescriptionById = allHeads
+            .ToDictionary(h => h.Id.ToString(), h => h.Description, StringComparer.OrdinalIgnoreCase);
+        var transportAssignments = (await studentBus.ListActiveFeeHeadIdsAsync(ct))
+            .ToDictionary(r => r.StudentId, r => r.FeeHeadId);
+
+        // One batched read of every (student, period) pair already invoiced, WITH each
+        // invoice's Id/Amount/PaidAmount, instead of one round trip per student — this is the
+        // part that must not scale per-row for 500-1500 rows.
+        var targetIds = targets.Select(t => t.Id).ToList();
+        var existingByKey = (await invoices.ListExistingPeriodsByStudentAsync(targetIds, ct))
+            .ToDictionary(r => (r.StudentId, r.Period));
+
+        var created = 0;
+        var recalculated = 0;
+        foreach (var student in targets)
+        {
+            var label = ClassKey(student);
+            var grade = (student.Grade ?? "").Trim();
+            var studentTransportFeeHeadId = transportAssignments.TryGetValue(student.Id, out var fh) ? fh : (Guid?)null;
+
+            foreach (var candidate in candidatePeriods)
+            {
+                var (amount, lines) = AmountForWithLines(
+                    amounts, label, grade, transportHeadIds, studentTransportFeeHeadId, headNameById, headDescriptionById);
+
+                if (existingByKey.TryGetValue((student.Id, candidate.Period), out var existingInvoice))
+                {
+                    // Any payment recorded, at all — financially protected, never touched,
+                    // regardless of what newly changed (transport, structure, anything).
+                    if (existingInvoice.PaidAmount > 0) continue;
+                    // Increase-only: a newly-eligible charge (e.g. transport added after the
+                    // invoice already existed) tops the invoice up. A DECREASE (e.g. transport
+                    // later opted out of) must NOT auto-shrink an already-generated invoice —
+                    // that historical-invoice invariant is deliberate and pre-dates this feature
+                    // (see FeeInvoiceLinesTests.Historical_invoice_is_unaffected_by_a_later_
+                    // transport_mapping_change); only an explicit admin action may reduce a bill.
+                    if (amount <= existingInvoice.Amount) continue;
+
+                    // Guarded again at the SQL layer by PaidAmount = 0, so a payment landing
+                    // between the read above and this write still can't be overwritten.
+                    if (await invoices.ReplaceLinesIfUnpaidAsync(tid, existingInvoice.InvoiceId, amount, lines, ct))
+                        recalculated++;
+                    continue;
+                }
+
+                if (amount <= 0) continue;
+
+                var row = await invoices.CreateWithLinesAsync(tid, student.Id, candidate.Period, candidate.DueDate, lines, ct);
+                if (row is not null) created++;
+            }
+        }
+
+        return (created, recalculated);
     }
 
     public async Task<ApiResult<FeeReportSummaryResponse>> GetReportSummaryAsync(CancellationToken ct = default)
