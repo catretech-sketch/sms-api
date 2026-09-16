@@ -7,7 +7,12 @@ public sealed record LinkedPersonProfile(
     string? Email,
     string? EmployeeCode,
     DateTime? JoinedAt,
-    string? HomeroomClassName = null);
+    string? HomeroomClassName = null,
+    /// <summary>
+    /// Staff-only: the duty post to display (Staff.Route when set, else Staff.Department, else
+    /// empty string). Always null on the linked-Teacher profile.
+    /// </summary>
+    string? DutyPost = null);
 
 public interface IProfileDao
 {

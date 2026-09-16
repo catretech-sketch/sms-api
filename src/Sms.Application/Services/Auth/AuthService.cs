@@ -325,12 +325,22 @@ public sealed class AuthService(
             title = fields.Title,
             photo_url = fields.PhotoUrl,
             student_id = record.StudentId,
+            role_key = fields.RoleKey,
+            duty_post = fields.DutyPost,
         });
     }
 
     private sealed record MeFields(
         string? Email, string? Phone, string? Employee, string? Classroom,
-        string? Joined, string? Title, string? PhotoUrl);
+        string? Joined, string? Title, string? PhotoUrl,
+        /// <summary>Canonical duty-role key (driver/conductor/guard/peon/sweeper/gardener),
+        /// derived from the authenticated user's own dbo.Staff.Role row — never from client
+        /// input. Null for non-staff users (teachers, admins, parents, students) and for staff
+        /// whose CRM role label doesn't map to a duty role (e.g. "Principal").</summary>
+        string? RoleKey,
+        /// <summary>Staff-only duty post (Staff.Route, else Staff.Department, else ""). Null
+        /// when there is no linked Staff row at all.</summary>
+        string? DutyPost);
 
     private async Task<MeFields> ResolveMeFieldsAsync(
         UserRecord record, IReadOnlyList<string> roles, CancellationToken ct)
@@ -371,7 +381,12 @@ public sealed class AuthService(
             Classroom: classroom,
             Joined: joined,
             Title: title,
-            PhotoUrl: photoUrl);
+            PhotoUrl: photoUrl,
+            // Authoritative duty identity — sourced only from this user's own linked Staff
+            // row, never from anything the client sent at login. Non-staff users (teachers,
+            // admins, parents, students) have no Staff row, so both stay null.
+            RoleKey: staff is null ? null : StaffRoleMapper.ToRoleKey(staff.Designation),
+            DutyPost: staff?.DutyPost);
     }
 
     /// Phone is shared across all schools for the same email — resolve from Users,
