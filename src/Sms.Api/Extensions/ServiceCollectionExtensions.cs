@@ -36,6 +36,7 @@ using Sms.Modules.Staffing;
 using Sms.Modules.Tasks;
 using Sms.Modules.Tenancy;
 using Sms.Modules.Transport;
+using Sms.Modules.VehicleChecks;
 using Sms.Shared.Kernel.AiSearch;
 using Sms.Shared.Kernel.Audit;
 using Sms.Shared.Kernel.Auth;
@@ -234,6 +235,7 @@ public static class ServiceCollectionExtensions
         builder.Services.AddReportingModule();
         builder.Services.AddTasksModule();
         builder.Services.AddScoped<ITaskService, TaskService>();
+        builder.Services.AddVehicleChecksModule();
 
         builder.Services.AddSignalR().AddJsonProtocol(o =>
         {

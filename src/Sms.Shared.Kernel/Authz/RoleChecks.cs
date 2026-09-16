@@ -32,7 +32,11 @@ public static class RoleChecks
     /// issues, so this checks for an EXACT match against the manager-tier policy roles instead.
     public static bool IsIssueManager(ClaimsPrincipal user) => IsManagerTier(user);
 
-    private static bool IsManagerTier(ClaimsPrincipal user)
+    /// Shared manager-tier check (SchoolAdmin/SchoolOwner/Principal/platform staff), exposed
+    /// directly rather than adding a third near-duplicate IsVehicleCheckManager wrapper now that
+    /// IsTaskManager and IsIssueManager have both proven to be the exact same policy set. Any new
+    /// staff-app feature that needs a manager-tier gate should call this directly.
+    public static bool IsManagerTier(ClaimsPrincipal user)
     {
         foreach (var claim in user.FindAll("role"))
         {

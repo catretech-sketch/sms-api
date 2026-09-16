@@ -170,6 +170,23 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
               JOIN dbo.TransportRoutes r ON r.Id = b.RouteId
               WHERE s.UserId = @driverUserId", new { driverUserId }, ct)).FirstOrDefault();
 
+    /// True when userId is the driver or conductor currently structurally assigned to busId
+    /// (dbo.Buses.DriverStaffId/ConductorStaffId, resolved via the caller's own dbo.Staff row) —
+    /// the same assignment concept GetAssignmentAsync uses for a driver's trip dashboard,
+    /// generalized to accept an explicit busId and to also match conductors. RLS on both
+    /// dbo.Buses and dbo.Staff means a cross-tenant busId (or a caller with no Staff row at all,
+    /// e.g. a non-staff role) simply resolves to false here rather than throwing. Used by
+    /// VehicleChecks (inspections/fuel logs) to gate submission to the caller's real assigned
+    /// bus instead of trusting a client-supplied busId.
+    public async Task<bool> IsDriverOrConductorAssignedToBusAsync(Guid userId, Guid busId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<int>(
+            @"SELECT COUNT(1) FROM dbo.Buses b
+              WHERE b.Id = @busId
+                AND EXISTS (
+                  SELECT 1 FROM dbo.Staff s
+                  WHERE s.UserId = @userId AND (s.Id = b.DriverStaffId OR s.Id = b.ConductorStaffId))",
+            new { userId, busId }, ct)).First() > 0;
+
     public async Task<StaffBusRouteSummaryResponse?> GetConductorBusRouteAsync(Guid conductorUserId, CancellationToken ct = default) =>
         (await QueryInlineAsync<StaffBusRouteSummaryResponse>(
             @"SELECT b.BusNo, r.Name AS RouteName

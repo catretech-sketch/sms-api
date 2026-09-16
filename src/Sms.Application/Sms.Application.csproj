@@ -16,6 +16,7 @@
     <ProjectReference Include="..\Sms.Modules.Reporting\Sms.Modules.Reporting.csproj" />
     <ProjectReference Include="..\Sms.Modules.Tasks\Sms.Modules.Tasks.csproj" />
     <ProjectReference Include="..\Sms.Modules.Issues\Sms.Modules.Issues.csproj" />
+    <ProjectReference Include="..\Sms.Modules.VehicleChecks\Sms.Modules.VehicleChecks.csproj" />
   </ItemGroup>
 
   <ItemGroup>

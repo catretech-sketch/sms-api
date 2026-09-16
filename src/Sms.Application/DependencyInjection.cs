@@ -17,6 +17,7 @@ using Sms.Application.Services.Tenancy;
 using Sms.Application.Services.Transport;
 using Sms.Application.Services.Users;
 using Sms.Application.Services.Realtime;
+using Sms.Application.Services.VehicleChecks;
 
 namespace Sms.Application;
 
@@ -62,6 +63,7 @@ public static class DependencyInjection
         services.AddScoped<IComplaintService, ComplaintService>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IIssueService, IssueService>();
+        services.AddScoped<IVehicleCheckService, VehicleCheckService>();
         services.AddScoped<IUserSettingsService, UserSettingsService>();
         services.AddScoped<IReportingService, ReportingService>();
         services.AddScoped<ILiveBroadcaster, NoOpLiveBroadcaster>();
