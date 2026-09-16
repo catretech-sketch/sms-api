@@ -8,7 +8,8 @@ public sealed class ProfileDao(IDbConnectionFactory factory) : BaseRepository(fa
     private const string TeacherSelect =
         """
         SELECT TOP 1 t.Designation, t.ClassTeacher, t.Phone, t.Email, t.EmployeeCode, t.CreatedAt AS JoinedAt,
-            (SELECT TOP 1 c.Name FROM dbo.Classes c WHERE c.ClassTeacherId = t.Id) AS HomeroomClassName
+            (SELECT TOP 1 c.Name FROM dbo.Classes c WHERE c.ClassTeacherId = t.Id) AS HomeroomClassName,
+            CAST(NULL AS nvarchar(80)) AS DutyPost
         FROM dbo.Teachers t
         WHERE t.UserId = @userId
            OR (
@@ -28,7 +29,8 @@ public sealed class ProfileDao(IDbConnectionFactory factory) : BaseRepository(fa
             CAST(NULL AS nvarchar(40)) AS ClassTeacher,
             s.Phone, s.Email, s.EmployeeCode,
             s.CreatedAt AS JoinedAt,
-            CAST(NULL AS nvarchar(200)) AS HomeroomClassName
+            CAST(NULL AS nvarchar(200)) AS HomeroomClassName,
+            COALESCE(NULLIF(LTRIM(RTRIM(s.Route)), N''), NULLIF(LTRIM(RTRIM(s.Department)), N''), N'') AS DutyPost
         FROM dbo.Staff s
         WHERE s.UserId = @userId
            OR (
