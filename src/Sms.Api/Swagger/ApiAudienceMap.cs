@@ -60,6 +60,9 @@ public static class ApiAudienceMap
         // Staff mobile app lives under /v1/staff/trips|trip — list these BEFORE /v1/staff (HR).
         ("v1/staff/trips",   [Staff]),
         ("v1/staff/trip",    [Staff]),
+        // Task/checklist endpoints: staff app does its own list/complete/photo; the manager
+        // create + list-all endpoints on the same prefix are also consumed by the CRM.
+        ("v1/staff/tasks",   [Staff, SchoolAdmin]),
         ("v1/staff",         [SchoolAdmin]),               // HR staff records
 
         ("v1/bus",           [Teacher]),                   // bus routes + boarding for teacher app
