@@ -24,7 +24,7 @@ public sealed record BoardingResponse(Guid TripId, Guid StudentId, Guid? StopId,
 public sealed record BoardingRequest(Guid StudentId, Guid? StopId, string State, DateTime At);
 public sealed record StaffStopResponse(Guid Id, string Name, double Lat, double Lng, int Seq, int? EtaMin);
 public sealed record StaffRouteResponse(Guid Id, string Name, string BusNo, IReadOnlyList<StaffStopResponse> Stops);
-public sealed record StaffTripAssignmentResponse(StaffRouteResponse Route, string BusNo, string? ConductorName);
+public sealed record StaffTripAssignmentResponse(StaffRouteResponse Route, Guid BusId, string BusNo, string? ConductorName);
 public sealed record StaffRosterStudentResponse(Guid Id, string Name, Guid? StopId, string? PhotoUrl);
 public sealed record StaffBusRouteSummaryResponse(string BusNo, string RouteName);
 public sealed record StaleTripRow(Guid TripId, Guid BusId, Guid TenantId, DateTime? LastPingAt);
@@ -132,7 +132,7 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
         return new TripSummaryResponse(tripId, durationMin, Math.Round(metres / 1000, 2), stops, boarded);
     }
 
-    private sealed record AssignedBusRow(string BusNo, Guid? RouteId, string? ConductorName);
+    private sealed record AssignedBusRow(Guid BusId, string BusNo, Guid? RouteId, string? ConductorName);
     private sealed record RouteRow(Guid Id, string Name);
 
     /// Resolved by the driver's own identity (Staff.UserId -> Buses.DriverStaffId), never by a
@@ -140,7 +140,7 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
     public async Task<StaffTripAssignmentResponse?> GetAssignmentAsync(Guid driverUserId, CancellationToken ct = default)
     {
         var bus = (await QueryInlineAsync<AssignedBusRow>(
-            @"SELECT b.BusNo, b.RouteId, cs.Name AS ConductorName
+            @"SELECT b.Id AS BusId, b.BusNo, b.RouteId, cs.Name AS ConductorName
               FROM dbo.Buses b
               JOIN dbo.Staff s ON s.Id = b.DriverStaffId
               LEFT JOIN dbo.Staff cs ON cs.Id = b.ConductorStaffId
@@ -156,7 +156,7 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
             new { routeId }, ct);
 
         return new StaffTripAssignmentResponse(
-            new StaffRouteResponse(route.Id, route.Name, bus.BusNo, stops), bus.BusNo, bus.ConductorName);
+            new StaffRouteResponse(route.Id, route.Name, bus.BusNo, stops), bus.BusId, bus.BusNo, bus.ConductorName);
     }
 
     /// Lightweight bus+route lookup for the staff dashboard's role card — driver/conductor

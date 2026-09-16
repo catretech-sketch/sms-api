@@ -90,6 +90,7 @@ public class StaffTripAssignmentTests(SqlServerFixture fx)
         var client = DriverClient(app, tenantId, userId);
         var data = await Data(await client.GetAsync("/v1/staff/trip/assignment"), HttpStatusCode.OK);
 
+        data.GetProperty("bus_id").GetGuid().Should().Be(busId);
         data.GetProperty("bus_no").GetString().Should().Be(busNo);
         data.GetProperty("conductor_name").ValueKind.Should().Be(JsonValueKind.Null);
 
