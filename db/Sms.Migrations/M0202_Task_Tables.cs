@@ -2,8 +2,8 @@ using FluentMigrator;
 
 namespace Sms.Migrations;
 
-[Migration(200, "Tasks: dbo.Tasks table with tenant RLS")]
-public sealed class M0200_Task_Tables : Migration
+[Migration(202, "Tasks: dbo.Tasks table with tenant RLS")]
+public sealed class M0202_Task_Tables : Migration
 {
     public override void Up()
     {

@@ -2,8 +2,8 @@ using FluentMigrator;
 
 namespace Sms.Migrations;
 
-[Migration(201, "Tasks procs: Task_Create, Task_Complete, Task_AttachPhoto")]
-public sealed class M0201_Procs_Tasks : Migration
+[Migration(203, "Tasks procs: Task_Create, Task_Complete, Task_AttachPhoto")]
+public sealed class M0203_Procs_Tasks : Migration
 {
     public override void Up()
     {
