@@ -28,6 +28,7 @@ using Sms.Modules.Attendance;
 using Sms.Modules.Comms;
 using Sms.Modules.Finance;
 using Sms.Modules.Hostel;
+using Sms.Modules.Issues;
 using Sms.Modules.Reporting;
 using Sms.Modules.Sis;
 using Sms.Modules.Sports;
@@ -229,6 +230,7 @@ public static class ServiceCollectionExtensions
         builder.Services.AddHostelModule();
         builder.Services.AddSportsModule();
         builder.Services.AddCommsModule();
+        builder.Services.AddIssuesModule();
         builder.Services.AddReportingModule();
         builder.Services.AddTasksModule();
         builder.Services.AddScoped<ITaskService, TaskService>();

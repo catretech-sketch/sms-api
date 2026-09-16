@@ -7,6 +7,7 @@ using Sms.Application.Services.Comms;
 using Sms.Application.Services.Dashboard;
 using Sms.Application.Services.Finance;
 using Sms.Application.Services.Hostel;
+using Sms.Application.Services.Issues;
 using Sms.Application.Services.Profile;
 using Sms.Application.Services.Reporting;
 using Sms.Application.Services.Sports;
@@ -60,6 +61,7 @@ public static class DependencyInjection
         services.AddScoped<IAnnouncementService, AnnouncementService>();
         services.AddScoped<IComplaintService, ComplaintService>();
         services.AddScoped<INotificationService, NotificationService>();
+        services.AddScoped<IIssueService, IssueService>();
         services.AddScoped<IUserSettingsService, UserSettingsService>();
         services.AddScoped<IReportingService, ReportingService>();
         services.AddScoped<ILiveBroadcaster, NoOpLiveBroadcaster>();
