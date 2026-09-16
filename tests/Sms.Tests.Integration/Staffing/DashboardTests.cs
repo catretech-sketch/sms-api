@@ -115,14 +115,18 @@ public class DashboardTests(SqlServerFixture fx)
         await using (var conn = await OpenAsync(tenantId))
         {
             await conn.ExecuteAsync(
-                "INSERT dbo.Staff (Id, TenantId, Name, Category, UserId) VALUES (@Id, @TenantId, 'Driver Dan', 'driver', @UserId)",
+                "INSERT dbo.Staff (Id, TenantId, Name, Category, Shift, UserId) VALUES (@Id, @TenantId, 'Driver Dan', 'driver', '7:00 AM - 4:00 PM', @UserId)",
                 new { Id = staffId, TenantId = tenantId, UserId = userId });
             await conn.ExecuteAsync(
                 "INSERT dbo.TransportRoutes (Id, TenantId, Name) VALUES (@Id, @TenantId, 'Route 7')",
                 new { Id = routeId, TenantId = tenantId });
+            var busId = Guid.NewGuid();
             await conn.ExecuteAsync(
-                "INSERT dbo.Buses (Id, TenantId, BusNo, RouteId, DriverStaffId) VALUES (NEWID(), @TenantId, 'KA-01-F-3301', @RouteId, @StaffId)",
-                new { TenantId = tenantId, RouteId = routeId, StaffId = staffId });
+                "INSERT dbo.Buses (Id, TenantId, BusNo, RouteId, DriverStaffId) VALUES (@BusId, @TenantId, 'KA-01-F-3301', @RouteId, @StaffId)",
+                new { BusId = busId, TenantId = tenantId, RouteId = routeId, StaffId = staffId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.StudentBusAssignments (Id, TenantId, BusId, StudentId) VALUES (NEWID(), @TenantId, @BusId, NEWID())",
+                new { TenantId = tenantId, BusId = busId });
         }
         var client = StaffClient(app, tenantId, userId);
 
@@ -132,8 +136,8 @@ public class DashboardTests(SqlServerFixture fx)
         card.GetProperty("kind").GetString().Should().Be("driver");
         card.GetProperty("bus_no").GetString().Should().Be("KA-01-F-3301");
         card.GetProperty("route_name").GetString().Should().Be("Route 7");
-        card.GetProperty("license_expires_in_days").ValueKind.Should().Be(JsonValueKind.Null);
-        card.GetProperty("fitness_ok").ValueKind.Should().Be(JsonValueKind.Null);
+        card.GetProperty("shift").GetString().Should().Be("7:00 AM - 4:00 PM");
+        card.GetProperty("students_assigned").GetInt32().Should().Be(1);
     }
 
     [Fact]

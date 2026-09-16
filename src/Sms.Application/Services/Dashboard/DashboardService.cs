@@ -42,10 +42,12 @@ public sealed class DashboardService(
         {
             case "driver":
                 var driverBus = await trips.GetDriverBusRouteAsync(userId, ct);
-                return driverBus is null ? null : new RoleCardResponse("driver", driverBus.BusNo, driverBus.RouteName);
+                return driverBus is null ? null
+                    : new RoleCardResponse("driver", driverBus.BusNo, driverBus.RouteName, driverBus.Shift, driverBus.StudentsAssigned);
             case "conductor":
                 var conductorBus = await trips.GetConductorBusRouteAsync(userId, ct);
-                return conductorBus is null ? null : new RoleCardResponse("conductor", conductorBus.BusNo, conductorBus.RouteName);
+                return conductorBus is null ? null
+                    : new RoleCardResponse("conductor", conductorBus.BusNo, conductorBus.RouteName, conductorBus.Shift, conductorBus.StudentsAssigned);
             default:
                 return null;
         }

@@ -24,9 +24,10 @@ public sealed record BoardingResponse(Guid TripId, Guid StudentId, Guid? StopId,
 public sealed record BoardingRequest(Guid StudentId, Guid? StopId, string State, DateTime At);
 public sealed record StaffStopResponse(Guid Id, string Name, double Lat, double Lng, int Seq, int? EtaMin);
 public sealed record StaffRouteResponse(Guid Id, string Name, string BusNo, IReadOnlyList<StaffStopResponse> Stops);
-public sealed record StaffTripAssignmentResponse(StaffRouteResponse Route, Guid BusId, string BusNo, string? ConductorName);
+public sealed record StaffTripAssignmentResponse(
+    StaffRouteResponse Route, Guid BusId, string BusNo, string? ConductorName, string? Shift, int StudentsAssigned);
 public sealed record StaffRosterStudentResponse(Guid Id, string Name, Guid? StopId, string? PhotoUrl);
-public sealed record StaffBusRouteSummaryResponse(string BusNo, string RouteName);
+public sealed record StaffBusRouteSummaryResponse(string BusNo, string RouteName, string? Shift, int StudentsAssigned);
 public sealed record StaleTripRow(Guid TripId, Guid BusId, Guid TenantId, DateTime? LastPingAt);
 
 public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepository(factory)
@@ -132,7 +133,7 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
         return new TripSummaryResponse(tripId, durationMin, Math.Round(metres / 1000, 2), stops, boarded);
     }
 
-    private sealed record AssignedBusRow(Guid BusId, string BusNo, Guid? RouteId, string? ConductorName);
+    private sealed record AssignedBusRow(Guid BusId, string BusNo, Guid? RouteId, string? ConductorName, string? Shift);
     private sealed record RouteRow(Guid Id, string Name);
 
     /// Resolved by the driver's own identity (Staff.UserId -> Buses.DriverStaffId), never by a
@@ -140,7 +141,7 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
     public async Task<StaffTripAssignmentResponse?> GetAssignmentAsync(Guid driverUserId, CancellationToken ct = default)
     {
         var bus = (await QueryInlineAsync<AssignedBusRow>(
-            @"SELECT b.Id AS BusId, b.BusNo, b.RouteId, cs.Name AS ConductorName
+            @"SELECT b.Id AS BusId, b.BusNo, b.RouteId, cs.Name AS ConductorName, s.Shift
               FROM dbo.Buses b
               JOIN dbo.Staff s ON s.Id = b.DriverStaffId
               LEFT JOIN dbo.Staff cs ON cs.Id = b.ConductorStaffId
@@ -155,8 +156,11 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
             "SELECT Id, Name, Lat, Lng, Seq, CAST(NULL AS int) AS EtaMin FROM dbo.RouteStops WHERE RouteId = @routeId ORDER BY Seq",
             new { routeId }, ct);
 
+        var studentsAssigned = (await QueryInlineAsync<int>(
+            "SELECT COUNT(*) FROM dbo.StudentBusAssignments WHERE BusId = @busId", new { busId = bus.BusId }, ct)).First();
+
         return new StaffTripAssignmentResponse(
-            new StaffRouteResponse(route.Id, route.Name, bus.BusNo, stops), bus.BusId, bus.BusNo, bus.ConductorName);
+            new StaffRouteResponse(route.Id, route.Name, bus.BusNo, stops), bus.BusId, bus.BusNo, bus.ConductorName, bus.Shift, studentsAssigned);
     }
 
     /// Lightweight bus+route lookup for the staff dashboard's role card — driver/conductor
@@ -164,7 +168,8 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
     /// applies. Unlike GetAssignmentAsync, doesn't need stops or the peer's name.
     public async Task<StaffBusRouteSummaryResponse?> GetDriverBusRouteAsync(Guid driverUserId, CancellationToken ct = default) =>
         (await QueryInlineAsync<StaffBusRouteSummaryResponse>(
-            @"SELECT b.BusNo, r.Name AS RouteName
+            @"SELECT b.BusNo, r.Name AS RouteName, s.Shift,
+                (SELECT COUNT(*) FROM dbo.StudentBusAssignments sba WHERE sba.BusId = b.Id) AS StudentsAssigned
               FROM dbo.Buses b
               JOIN dbo.Staff s ON s.Id = b.DriverStaffId
               JOIN dbo.TransportRoutes r ON r.Id = b.RouteId
@@ -189,7 +194,8 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
 
     public async Task<StaffBusRouteSummaryResponse?> GetConductorBusRouteAsync(Guid conductorUserId, CancellationToken ct = default) =>
         (await QueryInlineAsync<StaffBusRouteSummaryResponse>(
-            @"SELECT b.BusNo, r.Name AS RouteName
+            @"SELECT b.BusNo, r.Name AS RouteName, s.Shift,
+                (SELECT COUNT(*) FROM dbo.StudentBusAssignments sba WHERE sba.BusId = b.Id) AS StudentsAssigned
               FROM dbo.Buses b
               JOIN dbo.Staff s ON s.Id = b.ConductorStaffId
               JOIN dbo.TransportRoutes r ON r.Id = b.RouteId

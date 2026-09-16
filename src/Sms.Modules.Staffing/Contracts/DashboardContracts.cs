@@ -7,7 +7,7 @@ namespace Sms.Modules.Staffing.Contracts;
 // data model yet.
 public sealed record RoleCardResponse(
     string Kind, string? BusNo, string? RouteName,
-    int? LicenseExpiresInDays = null, bool? FitnessOk = null,
+    string? Shift = null, int? StudentsAssigned = null,
     int? OnBoard = null, int? Capacity = null, string? NextStop = null);
 
 public sealed record DashboardResponse(double HoursThisWeek, RoleCardResponse? RoleCard);

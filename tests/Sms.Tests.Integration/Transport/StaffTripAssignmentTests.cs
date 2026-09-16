@@ -67,7 +67,7 @@ public class StaffTripAssignmentTests(SqlServerFixture fx)
         await Seed(fx.ConnectionString, tenantId, async conn =>
         {
             await conn.ExecuteAsync(
-                "INSERT dbo.Staff (Id, TenantId, Name, UserId) VALUES (@Id, @TenantId, @Name, @UserId)",
+                "INSERT dbo.Staff (Id, TenantId, Name, Shift, UserId) VALUES (@Id, @TenantId, @Name, '7:00 AM - 4:00 PM', @UserId)",
                 new { Id = driverStaffId, TenantId = tenantId, Name = "Ram Kumar", UserId = userId });
 
             await conn.ExecuteAsync(
@@ -85,6 +85,10 @@ public class StaffTripAssignmentTests(SqlServerFixture fx)
             await conn.ExecuteAsync(
                 "INSERT dbo.Buses (Id, TenantId, BusNo, RouteId, DriverStaffId) VALUES (@Id, @TenantId, @BusNo, @RouteId, @DriverStaffId)",
                 new { Id = busId, TenantId = tenantId, BusNo = busNo, RouteId = routeId, DriverStaffId = driverStaffId });
+
+            await conn.ExecuteAsync(
+                "INSERT dbo.StudentBusAssignments (Id, TenantId, BusId, StudentId) VALUES (NEWID(), @TenantId, @BusId, NEWID())",
+                new { TenantId = tenantId, BusId = busId });
         });
 
         var client = DriverClient(app, tenantId, userId);
@@ -93,6 +97,8 @@ public class StaffTripAssignmentTests(SqlServerFixture fx)
         data.GetProperty("bus_id").GetGuid().Should().Be(busId);
         data.GetProperty("bus_no").GetString().Should().Be(busNo);
         data.GetProperty("conductor_name").ValueKind.Should().Be(JsonValueKind.Null);
+        data.GetProperty("shift").GetString().Should().Be("7:00 AM - 4:00 PM");
+        data.GetProperty("students_assigned").GetInt32().Should().Be(1);
 
         var route = data.GetProperty("route");
         route.GetProperty("name").GetString().Should().Be("North Route");
