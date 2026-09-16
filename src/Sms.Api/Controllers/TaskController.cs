@@ -31,8 +31,24 @@ public sealed class TaskController(ITaskService tasks) : ApiControllerBase
         FromResult(await tasks.CreateAsync(req, User, ct));
 
     [HttpGet("staff/tasks/all")]
-    public async Task<IActionResult> ListAll(CancellationToken ct) =>
-        FromResult(await tasks.ListAllAsync(User, ct));
+    public async Task<IActionResult> ListAll(
+        [FromQuery] string? status,
+        [FromQuery(Name = "assigned_to_user_id")] Guid? assignedToUserId,
+        [FromQuery(Name = "assigned_to_role_key")] string? assignedToRoleKey,
+        [FromQuery] DateTime? from,
+        [FromQuery] DateTime? to,
+        [FromQuery] string? cursor,
+        CancellationToken ct) =>
+        FromCursorResult(await tasks.ListAllAsync(
+            new TaskListFilter(status, assignedToUserId, assignedToRoleKey, from, to, cursor), User, ct));
+
+    [HttpGet("staff/tasks/summary/people")]
+    public async Task<IActionResult> SummaryPeople(CancellationToken ct) =>
+        FromResult(await tasks.ListPeopleSummaryAsync(User, ct));
+
+    [HttpGet("staff/tasks/summary/roles")]
+    public async Task<IActionResult> SummaryRoles(CancellationToken ct) =>
+        FromResult(await tasks.ListRoleSummaryAsync(User, ct));
 }
 
 public sealed record AttachPhotoRequest(string? PhotoBase64);

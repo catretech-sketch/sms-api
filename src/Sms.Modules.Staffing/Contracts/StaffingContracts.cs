@@ -34,7 +34,19 @@ public sealed record UpdateTeacherRequest(
 public sealed record StaffResponse(
     Guid Id, Guid TenantId, string Name, string? Gender, string? Role, string? Category, string? Department,
     string? Phone, string? Shift, string? Route, decimal AttendancePct, string Status, int AvatarHue,
-    string? EmployeeCode = null, string? Email = null, string? PhotoUrl = null);
+    string? EmployeeCode = null, string? Email = null, string? PhotoUrl = null, Guid? UserId = null)
+{
+    /// Dapper maps `Staff_Create` from a SELECT that stops at PhotoUrl. Optional `UserId` on the
+    /// primary constructor still produces a 17-parameter ctor, which Dapper will not match.
+    public StaffResponse(
+        Guid Id, Guid TenantId, string Name, string? Gender, string? Role, string? Category, string? Department,
+        string? Phone, string? Shift, string? Route, decimal AttendancePct, string Status, int AvatarHue,
+        string? EmployeeCode, string? Email, string? PhotoUrl)
+        : this(Id, TenantId, Name, Gender, Role, Category, Department, Phone, Shift, Route, AttendancePct,
+            Status, AvatarHue, EmployeeCode, Email, PhotoUrl, null)
+    {
+    }
+}
 
 public sealed record CreateStaffRequest(
     string Name, string? Gender, string? Role, string? Category, string? Department, string? Phone,

@@ -2,6 +2,7 @@ using System.Security.Claims;
 using Sms.Application.Common;
 using Sms.Modules.Tasks;
 using Sms.Shared.Kernel.Authz;
+using Sms.Shared.Kernel.Http;
 using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
 using Sms.Shared.Kernel.Time;
@@ -22,7 +23,12 @@ public interface ITaskService
     Task<ApiResult<IReadOnlyList<StaffTaskDto>>> AttachPhotoAsync(
         Guid id, string? photoBase64, ClaimsPrincipal caller, CancellationToken ct = default);
     Task<ApiResult<TaskResponse>> CreateAsync(CreateTaskRequest req, ClaimsPrincipal caller, CancellationToken ct = default);
-    Task<ApiResult<IReadOnlyList<TaskResponse>>> ListAllAsync(ClaimsPrincipal caller, CancellationToken ct = default);
+    Task<ApiResult<CursorPage<TaskResponse>>> ListAllAsync(
+        TaskListFilter filter, ClaimsPrincipal caller, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<PersonTaskSummary>>> ListPeopleSummaryAsync(
+        ClaimsPrincipal caller, CancellationToken ct = default);
+    Task<ApiResult<IReadOnlyList<RoleTaskSummary>>> ListRoleSummaryAsync(
+        ClaimsPrincipal caller, CancellationToken ct = default);
 }
 
 public sealed class TaskService(TaskRepository repo, ITenantContext tenant, IClock clock) : ITaskService
@@ -90,12 +96,38 @@ public sealed class TaskService(TaskRepository repo, ITenantContext tenant, IClo
         return ApiResult<TaskResponse>.Ok(created, 201);
     }
 
-    public async Task<ApiResult<IReadOnlyList<TaskResponse>>> ListAllAsync(
+    public async Task<ApiResult<CursorPage<TaskResponse>>> ListAllAsync(
+        TaskListFilter filter, ClaimsPrincipal caller, CancellationToken ct = default)
+    {
+        if (!RoleChecks.IsTaskManager(caller))
+            return ApiResult<CursorPage<TaskResponse>>.Fail(new Error("forbidden", "manager only"), 403);
+        if (filter.Status is { } status && !TaskEnums.ValidStatuses.Contains(status))
+            return ApiResult<CursorPage<TaskResponse>>.Fail(
+                new Error("invalid_request", $"status must be one of: {string.Join(", ", TaskEnums.ValidStatuses)}"), 400);
+        if (filter.AssignedToRoleKey is { } roleKey && !TaskEnums.ValidRoleKeys.Contains(roleKey))
+            return ApiResult<CursorPage<TaskResponse>>.Fail(
+                new Error("invalid_request", $"assigned_to_role_key must be one of: {string.Join(", ", TaskEnums.ValidRoleKeys)}"), 400);
+
+        var (rows, nextCursor) = await repo.ListAllAsync(filter, ct);
+        return ApiResult<CursorPage<TaskResponse>>.Ok(new CursorPage<TaskResponse>(rows, nextCursor));
+    }
+
+    public async Task<ApiResult<IReadOnlyList<PersonTaskSummary>>> ListPeopleSummaryAsync(
         ClaimsPrincipal caller, CancellationToken ct = default)
     {
         if (!RoleChecks.IsTaskManager(caller))
-            return ApiResult<IReadOnlyList<TaskResponse>>.Fail(new Error("forbidden", "manager only"), 403);
-        return ApiResult<IReadOnlyList<TaskResponse>>.Ok(await repo.ListAllAsync(ct));
+            return ApiResult<IReadOnlyList<PersonTaskSummary>>.Fail(new Error("forbidden", "manager only"), 403);
+        var today = SchoolClock.ToSchoolLocal(clock.UtcNow);
+        return ApiResult<IReadOnlyList<PersonTaskSummary>>.Ok(await repo.ListPeopleSummaryAsync(today, ct));
+    }
+
+    public async Task<ApiResult<IReadOnlyList<RoleTaskSummary>>> ListRoleSummaryAsync(
+        ClaimsPrincipal caller, CancellationToken ct = default)
+    {
+        if (!RoleChecks.IsTaskManager(caller))
+            return ApiResult<IReadOnlyList<RoleTaskSummary>>.Fail(new Error("forbidden", "manager only"), 403);
+        var today = SchoolClock.ToSchoolLocal(clock.UtcNow);
+        return ApiResult<IReadOnlyList<RoleTaskSummary>>.Ok(await repo.ListRoleSummaryAsync(today, ct));
     }
 
     /// Pure validation rule (also covered directly by unit tests): exactly one of the two

@@ -197,7 +197,7 @@ public sealed class StaffRepository(IDbConnectionFactory factory) : BaseReposito
     }
 
     public async Task<StaffResponse?> GetAsync(Guid id, CancellationToken ct = default) =>
-        (await QueryInlineAsync<StaffResponse>($"SELECT {StaffSelectCols}, {PhotoExpr} {FromJoin} WHERE s.Id = @id", new { id }, ct))
+        (await QueryInlineAsync<StaffResponse>($"SELECT {StaffSelectCols}, {PhotoExpr}, s.UserId {FromJoin} WHERE s.Id = @id", new { id }, ct))
         .FirstOrDefault();
 
     /// Null when this staff row has never been linked to a Users row (not yet
@@ -243,7 +243,7 @@ public sealed class StaffRepository(IDbConnectionFactory factory) : BaseReposito
 
     public Task<IReadOnlyList<StaffResponse>> ListAsync(string? q, string? cat, CancellationToken ct = default) =>
         QueryInlineAsync<StaffResponse>(
-            $"SELECT {ColsBeforePhone}{PhoneExprList}, {ColsAfterPhone}, {PhotoExprList} {FromJoinList} WHERE " +
+            $"SELECT {ColsBeforePhone}{PhoneExprList}, {ColsAfterPhone}, {PhotoExprList}, s.UserId {FromJoinList} WHERE " +
             "(@q IS NULL OR s.Name LIKE '%' + @q + '%' OR s.Role LIKE '%' + @q + '%' OR s.EmployeeCode LIKE '%' + @q + '%') " +
             "AND (@cat IS NULL OR s.Category = @cat) ORDER BY s.Name",
             new { q, cat }, ct);
