@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Sms.Shared.Kernel.Authz;
 using Sms.Shared.Kernel.Data;
 
 namespace Sms.Modules.Issues;
@@ -28,12 +29,21 @@ public sealed class IssueRepository(IDbConnectionFactory factory) : BaseReposito
         "Id, TenantId, ReporterUserId, Category, Title, Description, Priority, Status, " +
         "VehicleId, RouteId, TripId, PhotoUrl, CreatedAt, UpdatedAt";
 
+    // Same shape as IssueCols (same column count/order for Dapper's positional binding to
+    // IssueResponse) but with a literal NULL in place of PhotoUrl: the list endpoint is
+    // refreshed often and a tenant with many photo-bearing issues would otherwise ship
+    // multi-tens-of-MB of inline base64 images on every poll. Photos are only ever needed on
+    // the single-issue detail fetch (GetAsync), which still selects the real PhotoUrl.
+    private const string IssueListCols =
+        "Id, TenantId, ReporterUserId, Category, Title, Description, Priority, Status, " +
+        "VehicleId, RouteId, TripId, CAST(NULL AS nvarchar(max)) AS PhotoUrl, CreatedAt, UpdatedAt";
+
     private sealed record UserIdRow(Guid Id);
 
     public Task<IReadOnlyList<IssueResponse>> ListAsync(
         string? status, Guid? reporterUserId, CancellationToken ct = default) =>
         QueryInlineAsync<IssueResponse>(
-            $"SELECT {IssueCols} FROM dbo.Issues WHERE (@status IS NULL OR Status = @status) " +
+            $"SELECT {IssueListCols} FROM dbo.Issues WHERE (@status IS NULL OR Status = @status) " +
             "AND (@reporterUserId IS NULL OR ReporterUserId = @reporterUserId) ORDER BY CreatedAt DESC",
             new { status, reporterUserId }, ct);
 
@@ -71,16 +81,17 @@ public sealed class IssueRepository(IDbConnectionFactory factory) : BaseReposito
         QuerySingleProcAsync<IssueNoteResponse>("dbo.IssueNote_Add",
             new { TenantId = tenantId, IssueId = issueId, AuthorUserId = authorUserId, Note = note }, ct);
 
-    /// Tenant's SchoolAdmin/SchoolOwner users — targets for the "new issue" notification.
-    /// UserRoles has no TenantId column, so this joins through Users (which does).
+    /// Tenant's SchoolAdmin/SchoolOwner/Principal users — targets for the "new issue"
+    /// notification. UserRoles has no TenantId column, so this joins through Users (which does).
     public async Task<IReadOnlyList<Guid>> GetManagerUserIdsAsync(Guid tenantId, CancellationToken ct = default)
     {
         var rows = await QueryInlineAsync<UserIdRow>(@"
 SELECT DISTINCT u.Id
 FROM dbo.Users u
 INNER JOIN dbo.UserRoles ur ON ur.UserId = u.Id
-WHERE u.TenantId = @tenantId AND ur.Role IN (@admin, @owner)",
-            new { tenantId, admin = "school.admin", owner = "school.owner" }, ct);
+WHERE u.TenantId = @tenantId AND ur.Role IN (@admin, @owner, @principal)",
+            new { tenantId, admin = Policies.SchoolAdmin, owner = Policies.SchoolOwner, principal = Policies.Principal },
+            ct);
         return rows.Select(r => r.Id).ToList();
     }
 }

@@ -70,7 +70,7 @@ public sealed class IssueService(
     {
         if (tenant.UserId is not { } uid)
             return ApiResult<IReadOnlyList<IssueResponse>>.Fail(new Error("forbidden", "no user context"), 403);
-        var reporterFilter = RoleChecks.IsStaff(caller) ? (Guid?)null : uid;
+        var reporterFilter = RoleChecks.IsIssueManager(caller) ? (Guid?)null : uid;
         return ApiResult<IReadOnlyList<IssueResponse>>.Ok(await repo.ListAsync(status, reporterFilter, ct));
     }
 
@@ -80,7 +80,7 @@ public sealed class IssueService(
             return ApiResult<IssueDetailResponse>.Fail(new Error("forbidden", "no user context"), 403);
         if (await repo.GetAsync(id, ct) is not { } issue)
             return ApiResult<IssueDetailResponse>.Fail(new Error("not_found", "resource not found"), 404);
-        if (!RoleChecks.IsStaff(caller) && issue.ReporterUserId != uid)
+        if (!RoleChecks.IsIssueManager(caller) && issue.ReporterUserId != uid)
             return ApiResult<IssueDetailResponse>.Fail(new Error("forbidden", "not your issue"), 403);
         var notes = await repo.GetNotesAsync(id, ct);
         return ApiResult<IssueDetailResponse>.Ok(new IssueDetailResponse(issue, notes));
@@ -89,7 +89,7 @@ public sealed class IssueService(
     public async Task<ApiResult<IssueResponse>> UpdateAsync(
         Guid id, UpdateIssueRequest req, ClaimsPrincipal caller, CancellationToken ct = default)
     {
-        if (!RoleChecks.IsStaff(caller))
+        if (!RoleChecks.IsIssueManager(caller))
             return ApiResult<IssueResponse>.Fail(new Error("forbidden", "manager only"), 403);
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult<IssueResponse>.Fail(new Error("forbidden", "no tenant/user context"), 403);
