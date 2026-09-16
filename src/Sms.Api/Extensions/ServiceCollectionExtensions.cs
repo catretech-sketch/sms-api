@@ -16,6 +16,7 @@ using Sms.Application.Services.AiSearch;
 using Sms.Application.Services.AiSearch.Handlers;
 using Sms.Application.Services.Finance;
 using Sms.Application.Services.Realtime;
+using Sms.Application.Services.Tasks;
 using Sms.Application.Services.Transport;
 using Sms.Application;
 using Sms.Infrastructure;
@@ -31,6 +32,7 @@ using Sms.Modules.Reporting;
 using Sms.Modules.Sis;
 using Sms.Modules.Sports;
 using Sms.Modules.Staffing;
+using Sms.Modules.Tasks;
 using Sms.Modules.Tenancy;
 using Sms.Modules.Transport;
 using Sms.Shared.Kernel.AiSearch;
@@ -228,6 +230,8 @@ public static class ServiceCollectionExtensions
         builder.Services.AddSportsModule();
         builder.Services.AddCommsModule();
         builder.Services.AddReportingModule();
+        builder.Services.AddTasksModule();
+        builder.Services.AddScoped<ITaskService, TaskService>();
 
         builder.Services.AddSignalR().AddJsonProtocol(o =>
         {
