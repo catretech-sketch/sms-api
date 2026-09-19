@@ -227,6 +227,7 @@ public static class ServiceCollectionExtensions
         builder.Services.AddAttendanceModule();
         builder.Services.AddTransportModule();
         builder.Services.AddBusModule();
+        builder.Services.AddRouteGeometryModule();
         builder.Services.AddStudentBusModule();
         builder.Services.AddHostelModule();
         builder.Services.AddSportsModule();
