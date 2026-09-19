@@ -298,4 +298,120 @@ public class TransportAuthorizationResolverTests(SqlServerFixture fx)
 
         (await resolver.CanViewBusAsync(Guid.NewGuid(), tenantId, ["some.other.role"], busId, default)).Should().BeFalse();
     }
+
+    [Fact]
+    public async Task CanViewRouteAsync_admin_sees_route_with_a_bus_in_their_own_tenant_but_not_another_tenants()
+    {
+        // Admin visibility is derived purely by fanning CanViewBusAsync out over the route's buses
+        // (no route-level role check is duplicated here) — so this route must have at least one
+        // bus for the admin's per-bus CanViewBusAsync check to grant access through it.
+        var tenantId = Guid.NewGuid();
+        var otherTenantId = Guid.NewGuid();
+        var routeId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var principalId = Guid.NewGuid();
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.TransportRoutes (Id, TenantId, Name) VALUES (@Id, @TenantId, 'ROUTE-1')",
+                new { Id = routeId, TenantId = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Buses (Id, TenantId, BusNo, RouteId) VALUES (@Id, @TenantId, 'BUS-1', @RouteId)",
+                new { Id = busId, TenantId = tenantId, RouteId = routeId });
+        }
+
+        await using var app = App();
+        using var scope = app.Services.CreateScope();
+        var resolver = scope.ServiceProvider.GetRequiredService<ITransportAuthorizationResolver>();
+
+        (await resolver.CanViewRouteAsync(principalId, tenantId, [Policies.Principal], routeId, default)).Should().BeTrue();
+        (await resolver.CanViewRouteAsync(principalId, otherTenantId, [Policies.Principal], routeId, default)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CanViewRouteAsync_teacher_sees_route_via_a_bus_they_have_duty_on()
+    {
+        var tenantId = Guid.NewGuid();
+        var routeId = Guid.NewGuid();
+        var otherRouteId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var otherBusId = Guid.NewGuid();
+        var teacherId = Guid.NewGuid();
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.TransportRoutes (Id, TenantId, Name) VALUES (@Id, @TenantId, 'ROUTE-1'), (@OtherId, @TenantId, 'ROUTE-2')",
+                new { Id = routeId, OtherId = otherRouteId, TenantId = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Buses (Id, TenantId, BusNo, RouteId) VALUES (@Id, @TenantId, 'BUS-1', @RouteId), (@OtherId, @TenantId, 'BUS-2', @OtherRouteId)",
+                new { Id = busId, OtherId = otherBusId, TenantId = tenantId, RouteId = routeId, OtherRouteId = otherRouteId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.BusAssignments (Id, TenantId, TeacherUserId, BusId) VALUES (@Id, @TenantId, @TeacherUserId, @BusId)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, TeacherUserId = teacherId, BusId = busId });
+        }
+
+        await using var app = App();
+        using var scope = app.Services.CreateScope();
+        var resolver = scope.ServiceProvider.GetRequiredService<ITransportAuthorizationResolver>();
+
+        (await resolver.CanViewRouteAsync(teacherId, tenantId, [Policies.Teacher], routeId, default)).Should().BeTrue();
+        (await resolver.CanViewRouteAsync(teacherId, tenantId, [Policies.Teacher], otherRouteId, default)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CanViewRouteAsync_returns_false_when_caller_has_no_relationship_to_any_bus_on_the_route()
+    {
+        var tenantId = Guid.NewGuid();
+        var routeId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var uninvolvedTeacherId = Guid.NewGuid();
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.TransportRoutes (Id, TenantId, Name) VALUES (@Id, @TenantId, 'ROUTE-1')",
+                new { Id = routeId, TenantId = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Buses (Id, TenantId, BusNo, RouteId) VALUES (@Id, @TenantId, 'BUS-1', @RouteId)",
+                new { Id = busId, TenantId = tenantId, RouteId = routeId });
+            // Deliberately no BusAssignments/BusTravelingTeachers/Trips/StudentBusAssignments row
+            // links this teacher to the one bus on the route — they must be denied.
+        }
+
+        await using var app = App();
+        using var scope = app.Services.CreateScope();
+        var resolver = scope.ServiceProvider.GetRequiredService<ITransportAuthorizationResolver>();
+
+        (await resolver.CanViewRouteAsync(uninvolvedTeacherId, tenantId, [Policies.Teacher], routeId, default)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CanViewRouteAsync_returns_false_for_a_route_with_no_buses_assigned()
+    {
+        var tenantId = Guid.NewGuid();
+        var routeId = Guid.NewGuid();
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.TransportRoutes (Id, TenantId, Name) VALUES (@Id, @TenantId, 'ROUTE-1')",
+                new { Id = routeId, TenantId = tenantId });
+        }
+
+        await using var app = App();
+        using var scope = app.Services.CreateScope();
+        var resolver = scope.ServiceProvider.GetRequiredService<ITransportAuthorizationResolver>();
+
+        (await resolver.CanViewRouteAsync(Guid.NewGuid(), tenantId, [Policies.Teacher], routeId, default)).Should().BeFalse();
+    }
 }

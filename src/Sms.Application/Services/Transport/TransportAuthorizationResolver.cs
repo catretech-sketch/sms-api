@@ -63,4 +63,21 @@ public sealed class TransportAuthorizationResolver(
 
         return false;
     }
+
+    /// Route-level equivalent of CanViewBusAsync: a route is visible to a caller if any bus
+    /// currently assigned to that route would itself be visible to them under CanViewBusAsync.
+    /// Deliberately reuses CanViewBusAsync per bus rather than re-implementing role checks here.
+    public async Task<bool> CanViewRouteAsync(
+        Guid callerUserId, Guid callerTenantId, IReadOnlyCollection<string> callerRoles,
+        Guid routeId, CancellationToken ct = default)
+    {
+        tenant.Set(callerTenantId, callerUserId, isPlatform: false);
+
+        var busIds = await buses.ListBusIdsForRouteAsync(routeId, ct);
+        foreach (var busId in busIds)
+            if (await CanViewBusAsync(callerUserId, callerTenantId, callerRoles, busId, ct))
+                return true;
+
+        return false;
+    }
 }

@@ -395,6 +395,12 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
     public async Task<bool> RouteExistsAsync(Guid routeId, CancellationToken ct = default) =>
         (await QueryInlineAsync<int>("SELECT COUNT(1) FROM dbo.TransportRoutes WHERE Id = @routeId", new { routeId }, ct)).First() > 0;
 
+    /// Every bus currently assigned to this route — used by CanViewRouteAsync to fan out the
+    /// existing per-bus visibility check across all buses on the route, rather than duplicating
+    /// role-checking logic at the route level.
+    public Task<IReadOnlyList<Guid>> ListBusIdsForRouteAsync(Guid routeId, CancellationToken ct = default) =>
+        QueryInlineAsync<Guid>("SELECT Id FROM dbo.Buses WHERE RouteId = @routeId", new { routeId }, ct);
+
     /// Every bus with its current live trip (matched by BusNo), latest GPS ping and boarded count.
     public Task<IReadOnlyList<FleetBusRow>> FleetAsync(CancellationToken ct = default) =>
         QueryInlineAsync<FleetBusRow>(
