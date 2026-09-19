@@ -37,7 +37,21 @@ public sealed class GoogleRoutesClient(
             totalDuration += segment.DurationSeconds;
         }
 
-        return new ComputedRouteGeometry(string.Join("", polylines), totalDistance, totalDuration);
+        // Google's Encoded Polyline Algorithm is delta-encoded — each point is an offset from the
+        // previous one, and a string's first point is an offset from (0,0). Naively concatenating
+        // encoded strings does NOT concatenate their point lists: the second string's first point
+        // would decode as an offset from the first string's LAST point, corrupting every later
+        // point. Decode each segment, drop the duplicated seam point that BatchWaypoints
+        // deliberately introduced at each batch boundary (last point of batch N == first point of
+        // batch N+1), then re-encode the merged point list into one valid polyline.
+        var allPoints = new List<(double Lat, double Lng)>();
+        for (var i = 0; i < polylines.Count; i++)
+        {
+            var points = PolylineCodec.Decode(polylines[i]);
+            allPoints.AddRange(i == 0 ? points : points.Skip(1));
+        }
+
+        return new ComputedRouteGeometry(PolylineCodec.Encode(allPoints), totalDistance, totalDuration);
     }
 
     /// Splits waypoints into <=maxPerRequest batches, repeating the last stop of batch N as
@@ -117,4 +131,71 @@ public sealed class GoogleRoutesClient(
 
     static int ParseSecondsSuffix(string? value) =>
         value is not null && value.EndsWith('s') && int.TryParse(value[..^1], out var seconds) ? seconds : 0;
+}
+
+/// Google's Encoded Polyline Algorithm Format (both directions). Delta-encoded: each point is
+/// stored as an offset from the previous point (the first point is an offset from (0,0)), with
+/// each coordinate's delta zigzag-encoded into 5-bit chunks over a base64-like alphabet offset by
+/// 63. See https://developers.google.com/maps/documentation/utilities/polylinealgorithm.
+public static class PolylineCodec
+{
+    public static List<(double Lat, double Lng)> Decode(string encoded)
+    {
+        var points = new List<(double Lat, double Lng)>();
+        var index = 0;
+        long lat = 0, lng = 0;
+
+        while (index < encoded.Length)
+        {
+            lat += DecodeNextDelta(encoded, ref index);
+            lng += DecodeNextDelta(encoded, ref index);
+            points.Add((lat / 1e5, lng / 1e5));
+        }
+
+        return points;
+    }
+
+    static long DecodeNextDelta(string encoded, ref int index)
+    {
+        long result = 0;
+        var shift = 0;
+        int chunk;
+        do
+        {
+            chunk = encoded[index++] - 63;
+            result |= (long)(chunk & 0x1f) << shift;
+            shift += 5;
+        } while (chunk >= 0x20);
+
+        return (result & 1) != 0 ? ~(result >> 1) : result >> 1;
+    }
+
+    public static string Encode(IReadOnlyList<(double Lat, double Lng)> points)
+    {
+        var sb = new StringBuilder();
+        long prevLat = 0, prevLng = 0;
+
+        foreach (var (lat, lng) in points)
+        {
+            var curLat = (long)Math.Round(lat * 1e5);
+            var curLng = (long)Math.Round(lng * 1e5);
+            EncodeDelta(curLat - prevLat, sb);
+            EncodeDelta(curLng - prevLng, sb);
+            prevLat = curLat;
+            prevLng = curLng;
+        }
+
+        return sb.ToString();
+    }
+
+    static void EncodeDelta(long delta, StringBuilder sb)
+    {
+        var value = delta < 0 ? ~(delta << 1) : delta << 1;
+        while (value >= 0x20)
+        {
+            sb.Append((char)((0x20 | (value & 0x1f)) + 63));
+            value >>= 5;
+        }
+        sb.Append((char)(value + 63));
+    }
 }

@@ -43,9 +43,13 @@ public class GoogleRoutesClientTests
     [Fact]
     public async Task Parses_successful_response()
     {
+        // A real (Google-documented) encoded polyline, not an opaque placeholder — the client
+        // now decodes/re-encodes every segment to stitch batches correctly, so the stub must
+        // return something that's actually valid Encoded Polyline Algorithm data.
+        const string encodedPolyline = "_p~iF~ps|U_ulLnnqC_mqNvxq`@";
         var options = Options.Create(new GoogleRoutesOptions { ApiKey = "test-key" });
-        const string body = """
-        { "routes": [ { "polyline": { "encodedPolyline": "abc123" }, "distanceMeters": 4210, "duration": "780s" } ] }
+        var body = $$"""
+        { "routes": [ { "polyline": { "encodedPolyline": "{{encodedPolyline}}" }, "distanceMeters": 4210, "duration": "780s" } ] }
         """;
         var handler = new StubHttpMessageHandler((_, _) =>
             new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) });
@@ -55,7 +59,9 @@ public class GoogleRoutesClientTests
         var result = await client.ComputeRouteAsync(Waypoints(2));
 
         Assert.NotNull(result);
-        Assert.Equal("abc123", result!.EncodedPolyline);
+        // A single-batch call round-trips through decode/re-encode with no seam to drop, so the
+        // output should be the same polyline (both encode a 5-decimal-place-quantized point list).
+        Assert.Equal(encodedPolyline, result!.EncodedPolyline);
         Assert.Equal(4210, result.DistanceMeters);
         Assert.Equal(780, result.DurationSeconds);
     }
@@ -71,9 +77,20 @@ public class GoogleRoutesClientTests
             capturedBodies.Add(body);
             // Every batch must contain <= 25 waypoints total (origin+destination+intermediates).
             Assert.True(body.Split("\"latitude\"").Length - 1 <= 25);
-            const string respBody = """
-            { "routes": [ { "polyline": { "encodedPolyline": "seg" }, "distanceMeters": 100, "duration": "10s" } ] }
-            """;
+
+            // Return a distinct, realistically-encoded polyline per batch (built from that
+            // batch's own waypoints) rather than an opaque placeholder — this lets the
+            // regression test below decode the final STITCHED polyline and prove the real
+            // coordinates survive batching, not just that some string came back.
+            var batchWaypoints = ExtractWaypoints(body);
+            var encoded = PolylineCodec.Encode(batchWaypoints.Select(w => (w.Lat, w.Lng)).ToList());
+            var respBody = JsonSerializer.Serialize(new
+            {
+                routes = new[]
+                {
+                    new { polyline = new { encodedPolyline = encoded }, distanceMeters = 100, duration = "10s" },
+                },
+            });
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(respBody) };
         });
         var factory = new SingleClientHttpClientFactory("google-routes", new HttpClient(handler));
@@ -91,6 +108,43 @@ public class GoogleRoutesClientTests
         // Batch 1 = waypoints[24..29] (6 points: indices 24-29). Index 24 is the seam point,
         // repeated from the end of batch 0 as the start of batch 1 (same coordinate value).
         AssertBatchWaypoints(capturedBodies[1], waypoints.Skip(24).Take(6).ToList());
+
+        // Regression test for the critical stitching bug: decode the final combined polyline
+        // and assert every one of the original 30 waypoints appears, in order, including across
+        // the batch seam at index 24. Before the fix (naive string concatenation of two
+        // delta-encoded polylines), every point from the second batch onward decoded to garbage
+        // coordinates far from the real route.
+        var decoded = PolylineCodec.Decode(result.EncodedPolyline);
+        Assert.Equal(waypoints.Count, decoded.Count);
+        for (var i = 0; i < waypoints.Count; i++)
+        {
+            Assert.Equal(waypoints[i].Lat, decoded[i].Lat, precision: 4);
+            Assert.Equal(waypoints[i].Lng, decoded[i].Lng, precision: 4);
+        }
+    }
+
+    static IReadOnlyList<RouteWaypoint> ExtractWaypoints(string requestBody)
+    {
+        using var doc = JsonDocument.Parse(requestBody);
+        var root = doc.RootElement;
+        var actual = new List<RouteWaypoint>();
+
+        var originLatLng = root.GetProperty("origin").GetProperty("location").GetProperty("latLng");
+        actual.Add(new RouteWaypoint(
+            originLatLng.GetProperty("latitude").GetDouble(), originLatLng.GetProperty("longitude").GetDouble()));
+
+        foreach (var intermediate in root.GetProperty("intermediates").EnumerateArray())
+        {
+            var latLng = intermediate.GetProperty("location").GetProperty("latLng");
+            actual.Add(new RouteWaypoint(
+                latLng.GetProperty("latitude").GetDouble(), latLng.GetProperty("longitude").GetDouble()));
+        }
+
+        var destLatLng = root.GetProperty("destination").GetProperty("location").GetProperty("latLng");
+        actual.Add(new RouteWaypoint(
+            destLatLng.GetProperty("latitude").GetDouble(), destLatLng.GetProperty("longitude").GetDouble()));
+
+        return actual;
     }
 
     /// Parses a computeRoutes request body and asserts its origin/intermediates/destination
@@ -159,6 +213,46 @@ public class GoogleRoutesClientTests
         var result = await client.ComputeRouteAsync(Waypoints(2));
 
         Assert.Null(result);
+    }
+}
+
+public class PolylineCodecTests
+{
+    [Fact]
+    public void Encode_then_decode_round_trips_within_tolerance()
+    {
+        var points = new List<(double Lat, double Lng)>
+        {
+            (12.9716, 77.5946), (12.9816, 77.6046), (13.0000, 77.6100), (12.9500, 77.5800),
+        };
+
+        var encoded = PolylineCodec.Encode(points);
+        var decoded = PolylineCodec.Decode(encoded);
+
+        Assert.Equal(points.Count, decoded.Count);
+        for (var i = 0; i < points.Count; i++)
+        {
+            Assert.Equal(points[i].Lat, decoded[i].Lat, precision: 5);
+            Assert.Equal(points[i].Lng, decoded[i].Lng, precision: 5);
+        }
+    }
+
+    [Fact]
+    public void Decode_matches_the_standard_published_google_example()
+    {
+        // Standard test vector from Google's Encoded Polyline Algorithm Format documentation:
+        // https://developers.google.com/maps/documentation/utilities/polylinealgorithm
+        const string encoded = "_p~iF~ps|U_ulLnnqC_mqNvxq`@";
+
+        var decoded = PolylineCodec.Decode(encoded);
+
+        var expected = new List<(double Lat, double Lng)> { (38.5, -120.2), (40.7, -120.95), (43.252, -126.453) };
+        Assert.Equal(expected.Count, decoded.Count);
+        for (var i = 0; i < expected.Count; i++)
+        {
+            Assert.Equal(expected[i].Lat, decoded[i].Lat, precision: 5);
+            Assert.Equal(expected[i].Lng, decoded[i].Lng, precision: 5);
+        }
     }
 }
 
