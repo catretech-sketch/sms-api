@@ -67,11 +67,21 @@ public sealed class TransportAuthorizationResolver(
     /// Route-level equivalent of CanViewBusAsync: a route is visible to a caller if any bus
     /// currently assigned to that route would itself be visible to them under CanViewBusAsync.
     /// Deliberately reuses CanViewBusAsync per bus rather than re-implementing role checks here.
+    ///
+    /// Admin fast-path: mirrors CanViewBusAsync's own first branch (tenant-scoped existence check
+    /// for Principal/SchoolAdmin/SchoolOwner) so a route with zero buses assigned yet — e.g. one an
+    /// admin is still building out in the route-builder flow, before any bus has been attached — is
+    /// still visible to that same admin, rather than being invisible to everyone including its owner.
     public async Task<bool> CanViewRouteAsync(
         Guid callerUserId, Guid callerTenantId, IReadOnlyCollection<string> callerRoles,
         Guid routeId, CancellationToken ct = default)
     {
         tenant.Set(callerTenantId, callerUserId, isPlatform: false);
+
+        if (callerRoles.Contains(Policies.Principal) || callerRoles.Contains(Policies.SchoolAdmin) || callerRoles.Contains(Policies.SchoolOwner))
+        {
+            if (await buses.RouteExistsAsync(routeId, ct)) return true;
+        }
 
         var busIds = await buses.ListBusIdsForRouteAsync(routeId, ct);
         foreach (var busId in busIds)

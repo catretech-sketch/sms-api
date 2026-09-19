@@ -302,9 +302,10 @@ public class TransportAuthorizationResolverTests(SqlServerFixture fx)
     [Fact]
     public async Task CanViewRouteAsync_admin_sees_route_with_a_bus_in_their_own_tenant_but_not_another_tenants()
     {
-        // Admin visibility is derived purely by fanning CanViewBusAsync out over the route's buses
-        // (no route-level role check is duplicated here) — so this route must have at least one
-        // bus for the admin's per-bus CanViewBusAsync check to grant access through it.
+        // This exercises admin visibility via the per-bus CanViewBusAsync fan-out (the route has a
+        // bus, so the admin's own admin-fast-path branch inside CanViewBusAsync grants it there).
+        // See CanViewRouteAsync_admin_sees_a_route_with_zero_buses_assigned_in_their_own_tenant below
+        // for the route-level admin fast-path that additionally exists for zero-bus routes.
         var tenantId = Guid.NewGuid();
         var otherTenantId = Guid.NewGuid();
         var routeId = Guid.NewGuid();
@@ -413,5 +414,35 @@ public class TransportAuthorizationResolverTests(SqlServerFixture fx)
         var resolver = scope.ServiceProvider.GetRequiredService<ITransportAuthorizationResolver>();
 
         (await resolver.CanViewRouteAsync(Guid.NewGuid(), tenantId, [Policies.Teacher], routeId, default)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task CanViewRouteAsync_admin_sees_a_route_with_zero_buses_assigned_in_their_own_tenant()
+    {
+        // Route-level admin fast-path: an admin building out a route in the route-builder flow
+        // (adding stops before any bus is ever assigned) must still be able to see their own
+        // tenant's route even though the per-bus fan-out has nothing to iterate over yet. Mirrors
+        // CanViewBusAsync's own admin-fast-path branch (existence check scoped by RLS tenant context)
+        // rather than duplicating role logic.
+        var tenantId = Guid.NewGuid();
+        var otherTenantId = Guid.NewGuid();
+        var routeId = Guid.NewGuid();
+        var principalId = Guid.NewGuid();
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.TransportRoutes (Id, TenantId, Name) VALUES (@Id, @TenantId, 'ROUTE-1')",
+                new { Id = routeId, TenantId = tenantId });
+        }
+
+        await using var app = App();
+        using var scope = app.Services.CreateScope();
+        var resolver = scope.ServiceProvider.GetRequiredService<ITransportAuthorizationResolver>();
+
+        (await resolver.CanViewRouteAsync(principalId, tenantId, [Policies.Principal], routeId, default)).Should().BeTrue();
+        (await resolver.CanViewRouteAsync(principalId, otherTenantId, [Policies.Principal], routeId, default)).Should().BeFalse();
     }
 }
