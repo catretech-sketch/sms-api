@@ -96,7 +96,10 @@ public sealed class GoogleRoutesClient(
             if (!doc.RootElement.TryGetProperty("routes", out var routes) || routes.GetArrayLength() == 0)
                 return null;
             var route = routes[0];
-            var polyline = route.GetProperty("polyline").GetProperty("encodedPolyline").GetString();
+            if (!route.TryGetProperty("polyline", out var polylineElement) ||
+                !polylineElement.TryGetProperty("encodedPolyline", out var encodedPolylineElement))
+                return null;
+            var polyline = encodedPolylineElement.GetString();
             if (string.IsNullOrEmpty(polyline)) return null;
             var distanceMeters = route.TryGetProperty("distanceMeters", out var d) ? d.GetInt32() : 0;
             var durationSeconds = route.TryGetProperty("duration", out var dur)
