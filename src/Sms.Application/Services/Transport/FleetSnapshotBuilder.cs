@@ -26,6 +26,7 @@ public sealed class FleetSnapshotBuilder(BusRepository repo, ITenantContext tena
             double? lng = r.Lng;
             double? speed = r.SpeedKmh;
             DateTime? lastPing = r.LastPingAt;
+            double? heading = r.Heading;
 
             if (r.TripId is null || r.LastPingAt is null)
                 status = "idle";
@@ -36,6 +37,7 @@ public sealed class FleetSnapshotBuilder(BusRepository repo, ITenantContext tena
                 lng = null;
                 speed = null;
                 lastPing = null;
+                heading = null;
             }
             else
             {
@@ -50,7 +52,7 @@ public sealed class FleetSnapshotBuilder(BusRepository repo, ITenantContext tena
                 r.BusId, r.RouteId, r.BusNo, r.RouteName, r.Driver, r.DriverPhone,
                 r.StopCount, r.StudentsRiding, status,
                 lat, lng, speed, nextStop, lastPing,
-                teacherRow?.TeacherUserId, teacherRow?.TeacherName, Capacity: r.Capacity));
+                teacherRow?.TeacherUserId, teacherRow?.TeacherName, Capacity: r.Capacity, Heading: heading));
         }
 
         return list;

@@ -29,7 +29,8 @@ public sealed record FleetBusResponse(
     Guid BusId, Guid? RouteId, string BusNo, string? RouteName, string? Driver, string? DriverPhone,
     int StopCount, int StudentsRiding, string Status,
     double? Lat, double? Lng, double? SpeedKmh, string? NextStopName, DateTime? LastPingAt,
-    Guid? TeacherUserId = null, string? TeacherName = null, Guid? ConductorStaffId = null, int? Capacity = null);
+    Guid? TeacherUserId = null, string? TeacherName = null, Guid? ConductorStaffId = null, int? Capacity = null,
+    double? Heading = null);
 
 public sealed record TransportRouteListItem(Guid Id, string Name, int Stops);
 public sealed record RouteBusCandidate(Guid BusId, int? Capacity, int Occupied);
@@ -64,7 +65,7 @@ public sealed record BusDriverAssignmentResponse(
 public sealed record FleetBusRow(
     Guid BusId, Guid? RouteId, string BusNo, string? RouteName, string? Driver, string? DriverPhone,
     int StopCount, Guid? TripId, double? Lat, double? Lng, double? SpeedKmh, DateTime? LastPingAt, int StudentsRiding,
-    int? Capacity);
+    int? Capacity, double? Heading);
 
 public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository(factory), IRouteStopSource
 {
@@ -407,13 +408,13 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
             $@"SELECT b.Id AS BusId, b.RouteId, b.BusNo, b.RouteName, b.Driver, b.DriverPhone,
                 {StopCountSql} AS StopCount,
                 t.Id AS TripId, p.Lat, p.Lng, p.SpeedKmh, p.At AS LastPingAt,
-                ISNULL(bd.Cnt, 0) AS StudentsRiding, b.Capacity
+                ISNULL(bd.Cnt, 0) AS StudentsRiding, b.Capacity, p.Heading
               FROM dbo.Buses b
               OUTER APPLY (
                 SELECT TOP 1 tt.Id, tt.StartedAt FROM dbo.Trips tt
                 WHERE tt.BusId = b.Id AND tt.Status IN ('live', 'arrived') ORDER BY tt.StartedAt DESC) t
               OUTER APPLY (
-                SELECT TOP 1 pp.Lat, pp.Lng, pp.SpeedKmh, pp.At FROM dbo.TripPings pp
+                SELECT TOP 1 pp.Lat, pp.Lng, pp.SpeedKmh, pp.At, pp.Heading FROM dbo.TripPings pp
                 WHERE pp.TripId = t.Id ORDER BY pp.At DESC) p
               OUTER APPLY (
                 SELECT COUNT(*) AS Cnt FROM dbo.Boardings bo
