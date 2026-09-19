@@ -22,6 +22,7 @@ public sealed class FleetSnapshotBuilder(BusRepository repo, ITenantContext tena
             teachers.TryGetValue(r.BusId, out var teacherRow);
             string status;
             string? nextStop = null;
+            int? etaMinutes = null;
             double? lat = r.Lat;
             double? lng = r.Lng;
             double? speed = r.SpeedKmh;
@@ -45,14 +46,17 @@ public sealed class FleetSnapshotBuilder(BusRepository repo, ITenantContext tena
                 status = ageMin > 5 ? "delayed"
                     : (r.SpeedKmh is <= 3) ? "at_stop"
                     : "on_route";
-                nextStop = (await repo.GetPositionAsync(r.BusId, ct)).NextStopName;
+                var position = await repo.GetPositionAsync(r.BusId, ct);
+                nextStop = position.NextStopName;
+                etaMinutes = position.EtaMinutes;
             }
 
             list.Add(new FleetBusResponse(
                 r.BusId, r.RouteId, r.BusNo, r.RouteName, r.Driver, r.DriverPhone,
                 r.StopCount, r.StudentsRiding, status,
                 lat, lng, speed, nextStop, lastPing,
-                teacherRow?.TeacherUserId, teacherRow?.TeacherName, Capacity: r.Capacity, Heading: heading));
+                teacherRow?.TeacherUserId, teacherRow?.TeacherName, Capacity: r.Capacity,
+                Heading: heading, EtaMinutes: etaMinutes));
         }
 
         return list;

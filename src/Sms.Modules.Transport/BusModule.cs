@@ -30,7 +30,7 @@ public sealed record FleetBusResponse(
     int StopCount, int StudentsRiding, string Status,
     double? Lat, double? Lng, double? SpeedKmh, string? NextStopName, DateTime? LastPingAt,
     Guid? TeacherUserId = null, string? TeacherName = null, Guid? ConductorStaffId = null, int? Capacity = null,
-    double? Heading = null);
+    double? Heading = null, int? EtaMinutes = null);
 
 public sealed record TransportRouteListItem(Guid Id, string Name, int Stops);
 public sealed record RouteBusCandidate(Guid BusId, int? Capacity, int Occupied);
