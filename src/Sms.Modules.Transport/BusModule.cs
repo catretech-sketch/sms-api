@@ -66,7 +66,7 @@ public sealed record FleetBusRow(
     int StopCount, Guid? TripId, double? Lat, double? Lng, double? SpeedKmh, DateTime? LastPingAt, int StudentsRiding,
     int? Capacity);
 
-public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository(factory)
+public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository(factory), IRouteStopSource
 {
     private sealed record BusRow(Guid Id, string BusNo, string? RouteName, string? Driver, string? DriverPhone);
     private sealed record RosterRow(Guid StudentId, string StudentName, Guid? StopId, string Status);
