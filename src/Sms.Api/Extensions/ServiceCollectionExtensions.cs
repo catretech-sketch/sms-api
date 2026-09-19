@@ -38,6 +38,7 @@ using Sms.Modules.Tenancy;
 using Sms.Modules.Transport;
 using Sms.Modules.VehicleChecks;
 using Sms.Shared.Kernel.AiSearch;
+using Sms.Shared.Kernel.Routing;
 using Sms.Shared.Kernel.Audit;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Authz;
@@ -167,6 +168,13 @@ public static class ServiceCollectionExtensions
         builder.Services.AddScoped<IAiIntentHandler, MyTripStatusHandler>();
         builder.Services.AddScoped<IAiSearchService, AiSearchService>();
         builder.Services.AddScoped<IAiConversationContextStore, AiConversationContextStore>();
+
+        builder.Services.Configure<GoogleRoutesOptions>(builder.Configuration.GetSection(GoogleRoutesOptions.SectionName));
+        builder.Services.AddHttpClient("google-routes");
+        builder.Services.AddSingleton<IGoogleRoutesClient, GoogleRoutesClient>();
+        builder.Services.AddScoped<IRouteStopSource>(sp => sp.GetRequiredService<BusRepository>());
+        builder.Services.AddScoped<IRouteGeometryStore>(sp => sp.GetRequiredService<RouteGeometryRepository>());
+        builder.Services.AddScoped<IRouteGeometryService, RouteGeometryService>();
 
         builder.Services.AddScoped<ITenantContext, TenantContext>();
         builder.Services.AddScoped<ITenantPlan, TenantPlan>();
