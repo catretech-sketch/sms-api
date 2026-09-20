@@ -42,6 +42,8 @@ public interface IAuthDao
     Task SetEmailAsync(Guid userId, string? email, CancellationToken ct = default);
     Task OtpInsertAsync(string identifier, string channel, string codeHash, DateTime expiresAt, CancellationToken ct = default);
     Task<string?> OtpActiveHashAsync(string identifier, CancellationToken ct = default);
-    Task OtpConsumeAsync(string identifier, string codeHash, CancellationToken ct = default);
+    /// True if this call actually consumed the OTP row (false = already consumed/expired by a
+    /// concurrent request, which the caller must treat as a failed verification, not a success).
+    Task<bool> OtpConsumeAsync(string identifier, string codeHash, CancellationToken ct = default);
     Task OtpConsumeAllAsync(string identifier, CancellationToken ct = default);
 }

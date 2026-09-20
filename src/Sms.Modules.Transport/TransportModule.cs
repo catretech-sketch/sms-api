@@ -54,11 +54,11 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
     /// Returns "driver", "conductor", or null if the caller is neither — the trip's driver or
     /// its assigned conductor may operate it, RLS already scopes the row to the caller's tenant.
     /// Guards driver-app mutations against acting on a peer's trip within the same school.
-    public async Task<string?> GetParticipantRoleAsync(Guid tripId, Guid userId, CancellationToken ct = default)
+    public async Task<string?> GetParticipantRoleAsync(Guid tenantId, Guid tripId, Guid userId, CancellationToken ct = default)
     {
         var row = (await QueryInlineAsync<TripParticipantsRow>(
-            "SELECT DriverId, ConductorId FROM dbo.Trips WHERE Id = @tripId",
-            new { tripId }, ct)).FirstOrDefault();
+            "SELECT DriverId, ConductorId FROM dbo.Trips WHERE Id = @tripId AND TenantId = @tenantId",
+            new { tripId, tenantId }, ct)).FirstOrDefault();
         if (row is null) return null;
         if (row.DriverId == userId) return "driver";
         if (row.ConductorId == userId) return "conductor";
@@ -89,6 +89,13 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
     public async Task<Guid?> GetBusIdAsync(Guid tripId, CancellationToken ct = default) =>
         (await QueryInlineAsync<Guid?>("SELECT BusId FROM dbo.Trips WHERE Id = @tripId", new { tripId }, ct)).FirstOrDefault();
 
+    /// 'arrived' still counts as active (matches GetCurrentAsync) — only a trip that has actually
+    /// ended should reject further mutations (pings, boarding, stop confirm/complete).
+    public async Task<bool> IsActiveAsync(Guid tripId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<string>(
+            "SELECT Status FROM dbo.Trips WHERE Id = @tripId AND Status IN ('live', 'arrived')",
+            new { tripId }, ct)).Any();
+
     public Task IngestPingsAsync(Guid tenantId, Guid tripId, IReadOnlyList<PingItem> pings, CancellationToken ct = default)
     {
         var table = new DataTable();
@@ -114,9 +121,9 @@ public sealed class TripRepository(IDbConnectionFactory factory) : BaseRepositor
             $"UPDATE dbo.Trips SET {column} = SYSUTCDATETIME() WHERE Id = @tripId", new { tripId }, ct);
     }
 
-    public async Task<TripSummaryResponse> EndAsync(Guid tripId, CancellationToken ct = default)
+    public async Task<TripSummaryResponse> EndAsync(Guid tenantId, Guid tripId, CancellationToken ct = default)
     {
-        var trip = await QuerySingleProcAsync<TripResponse>("dbo.Trip_End", new { Id = tripId }, ct);
+        var trip = await QuerySingleProcAsync<TripResponse>("dbo.Trip_End", new { Id = tripId, TenantId = tenantId }, ct);
         var pings = await QueryInlineAsync<PingRow>(
             "SELECT Lat, Lng FROM dbo.TripPings WHERE TripId = @tripId ORDER BY At", new { tripId }, ct);
 

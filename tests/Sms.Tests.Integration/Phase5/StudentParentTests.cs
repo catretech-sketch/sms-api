@@ -136,13 +136,20 @@ public class StudentParentTests(SqlServerFixture fx)
         var id = inv.GetProperty("id").GetGuid();
         inv.GetProperty("status").GetString().Should().Be("due");
 
+        // Security fix: omitting Amount routes to the legacy placeholder gateway, which never
+        // verifies a real transaction — a parent must not be able to mark their own invoice paid
+        // for free this way. Only staff may use the amount-omitted path (e.g. to record a
+        // payment collected outside the app); a parent's real payment goes through the
+        // signature-verified Razorpay flow (see RazorpayFeePaymentAcceptanceTests), not this one.
         var parent = TenantClient(app, tenantId, Policies.StudentOrParent, parentUserId);
-        var paid = await Data(await parent.PostAsync($"/v1/fees/invoices/{id}/pay", null), HttpStatusCode.OK);
+        (await parent.PostAsync($"/v1/fees/invoices/{id}/pay", null)).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+
+        var paid = await Data(await admin.PostAsync($"/v1/fees/invoices/{id}/pay", null), HttpStatusCode.OK);
         paid.GetProperty("amount").GetDecimal().Should().Be(1240);
         paid.GetProperty("method").GetString().Should().NotBeNullOrEmpty();
         paid.GetProperty("invoice_id").GetGuid().Should().Be(id);
 
-        (await parent.PostAsync($"/v1/fees/invoices/{id}/pay", null)).StatusCode.Should().Be(HttpStatusCode.Conflict);
+        (await admin.PostAsync($"/v1/fees/invoices/{id}/pay", null)).StatusCode.Should().Be(HttpStatusCode.Conflict);
 
         var invoices = await Data(await parent.GetAsync($"/v1/fees/invoices?student_id={childId}"), HttpStatusCode.OK);
         invoices.EnumerateArray().First(e => e.GetProperty("id").GetGuid() == id)

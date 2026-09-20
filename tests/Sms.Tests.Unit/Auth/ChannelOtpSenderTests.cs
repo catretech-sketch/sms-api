@@ -18,7 +18,7 @@ public class ChannelOtpSenderTests
     public async Task Email_channel_routes_through_the_email_sender()
     {
         var queue = new CapturingQueue();
-        var router = new ChannelOtpSender(new EmailOtpSender(queue), new ConsoleOtpSender());
+        var router = new ChannelOtpSender(new EmailOtpSender(queue), new ConsoleOtpSender(isDevelopment: true));
 
         await router.SendAsync("user@x.com", "email");
 
@@ -29,7 +29,7 @@ public class ChannelOtpSenderTests
     public async Task Sms_channel_does_not_use_the_email_sender()
     {
         var queue = new CapturingQueue();
-        var router = new ChannelOtpSender(new EmailOtpSender(queue), new ConsoleOtpSender());
+        var router = new ChannelOtpSender(new EmailOtpSender(queue), new ConsoleOtpSender(isDevelopment: true));
 
         var code = await router.SendAsync("+15551234", "sms");
 

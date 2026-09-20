@@ -11,6 +11,7 @@ namespace Sms.Api.Controllers;
 public sealed class PersonExtrasController(IAcademicsService academics) : ApiControllerBase
 {
     [HttpGet("students/{id:guid}/extras")]
+    [Authorize(Policy = Policies.Principal)]
     public async Task<IActionResult> GetStudent(Guid id, CancellationToken ct) =>
         FromResult(await academics.GetPersonExtrasAsync("student", id, ct));
 
@@ -20,6 +21,7 @@ public sealed class PersonExtrasController(IAcademicsService academics) : ApiCon
         FromResult(await academics.UpsertPersonExtrasAsync("student", id, req, ct));
 
     [HttpGet("teachers/{id:guid}/extras")]
+    [Authorize(Policy = Policies.Principal)]
     public async Task<IActionResult> GetTeacher(Guid id, CancellationToken ct) =>
         FromResult(await academics.GetPersonExtrasAsync("teacher", id, ct));
 
@@ -29,6 +31,7 @@ public sealed class PersonExtrasController(IAcademicsService academics) : ApiCon
         FromResult(await academics.UpsertPersonExtrasAsync("teacher", id, req, ct));
 
     [HttpGet("staff/{id:guid}/extras")]
+    [Authorize(Policy = Policies.Principal)]
     public async Task<IActionResult> GetStaff(Guid id, CancellationToken ct) =>
         FromResult(await academics.GetPersonExtrasAsync("staff", id, ct));
 

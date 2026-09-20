@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Sms.Application.Services.Attendance;
 using Sms.Modules.Attendance;
+using Sms.Shared.Kernel.Authz;
 
 namespace Sms.Api.Controllers;
 
@@ -14,6 +15,7 @@ public sealed class AttendanceController(IAttendanceService attendance) : ApiCon
         FromResult(await attendance.GetSchoolLocationAsync(ct));
 
     [HttpPut("school-location")]
+    [Authorize(Policy = Policies.Principal)]
     public async Task<IActionResult> UpsertSchoolLocation([FromBody] UpsertSchoolLocationRequest req, CancellationToken ct) =>
         FromResult(await attendance.UpsertSchoolLocationAsync(req, ct));
 

@@ -29,12 +29,20 @@ public class StaffSelfAttendanceTests(SqlServerFixture fx)
             b.UseSetting("Jwt:SigningKey", Key);
         });
 
-    private static HttpClient StaffClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId)
+    private static HttpClient StaffClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId) =>
+        RoleClient(app, tenantId, userId, "driver");
+
+    /// Setting the school-wide geofence is a principal/admin/owner-only action (a driver must
+    /// not be able to overwrite the attendance-verification location for the whole school).
+    private static HttpClient PrincipalClient(WebApplicationFactory<Program> app, Guid tenantId) =>
+        RoleClient(app, tenantId, Guid.NewGuid(), "school.admin");
+
+    private static HttpClient RoleClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId, string role)
     {
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(userId, tenantId, ["driver"], isPlatform: false);
+        var token = jwt.IssueAccess(userId, tenantId, [role], isPlatform: false);
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
         return client;
@@ -73,7 +81,7 @@ public class StaffSelfAttendanceTests(SqlServerFixture fx)
         var tenantId = Guid.NewGuid();
         await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var client = StaffClient(app, tenantId, Guid.NewGuid());
-        await SetSchoolLocation(client);
+        await SetSchoolLocation(PrincipalClient(app, tenantId));
 
         var data = await Data(await client.PostAsJsonAsync("/v1/staff/attendance/check-in",
             new { at = DateTime.UtcNow, lat = SchoolLat, lng = SchoolLng, accuracy_meters = 5 }), HttpStatusCode.Created);
@@ -94,7 +102,7 @@ public class StaffSelfAttendanceTests(SqlServerFixture fx)
         var tenantId = Guid.NewGuid();
         await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var client = StaffClient(app, tenantId, Guid.NewGuid());
-        await SetSchoolLocation(client);
+        await SetSchoolLocation(PrincipalClient(app, tenantId));
 
         var data = await Data(await client.PostAsJsonAsync("/v1/staff/attendance/check-in",
             new { at = DateTime.UtcNow, lat = SchoolLat + 0.05, lng = SchoolLng, accuracy_meters = 5 }), HttpStatusCode.Created);
@@ -110,7 +118,7 @@ public class StaffSelfAttendanceTests(SqlServerFixture fx)
         var tenantId = Guid.NewGuid();
         await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var client = StaffClient(app, tenantId, Guid.NewGuid());
-        await SetSchoolLocation(client);
+        await SetSchoolLocation(PrincipalClient(app, tenantId));
 
         // Anchored to noon UTC (not DateTime.UtcNow) so check-in/check-out never straddle the
         // UTC day boundary — PunchAsync buckets each punch by the calendar day of its own

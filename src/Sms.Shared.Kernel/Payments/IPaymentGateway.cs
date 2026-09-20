@@ -8,7 +8,12 @@ public interface IPaymentGateway
     Task<PaymentResult> ChargeAsync(decimal amount, string currency, CancellationToken ct = default);
 }
 
-/// Dev/test stub: always succeeds, returns a fake reference. Swapped for a real provider in Phase 5/6.
+/// Legacy/placeholder gateway: always succeeds, returns a fake reference. No real provider is
+/// wired up for this call path yet (real online payments go through IRazorpayGateway with
+/// signature verification instead — see FeeOnlinePaymentService). Callers must not expose this
+/// path to self-service end users (see FeeController.PayInvoice's staff-only guard on the
+/// amount-omitted branch) — it exists for staff to record a payment collected outside the app,
+/// not as a substitute for real payment processing.
 public sealed class StubPaymentGateway : IPaymentGateway
 {
     public Task<PaymentResult> ChargeAsync(decimal amount, string currency, CancellationToken ct = default) =>

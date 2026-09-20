@@ -42,7 +42,7 @@ public sealed class IssueService(
         Guid? vehicleId = null, routeId = null;
         if (req.TripId is { } tripId)
         {
-            if (await trips.GetParticipantRoleAsync(tripId, uid, ct) is null)
+            if (await trips.GetParticipantRoleAsync(tid, tripId, uid, ct) is null)
                 return ApiResult<IssueResponse>.Fail(new Error("invalid_request", "trip does not belong to you"), 400);
             vehicleId = await trips.GetBusIdAsync(tripId, ct);
             routeId = await trips.GetTripRouteIdAsync(tripId, ct);

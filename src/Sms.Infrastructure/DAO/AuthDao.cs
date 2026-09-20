@@ -156,8 +156,8 @@ public sealed class AuthDao(IDbConnectionFactory factory, ITenantContext tenant)
         return rows.Count == 0 ? null : rows[0].CodeHash;
     }
 
-    public Task OtpConsumeAsync(string identifier, string codeHash, CancellationToken ct = default) =>
-        ExecuteProcAsync(AuthQueries.OtpConsume, new { Identifier = identifier, CodeHash = codeHash }, ct);
+    public async Task<bool> OtpConsumeAsync(string identifier, string codeHash, CancellationToken ct = default) =>
+        await QuerySingleProcAsync<int>(AuthQueries.OtpConsume, new { Identifier = identifier, CodeHash = codeHash }, ct) > 0;
 
     public Task OtpConsumeAllAsync(string identifier, CancellationToken ct = default) =>
         ExecuteProcAsync(AuthQueries.OtpConsumeAll, new { Identifier = identifier }, ct);

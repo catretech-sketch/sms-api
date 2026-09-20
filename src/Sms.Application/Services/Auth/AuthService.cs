@@ -129,7 +129,8 @@ public sealed class AuthService(
         if (activeHash is null || activeHash != Sha256(req.Code))
             return ApiResult<TokenResponse>.Fail(new Error("invalid_code", "code invalid or expired"), 401);
 
-        await users.OtpConsumeAsync(req.Identifier, activeHash, ct);
+        if (!await users.OtpConsumeAsync(req.Identifier, activeHash, ct))
+            return ApiResult<TokenResponse>.Fail(new Error("invalid_code", "code invalid or expired"), 401);
         var user = await FindUserByIdentifierAsync(req.Identifier, ct);
         if (user is null)
             return ApiResult<TokenResponse>.Fail(new Error("invalid_code", "user not found"), 401);
@@ -234,7 +235,8 @@ public sealed class AuthService(
         if (activeHash is null || req.Code is null || activeHash != Sha256(req.Code))
             return ApiResult.Fail(new Error("invalid_code", "code invalid or expired"), 401);
 
-        await users.OtpConsumeAsync(req.Identifier, activeHash, ct);
+        if (!await users.OtpConsumeAsync(req.Identifier, activeHash, ct))
+            return ApiResult.Fail(new Error("invalid_code", "code invalid or expired"), 401);
         // Same identifier can own several tenant-scoped rows (invited to multiple
         // schools) — set the password on ALL of them so one setup step works
         // everywhere they were invited, not just the row a tiebreak happens to pick.

@@ -7,7 +7,7 @@ using Sms.Shared.Kernel.Authz;
 namespace Sms.Api.Controllers;
 
 [Route("v1")]
-[Authorize]
+[Authorize(Policy = Policies.Principal)]
 public sealed class StaffController(IStaffingService staffing) : ApiControllerBase
 {
     [HttpGet("staff")]

@@ -34,10 +34,29 @@ public sealed class StudentBulkImportService(
         // instead of an unhandled NullReferenceException from the loop below.
         if (req.Rows is null or { Count: 0 })
             return ApiResult<BulkImportBatchResponse>.Fail(new Error("validation_error", "rows is required"), 400);
+        if (req.Rows.Count > MaxBatchRows)
+            return ApiResult<BulkImportBatchResponse>.Fail(
+                new Error("validation_error", $"a batch may contain at most {MaxBatchRows} rows"), 400);
 
         var existing = await repo.GetExistingResultAsync(tid, req.ImportId, req.BatchIndex, ct);
         if (existing is not null)
             return ApiResult<BulkImportBatchResponse>.Ok(existing);
+
+        // Claim this batch BEFORE processing any row — the unique index on
+        // (TenantId, ImportId, BatchIndex) now guards the claim itself, not just the final
+        // write, so a losing concurrent request never processes (and never creates duplicate
+        // students for) a batch someone else already owns.
+        if (!await repo.TryClaimBatchAsync(tid, req.ImportId, req.BatchIndex, ct))
+        {
+            // The winner may already be done (or still working) — re-check once before telling
+            // the caller to retry, so a request that arrives just after completion still gets
+            // the real result instead of a spurious conflict.
+            var raced = await repo.GetExistingResultAsync(tid, req.ImportId, req.BatchIndex, ct);
+            return raced is not null
+                ? ApiResult<BulkImportBatchResponse>.Ok(raced)
+                : ApiResult<BulkImportBatchResponse>.Fail(
+                    new Error("conflict", "this batch is already being processed — retry shortly"), 409);
+        }
 
         var results = new List<BulkImportRowResult>();
         foreach (var row in req.Rows)
@@ -73,9 +92,14 @@ public sealed class StudentBulkImportService(
             TransportPending: results.Count(r => r.TransportStatus == "pending"),
             Rows: results);
 
-        var recorded = await repo.RecordResultAsync(tid, req.ImportId, req.BatchIndex, response, ct);
-        return ApiResult<BulkImportBatchResponse>.Ok(recorded);
+        await repo.CompleteBatchAsync(tid, req.ImportId, req.BatchIndex, response, ct);
+        return ApiResult<BulkImportBatchResponse>.Ok(response);
     }
+
+    /// Matches the documented per-request batch size (see StudentBulkImportController) — without
+    /// this, an arbitrarily large request is processed row-by-row sequentially, monopolizing the
+    /// API/DB and returning an unbounded response payload.
+    private const int MaxBatchRows = 200;
 
     /// Minimal required-field guard before creating — the backend's own final authority,
     /// independent of whatever the client's Preview step already checked. Deliberately does
