@@ -11,6 +11,7 @@ using Sms.Application.Services.Realtime;
 using Sms.Application.Services.Transport;
 using Sms.Shared.Kernel.Auth;
 using Sms.Shared.Kernel.Time;
+using Sms.Tests.Integration;
 
 namespace Sms.Tests.Integration.Transport;
 
@@ -302,5 +303,55 @@ public class TripBroadcastTests(SqlServerFixture fx)
         var position = fleet.PositionCalls.Single(c => c.BusId == busId);
         position.Snapshot.NextStopId.Should().Be(stopId);
         position.Snapshot.WithinArrivalRadius.Should().BeTrue();
+    }
+
+    private static HttpClient PrincipalClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId)
+    {
+        var jwt = new JwtTokenService(
+            new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
+            new SystemClock());
+        var token = jwt.IssueAccess(userId, tenantId, [Sms.Shared.Kernel.Authz.Policies.Principal], isPlatform: false);
+        var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+        return client;
+    }
+
+    [Fact]
+    public async Task Admin_bus_trip_start_and_ping_broadcast_position_like_driver_path()
+    {
+        var (app, fleet, _) = App();
+        await using var _dispose = app;
+        var tenantId = Guid.NewGuid();
+        var principalId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var busNo = $"KA-{Guid.NewGuid():N}"[..12];
+
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, @BusNo)",
+                new { Id = busId, TenantId = tenantId, BusNo = busNo });
+        }
+
+        var admin = PrincipalClient(app, tenantId, principalId);
+        var start = await Data(await admin.PostAsJsonAsync($"/v1/transport/buses/{busId}/trip/start",
+            new { direction = "pickup" }), HttpStatusCode.Created);
+        var tripId = start.GetProperty("id").GetGuid();
+
+        fleet.TripStartedCalls.Should().Contain(c => c.BusId == busId && c.TripId == tripId);
+
+        const double pingLat = 12.97;
+        const double pingLng = 77.59;
+        (await admin.PostAsJsonAsync($"/v1/transport/buses/{busId}/trip/pings", new
+        {
+            pings = new[] { new { lat = pingLat, lng = pingLng, speed_kmh = 25, heading = 0, at = DateTime.UtcNow } },
+        })).StatusCode.Should().Be(HttpStatusCode.NoContent);
+
+        var position = fleet.PositionCalls.Should().ContainSingle(c => c.BusId == busId).Subject;
+        position.Snapshot.Lat.Should().Be(pingLat);
+        position.Snapshot.Lng.Should().Be(pingLng);
     }
 }

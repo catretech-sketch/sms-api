@@ -21,6 +21,7 @@ public sealed class FleetSnapshotBuilder(BusRepository repo, ITenantContext tena
         {
             teachers.TryGetValue(r.BusId, out var teacherRow);
             string status;
+            string? trackingStatus = BusTrackingStatusRules.Offline;
             string? nextStop = null;
             int? etaMinutes = null;
             double? lat = r.Lat;
@@ -42,6 +43,9 @@ public sealed class FleetSnapshotBuilder(BusRepository repo, ITenantContext tena
             }
             else
             {
+                var derived = BusTrackingStatusRules.Derive(
+                    now, r.LastPingAt, r.SpeedKmh, hasLiveTrip: true, gpsAllowed: true);
+                trackingStatus = derived.Tracking;
                 var ageMin = (now - r.LastPingAt.Value).TotalMinutes;
                 status = ageMin > 5 ? "delayed"
                     : (r.SpeedKmh is <= 3) ? "at_stop"
@@ -56,7 +60,7 @@ public sealed class FleetSnapshotBuilder(BusRepository repo, ITenantContext tena
                 r.StopCount, r.StudentsRiding, status,
                 lat, lng, speed, nextStop, lastPing,
                 teacherRow?.TeacherUserId, teacherRow?.TeacherName, Capacity: r.Capacity,
-                Heading: heading, EtaMinutes: etaMinutes));
+                TrackingStatus: trackingStatus, Heading: heading, EtaMinutes: etaMinutes));
         }
 
         return list;

@@ -89,4 +89,46 @@ public class TransportFleetHubTests(SqlServerFixture fx)
         (await connection.InvokeAsync<bool>("JoinBus", busId)).Should().BeFalse();
         connection.State.Should().Be(HubConnectionState.Connected);
     }
+
+    [Fact]
+    public async Task JoinMyChildrenBuses_joins_only_buses_with_linked_children()
+    {
+        var tenantId = Guid.NewGuid();
+        var parentId = Guid.NewGuid();
+        var otherParentId = Guid.NewGuid();
+        var childId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var otherBusId = Guid.NewGuid();
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, 'BUS-A')",
+                new { Id = busId, TenantId = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, 'BUS-B')",
+                new { Id = otherBusId, TenantId = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Students (Id, TenantId, Name, AdmissionNo, Status) VALUES (@Id, @TenantId, 'Kid', 'ADM-X', 'active')",
+                new { Id = childId, TenantId = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.StudentBusAssignments (Id, TenantId, StudentId, BusId) VALUES (@Id, @TenantId, @StudentId, @BusId)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, StudentId = childId, BusId = busId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.ParentStudentLinks (ParentUserId, StudentId, TenantId) VALUES (@ParentUserId, @StudentId, @TenantId)",
+                new { ParentUserId = parentId, StudentId = childId, TenantId = tenantId });
+        }
+
+        await using var app = App();
+        await using var parentConn = await ConnectAsync(app, IssueToken(parentId, tenantId, Policies.StudentOrParent));
+        await using var otherConn = await ConnectAsync(app, IssueToken(otherParentId, tenantId, Policies.StudentOrParent));
+
+        var joined = await parentConn.InvokeAsync<IReadOnlyList<Guid>>("JoinMyChildrenBuses");
+        joined.Should().ContainSingle().Which.Should().Be(busId);
+
+        var otherJoined = await otherConn.InvokeAsync<IReadOnlyList<Guid>>("JoinMyChildrenBuses");
+        otherJoined.Should().BeEmpty();
+    }
 }

@@ -60,6 +60,7 @@ public sealed class ThreadService(CommsRepository repo, ITenantContext tenant, I
         if (msg is null)
             return ApiResult<ChatMessageResponse>.Fail(new Error("not_found", "resource not found"), 404);
         await live.PublishAsync(tid, LiveEventTypes.Chat, new { thread_id = threadId }, ct);
+        await live.PublishAsync(tid, LiveEventTypes.Notification, ct: ct);
         return ApiResult<ChatMessageResponse>.Ok(msg, 201);
     }
 }

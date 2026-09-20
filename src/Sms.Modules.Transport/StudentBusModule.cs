@@ -9,16 +9,64 @@ public sealed record StudentBusAssignmentResponse(
     Guid BusId, string BusNo, string? RouteName, Guid? StopId, string? StopName);
 
 /// Live position of a parent's child bus (post status-derivation), for the parent app.
+/// <c>Status</c> keeps the legacy idle/on_route/at_stop/delayed values; <c>TrackingStatus</c>
+/// is the canonical LIVE/DELAYED/OFFLINE value every client should render.
 public sealed record ChildBusPositionResponse(
     Guid StudentId, string StudentName, string AdmissionNo,
-    Guid BusId, string BusNo, string? RouteName, string Status,
-    double? Lat, double? Lng, double? SpeedKmh, string? NextStopName, DateTime? LastPingAt);
+    Guid? BusId, string? BusNo, string? RouteName, string Status,
+    double? Lat, double? Lng, double? SpeedKmh, string? NextStopName, DateTime? LastPingAt,
+    Guid? StudentStopId = null, string? StudentStopName = null,
+    double? StudentStopLat = null, double? StudentStopLng = null,
+    double? DistanceToStudentStopM = null,
+    IReadOnlyList<BusStopResponse>? RouteStops = null,
+    string? Grade = null, string? Section = null,
+    string? Driver = null, string? DriverPhone = null,
+    string TrackingStatus = BusTrackingStatusRules.Offline,
+    string? Motion = null,
+    string Assignment = BusTrackingStatusRules.None,
+    string? BoardingState = null,
+    int? EtaNextStopMin = null,
+    int? CurrentStopIndex = null,
+    string? CurrentStopName = null,
+    int? PassedStopCount = null,
+    int? TotalStops = null,
+    int? EtaToStudentStopMin = null,
+    Guid? RouteId = null);
 
 /// Raw per-child live row before status derivation.
-public sealed record ChildBusRow(
-    Guid StudentId, string StudentName, string AdmissionNo,
-    Guid BusId, string BusNo, string? RouteName,
-    Guid? TripId, double? Lat, double? Lng, double? SpeedKmh, DateTime? LastPingAt);
+/// Class (not positional record): Dapper cannot bind LEFT JOIN nulls onto a Guid/DateTime
+/// constructor when SQL Server reports those columns as non-nullable uniqueidentifier/datetime2.
+public sealed class ChildBusRow
+{
+    public Guid StudentId { get; init; }
+    public string StudentName { get; init; } = "";
+    public string AdmissionNo { get; init; } = "";
+    public Guid? BusId { get; init; }
+    public string? BusNo { get; init; }
+    public string? RouteName { get; init; }
+    public Guid? TripId { get; init; }
+    public double? Lat { get; init; }
+    public double? Lng { get; init; }
+    public double? SpeedKmh { get; init; }
+    public DateTime? LastPingAt { get; init; }
+    public Guid? StopId { get; init; }
+    public string? StopName { get; init; }
+    public double? StopLat { get; init; }
+    public double? StopLng { get; init; }
+    public string? Grade { get; init; }
+    public string? Section { get; init; }
+    public string? Driver { get; init; }
+    public string? DriverPhone { get; init; }
+    public Guid? RouteId { get; init; }
+    public Guid? AssignmentId { get; init; }
+    public int OptedOut { get; init; }
+    public string? BoardingState { get; init; }
+}
+
+/// Student on a bus with their assigned stop, used to fan out parent approach alerts.
+public sealed record BusRiderStopRow(
+    Guid StudentId, string StudentName, string AdmissionNo, string BusNo,
+    Guid? StopId, string? StopName, double? StopLat, double? StopLng);
 
 /// Current transport mapping for a student (route/stop/fee head chosen, bus possibly pending). Consumed by Task 3's StudentTransportService.
 public sealed record TransportStatusRow(Guid? BusId, Guid? RouteId, Guid? StopId, Guid? FeeHeadId);
@@ -148,21 +196,108 @@ public sealed class StudentBusRepository(IDbConnectionFactory factory) : BaseRep
     /// The live bus for each student whose AdmissionNo matches (RLS scopes this to the caller's tenant,
     /// so identical admission numbers in other schools are never returned).
     public Task<IReadOnlyList<ChildBusRow>> ChildrenBusByAdmissionAsync(string admissionNo, CancellationToken ct = default) =>
-        QueryInlineAsync<ChildBusRow>(
-            @"SELECT s.Id AS StudentId, s.Name AS StudentName, s.AdmissionNo,
-                     b.Id AS BusId, b.BusNo, b.RouteName,
-                     t.Id AS TripId, p.Lat, p.Lng, p.SpeedKmh, p.At AS LastPingAt
-              FROM dbo.Students s
-              JOIN dbo.StudentBusAssignments sba ON sba.StudentId = s.Id
-              JOIN dbo.Buses b ON b.Id = sba.BusId
-              OUTER APPLY (
-                SELECT TOP 1 tt.Id, tt.StartedAt FROM dbo.Trips tt
-                WHERE tt.BusId = b.Id AND tt.Status = 'live' ORDER BY tt.StartedAt DESC) t
-              OUTER APPLY (
-                SELECT TOP 1 pp.Lat, pp.Lng, pp.SpeedKmh, pp.At FROM dbo.TripPings pp
-                WHERE pp.TripId = t.Id ORDER BY pp.At DESC) p
-              WHERE s.AdmissionNo = @admissionNo
-              ORDER BY s.Name", new { admissionNo }, ct);
+        QueryInlineAsync<ChildBusRow>(ChildBusSelect + " WHERE s.AdmissionNo = @admissionNo ORDER BY s.Name",
+            new { admissionNo }, ct);
+
+    public Task<IReadOnlyList<ChildBusRow>> ChildrenBusByStudentIdsAsync(
+        IReadOnlyList<Guid> studentIds, CancellationToken ct = default)
+    {
+        if (studentIds.Count == 0) return Task.FromResult<IReadOnlyList<ChildBusRow>>([]);
+        return QueryInlineAsync<ChildBusRow>(
+            ChildBusSelect + " WHERE s.Id IN @studentIds ORDER BY s.Name",
+            new { studentIds }, ct);
+    }
+
+    public Task<IReadOnlyList<Guid>> ListLinkedStudentIdsAsync(Guid parentUserId, CancellationToken ct = default) =>
+        QueryInlineAsync<Guid>(
+            "SELECT StudentId FROM dbo.ParentStudentLinks WHERE ParentUserId = @parentUserId",
+            new { parentUserId }, ct);
+
+    /// Distinct bus IDs for a parent's linked children (and legacy admission-linked child).
+    public Task<IReadOnlyList<Guid>> ListDistinctBusIdsForParentAsync(Guid parentUserId, CancellationToken ct = default) =>
+        QueryInlineAsync<Guid>(@"
+SELECT DISTINCT BusId FROM (
+    SELECT sba.BusId
+    FROM dbo.ParentStudentLinks l
+    JOIN dbo.StudentBusAssignments sba ON sba.StudentId = l.StudentId
+    WHERE l.ParentUserId = @parentUserId AND sba.BusId IS NOT NULL
+    UNION
+    SELECT sba.BusId
+    FROM dbo.Users u
+    JOIN dbo.Students s ON s.AdmissionNo = u.StudentId AND s.TenantId = u.TenantId
+    JOIN dbo.StudentBusAssignments sba ON sba.StudentId = s.Id
+    WHERE u.Id = @parentUserId AND u.StudentId IS NOT NULL AND sba.BusId IS NOT NULL
+) x", new { parentUserId }, ct);
+
+    public Task<IReadOnlyList<Guid>> ListParentUserIdsAsync(Guid studentId, string admissionNo, CancellationToken ct = default) =>
+        QueryInlineAsync<Guid>(@"
+SELECT DISTINCT Id FROM (
+    SELECT ParentUserId AS Id FROM dbo.ParentStudentLinks WHERE StudentId = @studentId
+    UNION
+    SELECT u.Id FROM dbo.Users u WHERE u.StudentId = @admissionNo
+) p", new { studentId, admissionNo }, ct);
+
+    public Task<IReadOnlyList<BusRiderStopRow>> ListRidersWithStopsAsync(Guid busId, CancellationToken ct = default) =>
+        QueryInlineAsync<BusRiderStopRow>(@"
+SELECT s.Id AS StudentId, s.Name AS StudentName, s.AdmissionNo, b.BusNo,
+       sba.StopId, COALESCE(rs.Name, bs.Name) AS StopName,
+       COALESCE(rs.Lat, bs.Lat) AS StopLat, COALESCE(rs.Lng, bs.Lng) AS StopLng
+FROM dbo.StudentBusAssignments sba
+JOIN dbo.Students s ON s.Id = sba.StudentId
+JOIN dbo.Buses b ON b.Id = sba.BusId
+LEFT JOIN dbo.RouteStops rs ON rs.Id = sba.StopId
+LEFT JOIN dbo.BusStops bs ON bs.Id = sba.StopId
+WHERE sba.BusId = @busId
+ORDER BY s.Name", new { busId }, ct);
+
+    /// Returns true when this (trip, student, kind) had not been recorded yet.
+    public async Task<bool> TryInsertParentAlertAsync(
+        Guid tenantId, Guid tripId, Guid studentId, Guid parentUserId, string kind, CancellationToken ct = default)
+    {
+        var inserted = await ExecuteInlineAsync(@"
+INSERT INTO dbo.BusParentAlerts (Id, TenantId, TripId, StudentId, ParentUserId, Kind)
+SELECT NEWID(), @tenantId, @tripId, @studentId, @parentUserId, @kind
+WHERE NOT EXISTS (
+    SELECT 1 FROM dbo.BusParentAlerts
+    WHERE TripId = @tripId AND StudentId = @studentId AND ParentUserId = @parentUserId AND Kind = @kind
+);
+",
+            new { tenantId, tripId, studentId, parentUserId, kind }, ct);
+        return inserted > 0;
+    }
+
+    private const string ChildBusSelect = @"
+SELECT s.Id AS StudentId, s.Name AS StudentName, s.AdmissionNo,
+       s.Grade AS Grade, s.Section AS Section,
+       b.Id AS BusId, b.BusNo, COALESCE(NULLIF(b.RouteName, ''), r.Name) AS RouteName,
+       COALESCE(NULLIF(b.Driver, ''), ds.Name) AS Driver, b.DriverPhone,
+       t.Id AS TripId, p.Lat, p.Lng, p.SpeedKmh, p.At AS LastPingAt,
+       sba.StopId, COALESCE(rs.Name, bs.Name) AS StopName,
+       COALESCE(rs.Lat, bs.Lat) AS StopLat, COALESCE(rs.Lng, bs.Lng) AS StopLng,
+       r.Id AS RouteId, sba.Id AS AssignmentId,
+       CASE WHEN oo.StudentId IS NOT NULL THEN 1 ELSE 0 END AS OptedOut,
+       brd.State AS BoardingState
+FROM dbo.Students s
+LEFT JOIN dbo.StudentBusAssignments sba ON sba.StudentId = s.Id
+LEFT JOIN dbo.Buses b ON b.Id = sba.BusId
+-- Prefer the bus's actual current route once a bus is assigned — sba.RouteId
+-- is the route chosen at opt-in time and can drift from reality after a
+-- reassignment to a different bus/route, which otherwise fetches road
+-- geometry for a route the student isn't really riding.
+LEFT JOIN dbo.TransportRoutes r ON r.Id = COALESCE(b.RouteId, sba.RouteId)
+LEFT JOIN dbo.Staff ds ON ds.Id = b.DriverStaffId
+LEFT JOIN dbo.RouteStops rs ON rs.Id = sba.StopId
+LEFT JOIN dbo.BusStops bs ON bs.Id = sba.StopId
+LEFT JOIN dbo.StudentTransportOptOut oo ON oo.StudentId = s.Id
+OUTER APPLY (
+  SELECT TOP 1 tt.Id, tt.StartedAt FROM dbo.Trips tt
+  WHERE tt.BusId = b.Id AND tt.Status IN ('live', 'arrived') ORDER BY tt.StartedAt DESC) t
+OUTER APPLY (
+  SELECT TOP 1 pp.Lat, pp.Lng, pp.SpeedKmh, pp.At FROM dbo.TripPings pp
+  WHERE pp.TripId = t.Id ORDER BY pp.At DESC) p
+OUTER APPLY (
+  SELECT TOP 1 bo.State FROM dbo.Boardings bo
+  WHERE bo.TripId = t.Id AND bo.StudentId = s.Id ORDER BY bo.At DESC) brd";
 
     /// True if a student with this admission number (RLS-scoped to the caller's
     /// tenant) is currently assigned to this bus. Used to authorize a parent's
@@ -174,6 +309,42 @@ public sealed class StudentBusRepository(IDbConnectionFactory factory) : BaseRep
               JOIN dbo.StudentBusAssignments sba ON sba.StudentId = s.Id
               WHERE s.AdmissionNo = @admissionNo AND sba.BusId = @busId",
             new { admissionNo, busId }, ct);
+        return rows.FirstOrDefault() > 0;
+    }
+
+    /// True when any of this parent's linked children (ParentStudentLinks) is assigned to the bus.
+    public async Task<bool> HasLinkedChildOnBusAsync(Guid parentUserId, Guid busId, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<int>(
+            @"SELECT COUNT(1) FROM dbo.ParentStudentLinks l
+              JOIN dbo.StudentBusAssignments sba ON sba.StudentId = l.StudentId
+              WHERE l.ParentUserId = @parentUserId AND sba.BusId = @busId",
+            new { parentUserId, busId }, ct);
+        return rows.FirstOrDefault() > 0;
+    }
+
+    /// Route-level equivalent of <see cref="HasChildOnBusAsync"/>: a student's own
+    /// StudentBusAssignments.RouteId can diverge from their assigned bus's Buses.RouteId
+    /// (e.g. the bus's route column is stale/reassigned), so route-view authorization
+    /// must not rely solely on the bus-side value.
+    public async Task<bool> HasChildOnRouteAsync(string admissionNo, Guid routeId, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<int>(
+            @"SELECT COUNT(1) FROM dbo.Students s
+              JOIN dbo.StudentBusAssignments sba ON sba.StudentId = s.Id
+              WHERE s.AdmissionNo = @admissionNo AND sba.RouteId = @routeId",
+            new { admissionNo, routeId }, ct);
+        return rows.FirstOrDefault() > 0;
+    }
+
+    /// Route-level equivalent of <see cref="HasLinkedChildOnBusAsync"/>.
+    public async Task<bool> HasLinkedChildOnRouteAsync(Guid parentUserId, Guid routeId, CancellationToken ct = default)
+    {
+        var rows = await QueryInlineAsync<int>(
+            @"SELECT COUNT(1) FROM dbo.ParentStudentLinks l
+              JOIN dbo.StudentBusAssignments sba ON sba.StudentId = l.StudentId
+              WHERE l.ParentUserId = @parentUserId AND sba.RouteId = @routeId",
+            new { parentUserId, routeId }, ct);
         return rows.FirstOrDefault() > 0;
     }
 }

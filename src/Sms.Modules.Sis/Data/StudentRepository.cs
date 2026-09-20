@@ -85,6 +85,16 @@ OUTER APPLY (
             ") ORDER BY s.Name, s.Id",
             new { parentUserId, tenantId }, ct);
 
+    public Task<IReadOnlyList<Guid>> ListParentUserIdsAsync(
+        Guid studentId, string admissionNo, CancellationToken ct = default) =>
+        QueryInlineAsync<Guid>(@"
+SELECT DISTINCT Id FROM (
+    SELECT ParentUserId AS Id FROM dbo.ParentStudentLinks WHERE StudentId = @studentId
+    UNION
+    SELECT u.Id FROM dbo.Users u
+    WHERE @admissionNo IS NOT NULL AND LTRIM(RTRIM(@admissionNo)) <> N'' AND u.StudentId = @admissionNo
+) p", new { studentId, admissionNo }, ct);
+
     public async Task SetGuardianEmailAsync(Guid id, string email, CancellationToken ct = default) =>
         await ExecuteInlineAsync(
             "UPDATE dbo.Students SET GuardianEmail = @email WHERE Id = @id",

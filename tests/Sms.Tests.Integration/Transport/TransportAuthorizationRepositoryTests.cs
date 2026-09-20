@@ -56,6 +56,7 @@ public class TransportAuthorizationRepositoryTests(SqlServerFixture fx)
         (await repo.HasChildOnBusAsync(admissionNo, busId, default)).Should().BeTrue();
         (await repo.HasChildOnBusAsync(admissionNo, otherBusId, default)).Should().BeFalse();
         (await repo.HasChildOnBusAsync("NO-SUCH-ADMISSION", busId, default)).Should().BeFalse();
+        (await repo.HasLinkedChildOnBusAsync(Guid.NewGuid(), busId, default)).Should().BeFalse();
     }
 
     [Fact]
