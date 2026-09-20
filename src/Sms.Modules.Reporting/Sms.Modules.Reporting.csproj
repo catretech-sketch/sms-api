@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Sms.Shared.Kernel\Sms.Shared.Kernel.csproj" />
+    <ProjectReference Include="..\Sms.Modules.Attendance\Sms.Modules.Attendance.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

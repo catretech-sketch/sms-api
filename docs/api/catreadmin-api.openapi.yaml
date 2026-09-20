@@ -1,0 +1,981 @@
+openapi: 3.1.0
+info:
+  title: Catre Super-Admin API (sms-catreadmin)
+  version: "1.0.0-phase1-contract"
+  description: >
+    Forward contract for the Catre super-admin console. Phase-1 deliverable — the backend
+    currently implements only Phase 0 (auth + health). Keys mirror sms-catreadmin/api/contracts.js
+    and docs/2026-06-13-backend-api-design.md §3B/§3C. All JSON is snake_case; dates ISO-8601 UTC;
+    money is decimal(18,2) INR. Success = {data}; list = {data,next_cursor}; error = {error}.
+servers:
+  - url: "{apiBaseUrl}/v1"
+    variables:
+      apiBaseUrl:
+        default: https://api.catre.io
+security:
+  - bearerAuth: []
+
+tags:
+  - { name: auth }
+  - { name: clients }
+  - { name: plans }
+  - { name: subscriptions }
+  - { name: invoices }
+  - { name: onboarding }
+  - { name: support }
+  - { name: team }
+  - { name: audit }
+  - { name: dashboard }
+  - { name: reports }
+  - { name: settings }
+
+paths:
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      summary: Email + password login (Catre staff)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Tokens" }
+        "401": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /auth/refresh:
+    post:
+      tags: [auth]
+      security: []
+      summary: Rotate refresh token, issue new access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties: { refresh_token: { type: string } }
+      responses:
+        "200": { $ref: "#/components/responses/Tokens" }
+        "401": { $ref: "#/components/responses/Error" }
+  /auth/me:
+    get:
+      tags: [auth]
+      summary: Current principal
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      id: { type: string, format: uuid }
+                      tenant_id: { type: [string, "null"], format: uuid }
+                      roles: { type: array, items: { type: string } }
+        "401": { $ref: "#/components/responses/Error" }
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke a refresh token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties: { refresh_token: { type: string } }
+      responses:
+        "204": { description: revoked }
+
+  /clients:
+    get:
+      tags: [clients]
+      summary: List clients (tenants)
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/TenantStatus" } }
+        - { name: tier, in: query, schema: { $ref: "#/components/schemas/Tier" } }
+        - { name: q, in: query, schema: { type: string }, description: name/slug search }
+        - { name: sort, in: query, schema: { type: string, default: "-mrr" }, description: "field or -field" }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/Client" } }
+    post:
+      tags: [clients]
+      summary: Create / onboard a school (clients.start_trial)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/CreateClient" }
+      responses:
+        "201": { $ref: "#/components/responses/ClientOne" }
+        "409": { $ref: "#/components/responses/Error" }
+        "422": { $ref: "#/components/responses/Error" }
+  /clients/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [clients]
+      summary: Get client
+      responses:
+        "200": { $ref: "#/components/responses/ClientOne" }
+        "404": { $ref: "#/components/responses/Error" }
+    patch:
+      tags: [clients]
+      summary: Update profile / branding / contact / gateway
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UpdateClient" }
+      responses:
+        "200": { $ref: "#/components/responses/ClientOne" }
+    delete:
+      tags: [clients]
+      summary: Delete client (clients.delete, owner only)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [confirm]
+              properties: { confirm: { type: string, enum: ["DELETE"] } }
+      responses:
+        "204": { description: deleted }
+        "403": { $ref: "#/components/responses/Error" }
+  /clients/{id}/usage:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [clients]
+      summary: Usage detail
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      students_count: { type: integer }
+                      staff_count: { type: integer }
+                      storage_gb: { type: number }
+                      limits: { $ref: "#/components/schemas/Limits" }
+                      usage_series: { type: array, items: { type: integer } }
+                      usage_pct: { type: integer }
+  /clients/{id}/activity:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [clients]
+      summary: Audit entries for this tenant
+      parameters: [ { $ref: "#/components/parameters/Limit" }, { $ref: "#/components/parameters/Cursor" } ]
+      responses:
+        "200": { $ref: "#/components/responses/AuditPage" }
+  /clients/{id}/status:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      tags: [clients]
+      summary: Lifecycle transition (activate/suspend/cancel/reinstate)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [trial, active, suspended, cancelled] }
+                reason: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/ClientOne" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /clients/{id}/change-plan:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      tags: [clients]
+      summary: Change plan (clients.change_plan)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id]
+              properties: { plan_id: { type: string, format: uuid } }
+      responses:
+        "200": { $ref: "#/components/responses/ClientOne" }
+  /clients/{id}/impersonate:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      tags: [clients]
+      summary: Issue read-only tenant-scoped token (clients.impersonate, audited)
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: object
+                    properties:
+                      access_token: { type: string }
+                      tenant_id: { type: string, format: uuid }
+                      read_only: { type: boolean }
+                      expires_in: { type: integer }
+
+  /plans:
+    get:
+      tags: [plans]
+      summary: List plans
+      parameters:
+        - { name: visibility, in: query, schema: { type: string, enum: [published, draft] } }
+        - { name: audience, in: query, schema: { type: string, enum: [all, new, exclusive] } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Plan" } }
+    post:
+      tags: [plans]
+      summary: Create plan (plans.manage)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/Plan" } } }
+      responses:
+        "201": { $ref: "#/components/responses/PlanOne" }
+  /plans/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [plans]
+      summary: Get plan
+      responses: { "200": { $ref: "#/components/responses/PlanOne" } }
+    patch:
+      tags: [plans]
+      summary: Update plan (plans.manage)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/Plan" } } }
+      responses: { "200": { $ref: "#/components/responses/PlanOne" } }
+  /plans/{id}/publish:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      tags: [plans]
+      summary: Publish/unpublish
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [visibility]
+              properties: { visibility: { type: string, enum: [published, draft] } }
+      responses: { "200": { $ref: "#/components/responses/PlanOne" } }
+
+  /subscriptions:
+    get:
+      tags: [subscriptions]
+      summary: List subscriptions
+      parameters:
+        - { name: tenant_id, in: query, schema: { type: string, format: uuid } }
+        - { name: status, in: query, schema: { type: string, enum: [active, trial, suspended, cancelled] } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/Subscription" } }
+    post:
+      tags: [subscriptions]
+      summary: Create subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenant_id, plan_id, seats]
+              properties:
+                tenant_id: { type: string, format: uuid }
+                plan_id: { type: string, format: uuid }
+                seats: { type: integer }
+      responses: { "201": { $ref: "#/components/responses/SubscriptionOne" } }
+  /subscriptions/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [subscriptions]
+      summary: Get subscription
+      responses: { "200": { $ref: "#/components/responses/SubscriptionOne" } }
+
+  /invoices:
+    get:
+      tags: [invoices]
+      summary: List invoices
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [paid, open, past_due] } }
+        - { name: tenant_id, in: query, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/Invoice" } }
+  /invoices/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [invoices]
+      summary: Get invoice
+      responses: { "200": { $ref: "#/components/responses/InvoiceOne" } }
+  /invoices/{id}/mark-paid:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      tags: [invoices]
+      summary: Mark paid (billing.manage_invoice)
+      responses: { "200": { $ref: "#/components/responses/InvoiceOne" } }
+  /invoices/{id}/refund:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      tags: [invoices]
+      summary: Refund (billing.refund; invoice must be paid)
+      responses:
+        "200": { $ref: "#/components/responses/InvoiceOne" }
+        "409": { $ref: "#/components/responses/Error" }
+
+  /onboarding:
+    get:
+      tags: [onboarding]
+      summary: Onboarding pipeline
+      parameters:
+        - { name: stage, in: query, schema: { type: string, enum: [lead, trial, onboarding, active] } }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/OnboardingItem" } }
+  /onboarding/{id}/advance:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      tags: [onboarding]
+      summary: Move card between stages (onboarding.manage)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stage]
+              properties: { stage: { type: string, enum: [lead, trial, onboarding, active] } }
+      responses: { "200": { $ref: "#/components/responses/OnboardingOne" } }
+  /onboarding/{id}/checklist:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    patch:
+      tags: [onboarding]
+      summary: Toggle a checklist item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [label, done]
+              properties:
+                label: { type: string }
+                done: { type: boolean }
+      responses: { "200": { $ref: "#/components/responses/OnboardingOne" } }
+
+  /tickets:
+    get:
+      tags: [support]
+      summary: List tickets
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [open, pending, resolved, closed] } }
+        - { name: q, in: query, schema: { type: string } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/CursorPage"
+                  - type: object
+                    properties:
+                      data: { type: array, items: { $ref: "#/components/schemas/SupportTicket" } }
+  /tickets/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    get:
+      tags: [support]
+      summary: Get ticket with messages
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: "#/components/schemas/SupportTicket"
+                      - type: object
+                        properties:
+                          messages: { type: array, items: { $ref: "#/components/schemas/TicketMessage" } }
+    patch:
+      tags: [support]
+      summary: Update status/assignee (support.manage)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [open, pending, resolved, closed] }
+                assignee: { type: [string, "null"] }
+      responses: { "200": { $ref: "#/components/responses/TicketOne" } }
+  /tickets/{id}/messages:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    post:
+      tags: [support]
+      summary: Reply to a ticket (support.manage)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties: { text: { type: string } }
+      responses:
+        "201":
+          description: created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/TicketMessage" }
+
+  /team:
+    get:
+      tags: [team]
+      summary: List team members (team.view, owner)
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/TeamMember" } }
+    post:
+      tags: [team]
+      summary: Invite team member (team.manage, owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, role]
+              properties:
+                name: { type: string }
+                email: { type: string, format: email }
+                role: { $ref: "#/components/schemas/TeamRole" }
+      responses: { "201": { $ref: "#/components/responses/TeamOne" } }
+  /team/{id}:
+    parameters: [ { $ref: "#/components/parameters/Id" } ]
+    patch:
+      tags: [team]
+      summary: Update role/status (team.manage, owner)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                role: { $ref: "#/components/schemas/TeamRole" }
+                status: { type: string, enum: [active, invited, deactivated] }
+      responses: { "200": { $ref: "#/components/responses/TeamOne" } }
+
+  /audit:
+    get:
+      tags: [audit]
+      summary: List audit log (append-only)
+      parameters:
+        - { name: kind, in: query, schema: { $ref: "#/components/schemas/AuditKind" } }
+        - { name: actor_id, in: query, schema: { type: string, format: uuid } }
+        - { name: tenant_id, in: query, schema: { type: string, format: uuid } }
+        - { $ref: "#/components/parameters/Limit" }
+        - { $ref: "#/components/parameters/Cursor" }
+      responses:
+        "200": { $ref: "#/components/responses/AuditPage" }
+
+  /dashboard/overview:
+    get:
+      tags: [dashboard]
+      summary: Dashboard KPIs (single QueryMultiple round-trip)
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/DashboardOverview" }
+
+  /reports/revenue:
+    get:
+      tags: [reports]
+      summary: Revenue report (reports.view)
+      responses:
+        "200":
+          description: ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { $ref: "#/components/schemas/RevenueReport" }
+  /reports/clients.csv:
+    get:
+      tags: [reports]
+      summary: Export clients CSV (reports.view)
+      responses:
+        "200":
+          description: CSV download
+          content:
+            text/csv:
+              schema: { type: string }
+
+  /settings:
+    get:
+      tags: [settings]
+      summary: Get platform settings (settings.view, owner)
+      responses: { "200": { $ref: "#/components/responses/SettingsOne" } }
+    patch:
+      tags: [settings]
+      summary: Update branding/announcement/feature flags (settings.manage, owner)
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/Settings" } } }
+      responses: { "200": { $ref: "#/components/responses/SettingsOne" } }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string } }
+    Limit: { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 200, default: 50 } }
+    Cursor: { name: cursor, in: query, schema: { type: string } }
+
+  responses:
+    Error:
+      description: error envelope
+      content: { application/json: { schema: { $ref: "#/components/schemas/ErrorEnvelope" } } }
+    Tokens:
+      description: token pair
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              data:
+                type: object
+                properties:
+                  access_token: { type: string }
+                  refresh_token: { type: string }
+    ClientOne:
+      description: client
+      content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/Client" } } } } }
+    PlanOne:
+      description: plan
+      content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/Plan" } } } } }
+    SubscriptionOne:
+      description: subscription
+      content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/Subscription" } } } } }
+    InvoiceOne:
+      description: invoice
+      content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/Invoice" } } } } }
+    OnboardingOne:
+      description: onboarding item
+      content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/OnboardingItem" } } } } }
+    TicketOne:
+      description: ticket
+      content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/SupportTicket" } } } } }
+    TeamOne:
+      description: team member
+      content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/TeamMember" } } } } }
+    SettingsOne:
+      description: settings
+      content: { application/json: { schema: { type: object, properties: { data: { $ref: "#/components/schemas/Settings" } } } } }
+    AuditPage:
+      description: audit page
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: "#/components/schemas/CursorPage"
+              - type: object
+                properties:
+                  data: { type: array, items: { $ref: "#/components/schemas/AuditEntry" } }
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            details:
+              type: [object, "null"]
+              additionalProperties: { type: array, items: { type: string } }
+    CursorPage:
+      type: object
+      properties:
+        next_cursor: { type: [string, "null"] }
+
+    TenantStatus: { type: string, enum: [trial, active, past_due, suspended, cancelled] }
+    Tier: { type: string, enum: [trial, silver, gold, platinum, metered, exclusive] }
+    TeamRole: { type: string, enum: [owner, admin, support, sales, finance, analyst] }
+    AuditKind: { type: string, enum: [suspend, refund, trial, impersonate, plan, team, invoice, activate] }
+
+    Limits:
+      type: object
+      properties:
+        students: { type: integer }
+        staff: { type: integer }
+        storage_gb: { type: integer }
+
+    Contact:
+      type: object
+      properties:
+        name: { type: string }
+        email: { type: string }
+        phone: { type: string }
+
+    Gateway:
+      type: object
+      properties:
+        provider: { type: string, enum: [Razorpay, PayU, Cashfree] }
+        method: { type: string, enum: [upi_autopay, enach, card, none] }
+        mandate: { type: string, enum: [active, pending, paused, cancelled, none] }
+        vpa: { type: [string, "null"] }
+        card: { type: [string, "null"] }
+        bank: { type: [string, "null"] }
+        max_amount: { type: number }
+        mandate_id: { type: string }
+
+    Client:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        country: { type: string }
+        status: { $ref: "#/components/schemas/TenantStatus" }
+        plan_id: { type: string, format: uuid }
+        plan_name: { type: string }
+        tier: { $ref: "#/components/schemas/Tier" }
+        mrr: { type: number }
+        students_count: { type: integer }
+        staff_count: { type: integer }
+        storage_gb: { type: number }
+        limits: { $ref: "#/components/schemas/Limits" }
+        created: { type: string, format: date }
+        last_active_days: { type: integer }
+        trial_ends_days: { type: [integer, "null"] }
+        contact: { $ref: "#/components/schemas/Contact" }
+        csm: { type: string }
+        health_score: { type: integer }
+        gateway: { $ref: "#/components/schemas/Gateway" }
+        usage_series: { type: array, items: { type: integer } }
+        city: { type: string }
+        currency: { type: string }
+        timezone: { type: string }
+        logo_url: { type: [string, "null"] }
+        color: { type: string }
+
+    CreateClient:
+      type: object
+      required: [name, slug, admin_name, admin_email, plan_id, trial_days]
+      properties:
+        name: { type: string }
+        slug: { type: string }
+        country: { type: string }
+        admin_name: { type: string }
+        admin_email: { type: string, format: email }
+        admin_phone: { type: string }
+        plan_id: { type: string }
+        trial_days: { type: integer, enum: [7, 14, 30, 60] }
+
+    UpdateClient:
+      type: object
+      properties:
+        name: { type: string }
+        country: { type: string }
+        csm: { type: string }
+        color: { type: string }
+        logo_url: { type: string }
+        contact: { $ref: "#/components/schemas/Contact" }
+        gateway: { $ref: "#/components/schemas/Gateway" }
+
+    Plan:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        tier: { $ref: "#/components/schemas/Tier" }
+        pricing: { type: string, enum: [flat, per_student] }
+        price: { type: number }
+        per_student: { type: [number, "null"] }
+        min_students: { type: [integer, "null"] }
+        period: { type: string, enum: [month, "14 days", year] }
+        features: { type: array, items: { type: string } }
+        limits: { $ref: "#/components/schemas/Limits" }
+        visibility: { type: string, enum: [published, draft] }
+        audience: { type: string, enum: [all, new, exclusive] }
+        band: { type: string }
+        offer:
+          type: [object, "null"]
+          properties:
+            label: { type: string }
+            pct: { type: number }
+        color: { type: string }
+        description: { type: string }
+
+    Subscription:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: string, format: uuid }
+        plan_id: { type: string, format: uuid }
+        status: { type: string, enum: [active, trial, suspended, cancelled] }
+        started_at: { type: string, format: date-time }
+        renews_at: { type: [string, "null"], format: date-time }
+        seats: { type: integer }
+
+    Invoice:
+      type: object
+      properties:
+        id: { type: string }
+        tenant_id: { type: string, format: uuid }
+        tenant_name: { type: string }
+        plan_name: { type: string }
+        amount: { type: number }
+        status: { type: string, enum: [paid, open, past_due] }
+        issued: { type: string, format: date }
+        due: { type: string, format: date }
+        paid_on: { type: [string, "null"], format: date }
+
+    OnboardingItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        tenant_id: { type: [string, "null"], format: uuid }
+        name: { type: string }
+        slug: { type: string }
+        owner: { type: string }
+        value: { type: number }
+        stage: { type: string, enum: [lead, trial, onboarding, active] }
+        checklist:
+          type: array
+          items:
+            type: object
+            properties:
+              label: { type: string }
+              done: { type: boolean }
+        done: { type: integer }
+        age: { type: integer }
+
+    SupportTicket:
+      type: object
+      properties:
+        id: { type: string }
+        subject: { type: string }
+        tenant_id: { type: string, format: uuid }
+        tenant_name: { type: string }
+        status: { type: string, enum: [open, pending, resolved, closed] }
+        priority: { type: string, enum: [urgent, high, normal, low] }
+        assignee: { type: [string, "null"] }
+        created: { type: string, format: date }
+        updated: { type: string, format: date-time }
+        messages_count: { type: integer }
+
+    TicketMessage:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        ticket_id: { type: string }
+        who: { type: string }
+        role: { type: string, enum: [client, agent] }
+        text: { type: string }
+        when: { type: string, format: date-time }
+
+    TeamMember:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string }
+        role: { $ref: "#/components/schemas/TeamRole" }
+        status: { type: string, enum: [active, invited, deactivated] }
+        last_login: { type: [string, "null"], format: date-time }
+        joined: { type: string, format: date }
+
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        actor_id: { type: string, format: uuid }
+        actor_name: { type: string }
+        role: { type: string }
+        action: { type: string }
+        target: { type: string }
+        kind: { $ref: "#/components/schemas/AuditKind" }
+        time: { type: string, format: date-time }
+
+    DashboardOverview:
+      type: object
+      properties:
+        counts:
+          type: object
+          properties:
+            total: { type: integer }
+            active: { type: integer }
+            trial: { type: integer }
+            suspended: { type: integer }
+            cancelled: { type: integer }
+        mrr: { type: number }
+        trials_ending: { type: integer }
+        churn_pct: { type: number }
+        months: { type: array, items: { type: string } }
+        mrr_series: { type: array, items: { type: number } }
+        signup_series: { type: array, items: { type: integer } }
+        plan_mix:
+          type: array
+          items:
+            type: object
+            properties:
+              label: { type: string }
+              value: { type: integer }
+              color: { type: string }
+        usage_alerts:
+          type: array
+          items:
+            type: object
+            properties:
+              tenant_id: { type: string, format: uuid }
+              name: { type: string }
+              usage_pct: { type: integer }
+              status: { $ref: "#/components/schemas/TenantStatus" }
+              csm: { type: string }
+        system_health:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              status: { type: string, enum: [operational, degraded, down] }
+              latency: { type: string }
+              uptime: { type: string }
+        recent_activity:
+          type: array
+          items: { $ref: "#/components/schemas/AuditEntry" }
+
+    RevenueReport:
+      type: object
+      properties:
+        arr: { type: number }
+        net_growth: { type: integer }
+        gross_churn_pct: { type: number }
+        arpa: { type: number }
+        months: { type: array, items: { type: string } }
+        revenue_series: { type: array, items: { type: number } }
+        revenue_by_plan:
+          type: array
+          items:
+            type: object
+            properties:
+              label: { type: string }
+              value: { type: number }
+              color: { type: string }
+        plan_performance:
+          type: array
+          items:
+            type: object
+            properties:
+              plan_name: { type: string }
+              clients: { type: integer }
+              mrr: { type: number }
+              share_pct: { type: number }
+
+    Settings:
+      type: object
+      properties:
+        branding:
+          type: object
+          properties:
+            name: { type: string }
+            accent: { type: string }
+        announcement:
+          type: object
+          properties:
+            on: { type: boolean }
+            msg: { type: string }
+        feature_flags:
+          type: object
+          additionalProperties: { type: boolean }

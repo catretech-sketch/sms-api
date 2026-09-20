@@ -4,3 +4,9 @@ obj/
 .vs/
 TestResults/
 *.log
+
+# worktrees
+.worktrees
+
+# subagent-driven-development scratch workspace
+.superpowers

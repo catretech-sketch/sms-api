@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sms.Application\Sms.Application.csproj" />
+    <ProjectReference Include="..\Sms.Shared.Kernel\Sms.Shared.Kernel.csproj" />
+    <ProjectReference Include="..\Sms.Modules.Tenancy\Sms.Modules.Tenancy.csproj" />
+    <ProjectReference Include="..\Sms.Modules.Sis\Sms.Modules.Sis.csproj" />
+    <ProjectReference Include="..\Sms.Modules.Staffing\Sms.Modules.Staffing.csproj" />
+    <ProjectReference Include="..\Sms.Modules.Academics\Sms.Modules.Academics.csproj" />
+    <ProjectReference Include="..\Sms.Modules.Finance\Sms.Modules.Finance.csproj" />
+    <ProjectReference Include="..\Sms.Modules.Attendance\Sms.Modules.Attendance.csproj" />
+    <ProjectReference Include="..\Sms.Modules.Transport\Sms.Modules.Transport.csproj" />
+    <ProjectReference Include="..\Sms.Modules.Comms\Sms.Modules.Comms.csproj" />
+    <ProjectReference Include="..\Sms.Modules.Reporting\Sms.Modules.Reporting.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -4,7 +4,8 @@ namespace Sms.Shared.Kernel.Tenancy;
 
 public sealed class TenantResolutionMiddleware(RequestDelegate next)
 {
-    public async Task InvokeAsync(HttpContext http, ITenantContext tenant)
+    public async Task InvokeAsync(HttpContext http, ITenantContext tenant, ITenantPlan plan,
+        TenantPlanRepository planRepo)
     {
         var user = http.User;
         var isPlatform = user.FindFirst("is_platform")?.Value == "1";
@@ -13,14 +14,22 @@ public sealed class TenantResolutionMiddleware(RequestDelegate next)
 
         Guid? headerTenant = Guid.TryParse(http.Request.Headers["X-Tenant-Id"].ToString(), out var ht) ? ht : null;
 
-        // If both present and the caller is not platform, they must agree.
         if (!isPlatform && tokenTenant is { } a && headerTenant is { } b && a != b)
         {
             http.Response.StatusCode = StatusCodes.Status403Forbidden;
             return;
         }
 
-        tenant.Set(headerTenant ?? tokenTenant, userId, isPlatform);
+        var tid = headerTenant ?? tokenTenant;
+        tenant.Set(tid, userId, isPlatform);
+
+        // Load tier+status once per request for tenant callers (Tenants is not RLS-scoped).
+        if (!isPlatform && tid is { } t)
+        {
+            var ts = await planRepo.GetAsync(t);
+            plan.Set(t, ts?.Tier ?? "", ts?.Status ?? "");
+        }
+
         await next(http);
     }
 }

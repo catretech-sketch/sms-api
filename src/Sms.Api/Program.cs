@@ -1,80 +1,64 @@
-using System.Text;
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.IdentityModel.Tokens;
-using OpenTelemetry.Trace;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Serilog;
-using Sms.Api.Endpoints;
+using Sms.Api.Endpoints.Auth;
+using Sms.Api.Extensions;
 using Sms.Migrations;
-using Sms.Shared.Kernel.Auth;
-using Sms.Shared.Kernel.Data;
 using Sms.Shared.Kernel.Http;
+using Sms.Shared.Kernel.Results;
 using Sms.Shared.Kernel.Tenancy;
-using Sms.Shared.Kernel.Time;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.ConfigureSmsServices();
 
-builder.Host.UseSerilog((ctx, cfg) => cfg.ReadFrom.Configuration(ctx.Configuration).WriteTo.Console());
-
-var conn = builder.Configuration.GetConnectionString("Sql")!;
-var jwtOptions = builder.Configuration.GetSection("Jwt").Get<JwtOptions>()!;
-
-DapperSnakeCaseConfig.Apply();
-
-builder.Services.ConfigureHttpJsonOptions(o =>
-{
-    o.SerializerOptions.PropertyNamingPolicy = new SnakeCaseNamingPolicy();
-    o.SerializerOptions.DictionaryKeyPolicy = new SnakeCaseNamingPolicy();
-});
-
-builder.Services.AddSingleton(jwtOptions);
-builder.Services.AddSingleton<IClock, SystemClock>();
-builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
-builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
-builder.Services.AddSingleton<IOtpSender, ConsoleOtpSender>();
-
-builder.Services.AddScoped<ITenantContext, TenantContext>();
-builder.Services.AddScoped<IDbConnectionFactory>(sp =>
-    new SqlConnectionFactory(conn, sp.GetRequiredService<ITenantContext>()));
-builder.Services.AddScoped<AuthRepository>();
-builder.Services.AddScoped<IRefreshTokenStore, RefreshTokenStore>();
-
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(o =>
-    {
-        o.MapInboundClaims = false;
-        o.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidIssuer = jwtOptions.Issuer,
-            ValidAudience = jwtOptions.Audience,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SigningKey)),
-            ValidateIssuer = true, ValidateAudience = true, ValidateLifetime = true,
-            RoleClaimType = "role", NameClaimType = "sub"
-        };
-    });
-builder.Services.AddAuthorization();
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
-
-builder.Services.AddOpenTelemetry()
-    .WithTracing(t => t.AddAspNetCoreInstrumentation().AddConsoleExporter());
-
+var conn = builder.Configuration.GetConnectionString("Sql");
 var app = builder.Build();
+
+app.UseExceptionHandler();
 
 if (app.Environment.IsDevelopment())
 {
-    MigrationRunner.Run(conn); // tables + RLS + procs on startup in dev
+    MigrationRunner.Run(conn!);
     app.UseSwagger();
-    app.UseSwaggerUI();
+    app.UseSwaggerUI(c =>
+    {
+        foreach (var (key, title) in Sms.Api.Swagger.ApiAudienceMap.Apps)
+            c.SwaggerEndpoint($"/swagger/{key}/swagger.json", title);
+    });
 }
 
+await PlatformAdminSeeder.RunAsync(app);
+await Sms.Api.Metrics.MetricsSnapshotWriter.RunAsync(app);
+
 app.UseSerilogRequestLogging();
+app.UseCors("sms");
+// UseRateLimiter must run AFTER UseAuthentication: the "ai-search" policy partitions on
+// http.User.FindFirst("sub") so each authenticated user gets their own budget, falling back to the
+// remote IP only for unauthenticated callers. Before this middleware ran after authentication,
+// HttpContext.User was always the unauthenticated principal here, so every request silently fell
+// back to per-IP partitioning (an entire school behind one NAT gateway sharing one budget). The
+// "auth" policy (used for login endpoints) partitions on IP unconditionally by design and is
+// unaffected by this reordering — it never reads HttpContext.User.
 app.UseAuthentication();
-app.UseMiddleware<TenantResolutionMiddleware>(); // after auth: needs ClaimsPrincipal
+app.UseRateLimiter();
+app.UseMiddleware<TenantResolutionMiddleware>();
+app.UseMiddleware<Sms.Api.Middleware.LastSeenTouchMiddleware>();
+app.UseMiddleware<BillingStateMiddleware>();
 app.UseAuthorization();
 
-app.MapHealth();
-app.MapAuth();
-Sms.Modules.Tenancy.ModuleEndpoints.MapTenancyModule(app);
+app.MapControllers();
+app.MapHub<Sms.Api.Hubs.LiveHub>("/hubs/live");
+app.MapHub<Sms.Api.Hubs.TransportFleetHub>("/hubs/transport-fleet");
+app.MapHealthChecks("/health/ready", new HealthCheckOptions
+{
+    Predicate = r => r.Tags.Contains("ready"),
+    ResponseWriter = async (ctx, report) =>
+    {
+        ctx.Response.ContentType = "application/json";
+        var status = report.Status == HealthStatus.Healthy ? "ready" : "unavailable";
+        await ctx.Response.WriteAsJsonAsync(new { status });
+    }
+});
 
 app.Run();
 

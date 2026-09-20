@@ -1,16 +1,23 @@
-using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Routing;
+using Microsoft.Extensions.DependencyInjection;
+using Sms.Modules.Tenancy.Data;
 
 namespace Sms.Modules.Tenancy;
 
 public static class ModuleEndpoints
 {
-    // Phase 1 fills this group with /v1/clients, /plans, /subscriptions, etc.
-    public static IEndpointRouteBuilder MapTenancyModule(this IEndpointRouteBuilder app)
+    public static IServiceCollection AddTenancyModule(this IServiceCollection services)
     {
-        var g = app.MapGroup("/v1");
-        g.MapGet("/tenancy/_ping", () => Results.Ok(new { module = "tenancy", status = "scaffold" }));
-        return app;
+        services.AddScoped<ClientRepository>();
+        services.AddScoped<PlanRepository>();
+        services.AddScoped<InvoiceRepository>();
+        services.AddScoped<SubscriptionRepository>();
+        services.AddScoped<PlanUpgradeRequestRepository>();
+        services.AddScoped<DashboardRepository>();
+        services.AddScoped<OnboardingRepository>();
+        services.AddScoped<TicketRepository>();
+        services.AddScoped<TeamRepository>();
+        services.AddScoped<AuditRepository>();
+        services.AddScoped<ReportRepository>();
+        return services;
     }
 }

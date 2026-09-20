@@ -1,0 +1,243 @@
+using Sms.Application.Services.Academics;
+using Sms.Application.Services.AiSearch.Handlers;
+using Sms.Application.Services.Sis;
+using Sms.Modules.Academics.Data;
+using Sms.Shared.Kernel.Tenancy;
+
+namespace Sms.Application.Services.AiSearch;
+
+/// <summary>
+/// Outcome of the single authorization choke point. Every scope value here is re-derived from
+/// the authenticated caller's identity (<see cref="ITenantContext"/> / <see cref="ISisService"/>),
+/// never from the LLM-extracted filters — <c>ClampedFilters</c> is the caller-safe subset of the
+/// requested filters, with anything the caller is not authorized for removed.
+/// </summary>
+/// <param name="Allowed">False when the caller may not run this intent at all; handlers must not query.</param>
+/// <param name="ResultIntent">The intent to handle, or <c>"Forbidden"</c> when <paramref name="Allowed"/> is false.</param>
+/// <param name="ResolvedStudentId">
+/// A single student the query was narrowed to, re-derived from the caller's own links. Null means
+/// "not narrowed to one student" — see <paramref name="NameUnmatched"/> to tell "no name asked"
+/// apart from "the name asked matched nothing the caller may see".
+/// </param>
+/// <param name="AllowedChildStudentIds">
+/// The exhaustive set of student ids the caller may see, when a per-student clamp applies (parent path).
+/// <para>
+/// IMPORTANT — <c>null</c> here does NOT mean "no filter". Only <paramref name="Unrestricted"/> being
+/// <c>true</c> means the caller has whole-tenant scope. An empty list means the caller has ZERO
+/// authorized students and must see NOTHING (e.g. a parent with no <c>ParentStudentLinks</c> rows).
+/// Never write <c>if (AllowedChildStudentIds is null or { Count: 0 })</c> to mean "unfiltered" — that
+/// turns a zero-scope caller into a whole-tenant read. Gate on <paramref name="Unrestricted"/> first.
+/// </para>
+/// </param>
+/// <param name="AllowedClassNames">
+/// The exhaustive set of class names the caller may see, when a per-class clamp applies (teacher path).
+/// <para>
+/// IMPORTANT — same rule as <paramref name="AllowedChildStudentIds"/>: <c>null</c> with
+/// <paramref name="Unrestricted"/> <c>false</c> is NOT "no filter", and an empty list means the caller
+/// teaches nothing and must see NOTHING (e.g. a <c>school.teacher</c> JWT with no matching
+/// <c>dbo.Teachers</c> row). Gate on <paramref name="Unrestricted"/>, never on emptiness.
+/// </para>
+/// </param>
+/// <param name="ClampedFilters">The caller-safe subset of the LLM-extracted filters.</param>
+/// <param name="Unrestricted">
+/// True ONLY for the admin/owner/principal/staff path, where no per-record clamp applies beyond the
+/// role gate and handlers may query the whole tenant. This is the single authoritative signal for
+/// "no clamp"; the clamp lists' nullness is not.
+/// </param>
+/// <param name="NameUnmatched">
+/// True only when a student name WAS asked for but resolved to nothing the caller is authorized to see
+/// (e.g. a parent asking about a child that is not linked to them). False when no name was asked at all.
+/// Lets a handler answer "I couldn't find a child named X" instead of silently listing everything.
+/// </param>
+/// <param name="PreResolvedEntityId">
+/// Task 12 (conversation follow-ups) ONLY: set by <c>AiSearchService</c>, never by
+/// <see cref="AiSearchAuthorizationService"/> itself, via a <c>with</c> expression AFTER a fresh
+/// <see cref="IAiSearchAuthorizationService.AuthorizeAsync"/> call has already re-derived the caller's
+/// CURRENT scope and independently confirmed this id is still inside it. Tells
+/// <c>PersonLookupHandler</c> to skip <see cref="Application.Services.AiSearch.IPersonResolver"/>'s
+/// name search entirely for this turn (there is no name to search for -- the whole point of a
+/// follow-up) and re-fetch this exact entity instead. Never set from raw LLM output or any
+/// unauthenticated source.
+/// </param>
+/// <param name="PreResolvedEntityType">The person-type ("student"/"teacher"/"staff"/"admin"/"owner"/"principal") paired with <see cref="PreResolvedEntityId"/>.</param>
+public sealed record AiAuthorizationResult(
+    bool Allowed,
+    string ResultIntent,
+    Guid? ResolvedStudentId,
+    IReadOnlyList<Guid>? AllowedChildStudentIds,
+    IReadOnlyList<string>? AllowedClassNames,
+    AiSearchFilters ClampedFilters,
+    bool Unrestricted,
+    bool NameUnmatched,
+    Guid? PreResolvedEntityId = null,
+    string? PreResolvedEntityType = null);
+
+public interface IAiSearchAuthorizationService
+{
+    Task<AiAuthorizationResult> AuthorizeAsync(
+        string intent, AiSearchFilters filters, IReadOnlyList<string> callerRoles, CancellationToken ct = default);
+}
+
+public sealed class AiSearchAuthorizationService(
+    ISisService sis, ClassRepository classes, ITenantContext tenant) : IAiSearchAuthorizationService
+{
+    private static readonly string[] TeacherRoles = ["school.teacher"];
+    private static readonly string[] ParentRoles = ["student.parent"];
+    private static readonly string[] AdminLikeRoles = ["school.admin", "school.owner", "school.principal"];
+
+    public async Task<AiAuthorizationResult> AuthorizeAsync(
+        string intent, AiSearchFilters filters, IReadOnlyList<string> callerRoles, CancellationToken ct = default)
+    {
+        if (!AiIntentAccessRules.IsAllowed(intent, callerRoles))
+            return Denied("Forbidden", filters);
+
+        var isParent = callerRoles.Any(r => ParentRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
+        var isTeacher = callerRoles.Any(r => TeacherRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
+        var isAdminLike = callerRoles.Any(r => AdminLikeRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
+        var isDriver = callerRoles.Any(r => string.Equals(r, "driver", StringComparison.OrdinalIgnoreCase));
+
+        // GreetById repurposes the StudentName filter to carry a scanned admission number/employee
+        // code, not a person's name — an exact ID practically never Contains-matches a name, so the
+        // generic name/class narrowing below would null it out before GreetByIdHandler ever saw it.
+        // This intent-gated bypass hands back the caller's real scope (childIds/classNames/
+        // Unrestricted) with ClampedFilters completely unchanged, and leaves every other intent's
+        // behaviour (including TargetSelf) untouched.
+        if (string.Equals(intent, GreetByIdHandler.IntentName, StringComparison.OrdinalIgnoreCase))
+            return await AuthorizeGreetByIdAsync(filters, isParent, isTeacher, isAdminLike, ct);
+
+        // Self-referential ("my attendance") always wins over any LLM-extracted student name.
+        if (filters.TargetSelf)
+        {
+            var me = await sis.GetMyStudentAsync(ct);
+            if (!me.IsSuccess)
+                return Denied("Forbidden", filters);
+            // Clamped to the caller's own record: emphatically NOT unrestricted.
+            return Allowed(intent, me.Data!.Id, null, null, filters with { StudentName = null });
+        }
+
+        if (isParent)
+        {
+            var children = await sis.ListMyChildrenAsync(ct);
+            var childIds = children.IsSuccess
+                ? children.Data!.Select(c => c.Id).ToList()
+                : [];
+
+            // An empty childIds list is a real answer ("this parent may see nothing"), never "no filter".
+            if (string.IsNullOrWhiteSpace(filters.StudentName))
+                return Allowed(intent, null, childIds, null, filters);
+
+            var match = children.IsSuccess
+                ? children.Data!.FirstOrDefault(c =>
+                    c.Name.Contains(filters.StudentName, StringComparison.OrdinalIgnoreCase))
+                : null;
+            return match is null
+                // A name was asked for and matched none of the caller's children: report it as
+                // unmatched rather than falling back to "show everything they may see".
+                ? Allowed(intent, null, childIds, null, filters with { StudentName = null }, nameUnmatched: true)
+                : Allowed(intent, match.Id, childIds, null, filters);
+        }
+
+        if (isTeacher && !isAdminLike)
+        {
+            if (tenant.UserId is not { } teacherUserId)
+                return Denied("Forbidden", filters);
+
+            // ClassRepository (not TimetableRepository) is used here specifically because it carries
+            // each class's own Grade/Section columns — TimetableSlots.ClassName is just a free-text
+            // string with no independently-checkable section, which is exactly what let Section pass
+            // through unvalidated before (Finding 2).
+            var teacherClasses = await classes.ListForTeacherAsync(teacherUserId, ct);
+            var allowedClassNames = teacherClasses
+                .Select(c => c.Name)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // Classes matching the asked-for ClassName (or every class the teacher teaches, when no
+            // class name was asked for) — the candidate set Section is checked against below.
+            var matchedByClassName = string.IsNullOrWhiteSpace(filters.ClassName)
+                ? teacherClasses
+                : teacherClasses.Where(c =>
+                    StudentClassScope.LabelsMatch(c.Name, filters.ClassName)
+                    || StudentClassScope.LabelsMatch($"{c.Grade}-{c.Section}", filters.ClassName)).ToList();
+
+            var classNameOk = string.IsNullOrWhiteSpace(filters.ClassName) || matchedByClassName.Count > 0;
+
+            // Section must independently correspond to a class this teacher actually teaches — never
+            // validated merely as a side effect of the ClassName check (Finding 2). When Classes rows
+            // carry no separate Grade/Section metadata (only a combined Name like "8A"), there is
+            // nothing to check Section against beyond the ClassName match already performed above, so
+            // it is treated as already covered rather than spuriously rejected.
+            var sectionOk = string.IsNullOrWhiteSpace(filters.Section)
+                || !classNameOk
+                || matchedByClassName.All(c => string.IsNullOrWhiteSpace(c.Section))
+                || matchedByClassName.Any(c => StudentClassScope.LabelsMatch(c.Section, filters.Section));
+
+            // Asked about a class or section they don't teach: clamp both away together, exactly as
+            // before — a class name without its (now-validated) section, or vice versa, is not a
+            // safe partial answer.
+            var clamped = classNameOk && sectionOk ? filters : filters with { ClassName = null, Section = null };
+
+            // An empty allowedClassNames list is a real answer ("this teacher may see nothing" — e.g. a
+            // school.teacher JWT with no matching dbo.Teachers row), never "no filter".
+            return Allowed(intent, null, null, allowedClassNames, clamped);
+        }
+
+        // Driver: self-scoped like TargetSelf/TeacherAttendance/StaffAttendance -- MyTripStatusHandler
+        // resolves the caller's own current trip via ITenantContext internally, never a request-supplied
+        // id. Explicitly NOT Unrestricted -- a driver's AI surface is the smallest of any role and must
+        // never be mistaken for whole-tenant scope by future code that branches on Unrestricted.
+        if (isDriver)
+            return Allowed(intent, null, null, null, filters);
+
+        // Admin/principal/owner/staff: no per-record clamp beyond the role gate already applied above.
+        // This is the ONLY branch that may read the whole tenant, so it is the only Unrestricted = true.
+        return Allowed(intent, null, null, null, filters, unrestricted: true);
+    }
+
+    /// GreetById-only scope resolution: no name/class matching, no clamping — ClampedFilters is
+    /// handed back exactly as extracted (the raw scanned code intact), and the caller's real scope
+    /// (childIds for a parent, classNames for a teacher, Unrestricted for admin-like/staff) is
+    /// resolved the same way the generic branches do, minus the narrowing.
+    private async Task<AiAuthorizationResult> AuthorizeGreetByIdAsync(
+        AiSearchFilters filters, bool isParent, bool isTeacher, bool isAdminLike, CancellationToken ct)
+    {
+        if (isParent)
+        {
+            var children = await sis.ListMyChildrenAsync(ct);
+            var childIds = children.IsSuccess
+                ? children.Data!.Select(c => c.Id).ToList()
+                : [];
+            return Allowed(GreetByIdHandler.IntentName, null, childIds, null, filters);
+        }
+
+        if (isTeacher && !isAdminLike)
+        {
+            if (tenant.UserId is not { } teacherUserId)
+                return Denied("Forbidden", filters);
+
+            var teacherClasses = await classes.ListForTeacherAsync(teacherUserId, ct);
+            var allowedClassNames = teacherClasses
+                .Select(c => c.Name)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            return Allowed(GreetByIdHandler.IntentName, null, null, allowedClassNames, filters);
+        }
+
+        // Admin/principal/owner/staff: whole-tenant scope, exactly as the generic branch below.
+        return Allowed(GreetByIdHandler.IntentName, null, null, null, filters, unrestricted: true);
+    }
+
+    private static AiAuthorizationResult Denied(string resultIntent, AiSearchFilters filters) =>
+        new(false, resultIntent, null, null, null, filters, Unrestricted: false, NameUnmatched: false,
+            PreResolvedEntityId: null, PreResolvedEntityType: null);
+
+    private static AiAuthorizationResult Allowed(
+        string intent, Guid? studentId, IReadOnlyList<Guid>? childIds,
+        IReadOnlyList<string>? classNames, AiSearchFilters filters,
+        bool unrestricted = false, bool nameUnmatched = false,
+        Guid? preResolvedId = null, string? preResolvedType = null) =>
+        new(true, intent, studentId, childIds, classNames, filters, unrestricted, nameUnmatched,
+            preResolvedId, preResolvedType);
+}

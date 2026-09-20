@@ -1,0 +1,205 @@
+openapi: 3.1.0
+info:
+  title: Staff API (sms-staff)
+  version: "1.0.0-phase4-contract"
+  description: >
+    Forward contract for the non-teaching staff app (6 roles). Phase-4 deliverable; backend currently
+    implements only Phase 0. snake_case DTOs mirror sms-staff/src/data/http/mappers.ts. Phone+OTP login;
+    /staff/* role-namespaced resources; GPS-ping ingest via TVP. See markdown twin for reconciliation notes.
+servers:
+  - url: "{apiBaseUrl}/v1"
+    variables: { apiBaseUrl: { default: https://api.catre.io } }
+security:
+  - bearerAuth: []
+
+tags: [{name: auth},{name: dashboard},{name: attendance},{name: trips},{name: tasks},{name: leave},{name: profile}]
+
+paths:
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      summary: Phone + role_key (OTP) login
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [phone, role_key], properties: { phone: {type: string}, role_key: { $ref: "#/components/schemas/Role" } } } } } }
+      responses: { "200": { $ref: "#/components/responses/Session" }, "401": { $ref: "#/components/responses/Error" } }
+  /auth/refresh:
+    post:
+      tags: [auth]
+      security: []
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [refresh_token], properties: { refresh_token: {type: string} } } } } }
+      responses: { "200": { $ref: "#/components/responses/Session" } }
+  /auth/me:
+    get: { tags: [auth], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Staff" } } } } } }
+  /auth/logout:
+    post: { tags: [auth], responses: { "204": { description: ok } } }
+
+  /staff/dashboard:
+    get: { tags: [dashboard], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Dashboard" } } } } } }
+
+  /staff/attendance:
+    get: { tags: [attendance], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Attendance" } } } } } }
+  /staff/attendance/check-in:
+    post:
+      tags: [attendance]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [at, in_zone], properties: { at: {type: string}, in_zone: {type: boolean} } } } } }
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Attendance" } } } } }
+  /staff/attendance/check-out:
+    post:
+      tags: [attendance]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [at], properties: { at: {type: string} } } } } }
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Attendance" } } } } }
+
+  /staff/trip/assignment:
+    get: { tags: [trips], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/TripAssignment" } } } } } }
+  /staff/trip/current:
+    get: { tags: [trips], responses: { "200": { description: ok or null, content: { application/json: { schema: { oneOf: [ { $ref: "#/components/schemas/Trip" }, { type: "null" } ] } } } } } }
+  /staff/trips:
+    post:
+      tags: [trips]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [route_id, direction], properties: { route_id: {type: string}, direction: {type: string, enum: [pickup, drop]} } } } } }
+      responses: { "201": { description: created, content: { application/json: { schema: { $ref: "#/components/schemas/Trip" } } } } }
+  /staff/trips/{tripId}/pings:
+    parameters: [{ name: tripId, in: path, required: true, schema: {type: string} }]
+    post:
+      tags: [trips]
+      summary: GPS ping(s) ingest (single or batch; TVP-backed)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - { $ref: "#/components/schemas/TripPing" }
+                - { type: object, properties: { pings: { type: array, items: { $ref: "#/components/schemas/TripPing" } } } }
+      responses: { "204": { description: accepted } }
+  /staff/trips/{tripId}/end:
+    parameters: [{ name: tripId, in: path, required: true, schema: {type: string} }]
+    post:
+      tags: [trips]
+      responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/TripSummary" } } } } }
+  /staff/trips/{tripId}/roster:
+    parameters: [{ name: tripId, in: path, required: true, schema: {type: string} }]
+    get: { tags: [trips], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/StudentLite" } } } } } } }
+  /staff/trips/{tripId}/boarding:
+    parameters: [{ name: tripId, in: path, required: true, schema: {type: string} }]
+    get: { tags: [trips], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Boarding" } } } } } } }
+    post:
+      tags: [trips]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [student_id, stop_id, state, at], properties: { student_id: {type: string}, stop_id: {type: string}, state: {type: string, enum: [boarded, dropped, absent]}, at: {type: string} } } } } }
+      responses: { "204": { description: saved } }
+
+  /staff/tasks:
+    get: { tags: [tasks], responses: { "200": { description: ok, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Task" } } } } } } }
+  /staff/tasks/{id}/complete:
+    parameters: [{ $ref: "#/components/parameters/Id" }]
+    post: { tags: [tasks], responses: { "200": { description: updated list, content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Task" } } } } } } }
+
+  /staff/leave:
+    get: { tags: [leave], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/LeaveSummary" } } } } } }
+    post:
+      tags: [leave]
+      requestBody: { required: true, content: { application/json: { schema: { type: object, required: [type, from_date, to_date, reason], properties: { type: {type: string, enum: [casual, sick, earned]}, from_date: {type: string, format: date}, to_date: {type: string, format: date}, reason: {type: string} } } } } }
+      responses: { "201": { description: created, content: { application/json: { schema: { $ref: "#/components/schemas/LeaveRequest" } } } } }
+
+  /staff/profile:
+    get: { tags: [profile], responses: { "200": { description: ok, content: { application/json: { schema: { $ref: "#/components/schemas/Profile" } } } } } }
+
+components:
+  securitySchemes:
+    bearerAuth: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    Id: { name: id, in: path, required: true, schema: { type: string } }
+  responses:
+    Error: { description: error, content: { application/json: { schema: { type: object, properties: { error: { type: object, properties: { code: {type: string}, message: {type: string} } } } } } } }
+    Session: { description: session, content: { application/json: { schema: { $ref: "#/components/schemas/Session" } } } }
+  schemas:
+    Role: { type: string, enum: [driver, conductor, guard, gardener, sweeper, peon] }
+    Session:
+      type: object
+      properties:
+        access_token: {type: string}
+        refresh_token: {type: string}
+        user: { $ref: "#/components/schemas/Staff" }
+        tenant: { type: object, properties: { id: {type: string}, name: {type: string}, logo_url: {type: string} } }
+    Staff:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, first_name: {type: string}, role_key: { $ref: "#/components/schemas/Role" }, emp_id: {type: string}, joined: {type: string, format: date}, rating: {type: number}, duty_post: {type: string}, shift: {type: string}, timing: {type: string}, phone: {type: string}, category: {type: string}, department: {type: string}, attendance_pct: {type: number}, status: {type: string, enum: [active, inactive]}, avatar_hue: {type: integer} }
+    Dashboard:
+      type: object
+      properties:
+        hours_this_week: {type: number}
+        hours_target: {type: number}
+        streak_days: {type: integer}
+        leave_left: {type: integer}
+        role_card:
+          oneOf:
+            - { type: object, properties: { kind: {const: driver}, bus_no: {type: string}, route_name: {type: string}, license_expires_in_days: {type: integer}, fitness_ok: {type: boolean} } }
+            - { type: object, properties: { kind: {const: conductor}, route_name: {type: string}, on_board: {type: integer}, capacity: {type: integer}, next_stop: {type: string} } }
+            - { type: object, properties: { kind: {const: guard}, gate: {type: string}, rounds_done: {type: integer}, rounds_total: {type: integer}, visitors_today: {type: integer} } }
+            - { type: object, properties: { kind: {const: gardener}, zones: {type: array, items: {type: string}}, watering_due: {type: integer} } }
+            - { type: object, properties: { kind: {const: sweeper}, blocks: {type: array, items: {type: string}}, supplies_low: {type: array, items: {type: string}} } }
+            - { type: object, properties: { kind: {const: peon}, errands: {type: integer}, bell_duty: {type: boolean} } }
+        pending_tasks_peek:
+          type: array
+          items: { type: object, properties: { id: {type: string}, title: {type: string}, priority: {type: string, enum: [urgent, normal]}, done: {type: boolean} } }
+        alert: { type: [string, "null"] }
+    Attendance:
+      type: object
+      properties:
+        checked_in: {type: boolean}
+        check_in_at: {type: [string, "null"]}
+        last_log:
+          type: array
+          items: { type: object, properties: { at: {type: string}, kind: {type: string, enum: [in, out]}, in_zone: {type: boolean} } }
+        duty_post: {type: string}
+        geofence_radius_m: {type: number}
+    TripAssignment:
+      type: object
+      properties:
+        route: { $ref: "#/components/schemas/Route" }
+        bus_no: {type: string}
+        conductor_name: {type: [string, "null"]}
+    Route:
+      type: object
+      properties:
+        id: {type: string}
+        name: {type: string}
+        bus_no: {type: string}
+        stops: { type: array, items: { $ref: "#/components/schemas/Stop" } }
+    Stop:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, lat: {type: number}, lng: {type: number}, seq: {type: integer}, eta_min: {type: integer} }
+    Trip:
+      type: object
+      properties: { id: {type: string}, route_id: {type: string}, bus_no: {type: string}, driver_id: {type: string}, conductor_id: {type: string}, direction: {type: string, enum: [pickup, drop]}, status: {type: string, enum: [idle, live, ended]}, started_at: {type: string}, ended_at: {type: string}, broadcaster_id: {type: string} }
+    TripPing:
+      type: object
+      properties: { lat: {type: number}, lng: {type: number}, speed_kmh: {type: number}, heading: {type: number}, at: {type: string} }
+    TripSummary:
+      type: object
+      properties: { trip_id: {type: string}, duration_min: {type: number}, distance_km: {type: number}, stops_covered: {type: integer}, boarded_count: {type: integer} }
+    StudentLite:
+      type: object
+      properties: { id: {type: string}, name: {type: string}, stop_id: {type: string}, photo_url: {type: string} }
+    Boarding:
+      type: object
+      properties: { trip_id: {type: string}, student_id: {type: string}, stop_id: {type: string}, state: {type: string, enum: [boarded, dropped, absent]}, at: {type: string} }
+    Task:
+      type: object
+      properties: { id: {type: string}, title: {type: string}, detail: {type: string}, priority: {type: string, enum: [urgent, normal]}, done: {type: boolean}, due_label: {type: string} }
+    LeaveSummary:
+      type: object
+      properties:
+        balances:
+          type: array
+          items: { type: object, properties: { type: {type: string}, total: {type: integer}, used: {type: integer} } }
+        requests: { type: array, items: { $ref: "#/components/schemas/LeaveRequest" } }
+    LeaveRequest:
+      type: object
+      properties: { id: {type: string}, type: {type: string, enum: [casual, sick, earned, medical, maternity, emergency, other]}, from_date: {type: string, format: date}, to_date: {type: string, format: date}, reason: {type: string}, status: {type: string, enum: [pending, approved, rejected]} }
+    Profile:
+      type: object
+      properties:
+        documents:
+          type: array
+          items: { type: object, properties: { id: {type: string}, label: {type: string}, value: {type: string}, ok: {type: boolean} } }

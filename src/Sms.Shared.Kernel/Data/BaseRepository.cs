@@ -42,4 +42,12 @@ public abstract class BaseRepository(IDbConnectionFactory factory)
             new CommandDefinition(sql, args, commandType: CommandType.Text, cancellationToken: ct));
         return rows.AsList();
     }
+
+    protected async Task<int> ExecuteInlineAsync(
+        string sql, object? args = null, CancellationToken ct = default)
+    {
+        await using var conn = await Factory.OpenAsync(ct);
+        return await conn.ExecuteAsync(
+            new CommandDefinition(sql, args, commandType: CommandType.Text, cancellationToken: ct));
+    }
 }
