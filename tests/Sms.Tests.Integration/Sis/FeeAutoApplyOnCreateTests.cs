@@ -166,9 +166,9 @@ public class FeeAutoApplyOnCreateTests(SqlServerFixture fx)
     };
 
     private static async Task<JsonElement> RunBulkBatchAsync(
-        HttpClient client, Guid importId, int batchIndex, Guid routeId, Guid transportHeadId)
+        HttpClient client, Guid importId, int batchIndex, Guid routeId, Guid transportHeadId, int startIndex, int count)
     {
-        var rows = Enumerable.Range(0, NewStudentCount)
+        var rows = Enumerable.Range(startIndex, count)
             .Select(i => BulkRow(
                 rowNumber: i + 2,
                 admissionNo: $"ADM-500-{i}",
@@ -183,6 +183,24 @@ public class FeeAutoApplyOnCreateTests(SqlServerFixture fx)
             batch_index = batchIndex,
             rows,
         }), HttpStatusCode.OK);
+    }
+
+    /// The endpoint caps a single batch at 200 rows, so a real 500-student import is chunked
+    /// client-side, same as the app's own bulk-import UI would do — one call per <=200-row page,
+    /// sharing one importId across all of a run's batches (each with its own batchIndex).
+    private static async Task<(int Created, List<Guid> StudentIds)> RunAllBatchesAsync(
+        HttpClient client, Guid importId, Guid routeId, Guid transportHeadId, int totalCount)
+    {
+        var created = 0;
+        var ids = new List<Guid>();
+        for (int start = 0, batchIndex = 0; start < totalCount; start += 200, batchIndex++)
+        {
+            var take = Math.Min(200, totalCount - start);
+            var batch = await RunBulkBatchAsync(client, importId, batchIndex, routeId, transportHeadId, start, take);
+            created += batch.GetProperty("created").GetInt32();
+            ids.AddRange(batch.GetProperty("rows").EnumerateArray().Select(r => r.GetProperty("student_id").GetGuid()));
+        }
+        return (created, ids);
     }
 
     [Fact]
@@ -209,13 +227,11 @@ public class FeeAutoApplyOnCreateTests(SqlServerFixture fx)
         seedInvoicesBefore.Should().HaveCount(2);
         var seedTerm1IdBefore = seedInvoicesBefore.Single(i => i.Period == $"{AcademicYear} Term 1").Id;
 
-        // 3) Bulk import 500 NEW students into the same class, after those periods already exist.
+        // 3) Bulk import 500 NEW students into the same class, after those periods already exist
+        // (chunked into <=200-row batches — see RunAllBatchesAsync).
         var importId = Guid.NewGuid();
-        var batch = await RunBulkBatchAsync(client, importId, 0, routeId, transportHeadId);
-        batch.GetProperty("created").GetInt32().Should().Be(NewStudentCount);
-        var studentIds = batch.GetProperty("rows").EnumerateArray()
-            .Select(r => r.GetProperty("student_id").GetGuid())
-            .ToList();
+        var (createdCount, studentIds) = await RunAllBatchesAsync(client, importId, routeId, transportHeadId, NewStudentCount);
+        createdCount.Should().Be(NewStudentCount);
 
         // 4) Every one of the 500 must now have BOTH periods, automatically, with no manual
         // Generate Invoices re-run — this is the actual requirement. One query, not 500.
@@ -233,9 +249,10 @@ public class FeeAutoApplyOnCreateTests(SqlServerFixture fx)
                 because: $"student index {i} (transport opted in: {optedIn}) should be billed {expected}");
         }
 
-        // 5) Retry the identical batch (same importId/batchIndex) — must not duplicate anything.
-        var retry = await RunBulkBatchAsync(client, importId, 0, routeId, transportHeadId);
-        retry.GetProperty("created").GetInt32().Should().Be(NewStudentCount, because: "the cached batch result is replayed, not reprocessed");
+        // 5) Retry the identical batches (same importId/batchIndex per chunk) — must not
+        // duplicate anything.
+        var (retryCreatedCount, _) = await RunAllBatchesAsync(client, importId, routeId, transportHeadId, NewStudentCount);
+        retryCreatedCount.Should().Be(NewStudentCount, because: "the cached batch result is replayed, not reprocessed");
         var invoicesAfterRetry = await ListInvoicesAsync(fx.ConnectionString, tenantId, studentIds);
         invoicesAfterRetry.Should().HaveCount(NewStudentCount * 2, because: "retrying the batch must not create duplicate invoices");
 

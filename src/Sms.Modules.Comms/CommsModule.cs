@@ -135,12 +135,14 @@ public sealed class CommsRepository(IDbConnectionFactory factory) : BaseReposito
         return created;
     }
 
-    public async Task<ComplaintResponse?> GetComplaintAsync(Guid id, CancellationToken ct = default) =>
-        (await QueryInlineAsync<ComplaintResponse>($"SELECT {ComplaintCols} FROM dbo.Complaints WHERE Id = @id", new { id }, ct))
+    public async Task<ComplaintResponse?> GetComplaintAsync(Guid id, Guid tenantId, CancellationToken ct = default) =>
+        (await QueryInlineAsync<ComplaintResponse>(
+            $"SELECT {ComplaintCols} FROM dbo.Complaints WHERE Id = @id AND TenantId = @tenantId", new { id, tenantId }, ct))
         .FirstOrDefault();
 
-    public Task<ComplaintResponse?> UpdateComplaintAsync(Guid id, string? status, string? assignee, CancellationToken ct = default) =>
-        QuerySingleProcAsync<ComplaintResponse>("dbo.Complaint_Update", new { Id = id, Status = status, Assignee = assignee }, ct);
+    public Task<ComplaintResponse?> UpdateComplaintAsync(Guid id, Guid tenantId, string? status, string? assignee, CancellationToken ct = default) =>
+        QuerySingleProcAsync<ComplaintResponse>(
+            "dbo.Complaint_Update", new { Id = id, TenantId = tenantId, Status = status, Assignee = assignee }, ct);
 
     public Task<IReadOnlyList<NotificationResponse>> ListNotificationsAsync(Guid? userId, CancellationToken ct = default) =>
         QueryInlineAsync<NotificationResponse>(

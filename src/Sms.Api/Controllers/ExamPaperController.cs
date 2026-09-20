@@ -21,7 +21,11 @@ public sealed class ExamPaperController(
         CancellationToken ct)
     {
         if (studentId is Guid sid)
+        {
+            if (!RoleChecks.IsStaff(User) && !await sis.IsLinkedToCallerAsync(sid, ct))
+                return ForbiddenResult("not your linked student");
             return FromResult(await academics.ListExamPapersForStudentAsync(examId, sid, ct));
+        }
 
         var me = await sis.GetMyStudentAsync(ct);
         if (me.IsSuccess)

@@ -61,6 +61,13 @@ public sealed class FeeController(IFeeService fees, ISisService sis, IFeeOnlineP
             return NotFoundResult();
         if (!RoleChecks.IsStaff(User) && !await sis.IsLinkedToCallerAsync(inv.StudentId, ct))
             return ForbiddenResult("not your linked student");
+        // Omitting Amount routes to the legacy/placeholder gateway (StubPaymentGateway), which
+        // always "succeeds" with a fake reference and never verifies a real transaction — letting
+        // any authenticated caller (e.g. a parent) mark their own invoice paid for free. Only
+        // staff may use that path (to record a payment collected outside the app); a parent must
+        // use the real, signature-verified Razorpay flow (razorpay/order + razorpay/verify).
+        if ((req is null || req.Amount is null or <= 0) && !RoleChecks.IsStaff(User))
+            return ForbiddenResult("pay online via razorpay/order + razorpay/verify, or ask staff to record this payment");
         return FromResult(await fees.PayInvoiceAsync(id, req, ct));
     }
 

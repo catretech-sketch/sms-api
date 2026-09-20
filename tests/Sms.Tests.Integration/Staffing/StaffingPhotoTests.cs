@@ -32,7 +32,7 @@ public class StaffingPhotoTests(SqlServerFixture fx)
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, ["admin"], isPlatform: false);
+        var token = jwt.IssueAccess(Guid.NewGuid(), tenantId, ["school.admin"], isPlatform: false);
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
         return client;

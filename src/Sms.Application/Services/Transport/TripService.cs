@@ -74,9 +74,11 @@ public sealed class TripService(
     {
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
-        var role = await repo.GetParticipantRoleAsync(tripId, uid, ct);
+        var role = await repo.GetParticipantRoleAsync(tid, tripId, uid, ct);
         if (role is null)
             return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
+        if (!await repo.IsActiveAsync(tripId, ct))
+            return ApiResult.Fail(new Error("trip_ended", "this trip has already ended"), 409);
         return await IngestPingsCoreAsync(tid, tripId, req, heartbeatRole: role, ct);
     }
 
@@ -125,7 +127,7 @@ public sealed class TripService(
     {
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult<TripSummaryResponse>.Fail(new Error("forbidden", "no tenant/user context"), 403);
-        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
+        if (await repo.GetParticipantRoleAsync(tid, tripId, uid, ct) is null)
             return ApiResult<TripSummaryResponse>.Fail(new Error("forbidden", "not your trip"), 403);
         return await EndCoreAsync(tid, tripId, ct);
     }
@@ -140,7 +142,7 @@ public sealed class TripService(
     private async Task<ApiResult<TripSummaryResponse>> EndCoreAsync(Guid tid, Guid tripId, CancellationToken ct)
     {
         var busId = await repo.GetBusIdAsync(tripId, ct);
-        var summary = await repo.EndAsync(tripId, ct);
+        var summary = await repo.EndAsync(tid, tripId, ct);
         await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
         await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
         if (busId is { } bid)
@@ -160,18 +162,18 @@ public sealed class TripService(
 
     public async Task<ApiResult<IReadOnlyList<StaffRosterStudentResponse>>> GetRosterAsync(Guid tripId, CancellationToken ct = default)
     {
-        if (tenant.UserId is not { } uid)
-            return ApiResult<IReadOnlyList<StaffRosterStudentResponse>>.Fail(new Error("forbidden", "no user context"), 403);
-        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
+        if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
+            return ApiResult<IReadOnlyList<StaffRosterStudentResponse>>.Fail(new Error("forbidden", "no tenant/user context"), 403);
+        if (await repo.GetParticipantRoleAsync(tid, tripId, uid, ct) is null)
             return ApiResult<IReadOnlyList<StaffRosterStudentResponse>>.Fail(new Error("forbidden", "not your trip"), 403);
         return ApiResult<IReadOnlyList<StaffRosterStudentResponse>>.Ok(await repo.GetRosterAsync(tripId, ct));
     }
 
     public async Task<ApiResult<IReadOnlyList<BoardingResponse>>> ListBoardingAsync(Guid tripId, CancellationToken ct = default)
     {
-        if (tenant.UserId is not { } uid)
-            return ApiResult<IReadOnlyList<BoardingResponse>>.Fail(new Error("forbidden", "no user context"), 403);
-        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
+        if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
+            return ApiResult<IReadOnlyList<BoardingResponse>>.Fail(new Error("forbidden", "no tenant/user context"), 403);
+        if (await repo.GetParticipantRoleAsync(tid, tripId, uid, ct) is null)
             return ApiResult<IReadOnlyList<BoardingResponse>>.Fail(new Error("forbidden", "not your trip"), 403);
         return ApiResult<IReadOnlyList<BoardingResponse>>.Ok(await repo.ListBoardingAsync(tripId, ct));
     }
@@ -184,8 +186,10 @@ public sealed class TripService(
             return ApiResult.Fail(new Error("invalid_state", $"State must be one of: {string.Join(", ", ValidBoardingStates)}"), 400);
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
-        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
+        if (await repo.GetParticipantRoleAsync(tid, tripId, uid, ct) is null)
             return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
+        if (!await repo.IsActiveAsync(tripId, ct))
+            return ApiResult.Fail(new Error("trip_ended", "this trip has already ended"), 409);
         await repo.UpsertBoardingAsync(tid, tripId, req, ct);
         return ApiResult.NoContent();
     }
@@ -194,8 +198,10 @@ public sealed class TripService(
     {
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
-        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
+        if (await repo.GetParticipantRoleAsync(tid, tripId, uid, ct) is null)
             return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
+        if (!await repo.IsActiveAsync(tripId, ct))
+            return ApiResult.Fail(new Error("trip_ended", "this trip has already ended"), 409);
         var currentStopId = await repo.GetCurrentStopIdAsync(tripId, ct);
         // Re-confirming the stop that's already current would otherwise silently re-run the
         // MERGE below and reset ConfirmedAt — reject it explicitly instead.
@@ -235,8 +241,10 @@ public sealed class TripService(
     {
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
-        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
+        if (await repo.GetParticipantRoleAsync(tid, tripId, uid, ct) is null)
             return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
+        if (!await repo.IsActiveAsync(tripId, ct))
+            return ApiResult.Fail(new Error("trip_ended", "this trip has already ended"), 409);
         if (await repo.GetCurrentStopIdAsync(tripId, ct) != stopId)
             return ApiResult.Fail(new Error("not_current_stop", "this stop is not the confirmed current stop"), 409);
 
@@ -253,7 +261,7 @@ public sealed class TripService(
     {
         if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
             return ApiResult.Fail(new Error("forbidden", "no tenant/user context"), 403);
-        if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
+        if (await repo.GetParticipantRoleAsync(tid, tripId, uid, ct) is null)
             return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
         if (!await repo.IsPickupTripInProgressAsync(tripId, ct))
             return ApiResult.Fail(new Error("invalid_state", "not a pickup trip in progress"), 409);

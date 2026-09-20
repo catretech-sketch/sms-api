@@ -5,6 +5,7 @@ using Sms.Application.Services.Academics;
 using Sms.Application.Services.Sis;
 using Sms.Modules.Academics.Contracts;
 using Sms.Modules.Sis.Contracts;
+using Sms.Shared.Kernel.Authz;
 
 namespace Sms.Api.Controllers;
 
@@ -44,14 +45,17 @@ public sealed class SubjectController(IAcademicsService academics, ISisService s
         FromResult(await academics.GetSubjectAsync(id, ct));
 
     [HttpPost("subjects")]
+    [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
     public async Task<IActionResult> Create([FromBody] CreateSubjectRequest req, CancellationToken ct) =>
         FromResult(await academics.CreateSubjectAsync(req, ct));
 
     [HttpPatch("subjects/{id:guid}")]
+    [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateSubjectRequest req, CancellationToken ct) =>
         FromResult(await academics.UpdateSubjectAsync(id, req, ct));
 
     [HttpDelete("subjects/{id:guid}")]
+    [Authorize(Policy = AuthorizationPolicies.TeacherApp)]
     public async Task<IActionResult> Delete(Guid id, CancellationToken ct) =>
         FromResult(await academics.DeleteSubjectAsync(id, ct));
 

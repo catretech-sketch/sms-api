@@ -1,3 +1,4 @@
+using System.Linq;
 using Sms.Application.Services.Transport;
 
 namespace Sms.Application.Services.AiSearch.Handlers;
@@ -22,17 +23,20 @@ public sealed class BusLocationSearchHandler(
         if (!result.IsSuccess)
             return AiSearchResponse.Terminal(language, "Forbidden", templates.RenderForbidden(language), "forbidden");
 
-        var rows = result.Data!;
-        if (rows.Count == 0)
+        // GetMyChildrenBusAsync LEFT JOINs the bus assignment, so it returns one row per linked
+        // child even when none has a bus yet (BusId null) — only a row with an actual assignment
+        // counts as a match here.
+        var assigned = result.Data!.Where(r => r.BusId is not null).ToList();
+        if (assigned.Count == 0)
             return AiSearchResponse.Terminal(language, "Unsupported", templates.RenderNoMatch(language), "no_match");
 
-        var bus = rows[0];
+        var bus = assigned[0];
         var answer = language switch
         {
             "hi" => $"{bus.StudentName} की बस ({bus.BusNo}) {bus.Status} है।",
             "hinglish" => $"{bus.StudentName} ki bus ({bus.BusNo}) {bus.Status} hai.",
             _ => $"{bus.StudentName}'s bus ({bus.BusNo}) is {bus.Status}."
         };
-        return AiSearchResponse.Ok(language, Intent, answer, rows, 1, pageSize, rows.Count, false);
+        return AiSearchResponse.Ok(language, Intent, answer, assigned, 1, pageSize, assigned.Count, false);
     }
 }

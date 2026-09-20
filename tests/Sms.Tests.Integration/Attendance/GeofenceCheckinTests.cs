@@ -25,12 +25,20 @@ public class GeofenceCheckinTests(SqlServerFixture fx)
             b.UseSetting("Jwt:SigningKey", Key);
         });
 
-    private static HttpClient TeacherClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId)
+    private static HttpClient TeacherClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId) =>
+        RoleClient(app, tenantId, userId, Policies.Teacher);
+
+    /// Setting the school-wide geofence is a principal/admin/owner-only action (a teacher must
+    /// not be able to overwrite the attendance-verification location for the whole school).
+    private static HttpClient PrincipalClient(WebApplicationFactory<Program> app, Guid tenantId) =>
+        RoleClient(app, tenantId, Guid.NewGuid(), Policies.SchoolAdmin);
+
+    private static HttpClient RoleClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId, string role)
     {
         var jwt = new JwtTokenService(
             new JwtOptions { Issuer = "sms", Audience = "sms-apps", SigningKey = Key, AccessTokenMinutes = 15 },
             new SystemClock());
-        var token = jwt.IssueAccess(userId, tenantId, [Policies.Teacher], isPlatform: false);
+        var token = jwt.IssueAccess(userId, tenantId, [role], isPlatform: false);
         var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", token);
         return client;
@@ -63,7 +71,7 @@ public class GeofenceCheckinTests(SqlServerFixture fx)
         var tenantId = Guid.NewGuid();
         await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var client = TeacherClient(app, tenantId, Guid.NewGuid());
-        await SetSchoolLocation(client);
+        await SetSchoolLocation(PrincipalClient(app, tenantId));
 
         var day = await Data(await client.PostAsJsonAsync("/v1/me/attendance/punch", new
         {
@@ -86,7 +94,7 @@ public class GeofenceCheckinTests(SqlServerFixture fx)
         var tenantId = Guid.NewGuid();
         await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var client = TeacherClient(app, tenantId, Guid.NewGuid());
-        await SetSchoolLocation(client);
+        await SetSchoolLocation(PrincipalClient(app, tenantId));
 
         // ~1.1 km away (0.01 degrees latitude)
         var day = await Data(await client.PostAsJsonAsync("/v1/me/attendance/punch", new

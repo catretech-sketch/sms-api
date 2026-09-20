@@ -103,18 +103,20 @@ public static class ServiceCollectionExtensions
 
         builder.Services.AddSingleton(jwtOptions);
         builder.Services.AddSingleton<IClock, SystemClock>();
+        builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<IJwtTokenService, JwtTokenService>();
         builder.Services.AddSingleton<IPasswordHasher, PasswordHasher>();
         builder.Services.AddSingleton(builder.Configuration.GetSection("Smtp").Get<SmtpOptions>() ?? new SmtpOptions());
         builder.Services.AddSingleton(builder.Configuration.GetSection("Frontend").Get<FrontendOptions>() ?? new FrontendOptions());
         builder.Services.AddSingleton<IEmailQueue, EmailQueue>();
         builder.Services.AddSingleton<IEmailSender, SmtpEmailSender>();
-        builder.Services.AddSingleton<ISmsSender, LoggingSmsSender>();
+        builder.Services.AddSingleton<ISmsSender>(sp => new LoggingSmsSender(
+            sp.GetRequiredService<ILogger<LoggingSmsSender>>(), builder.Environment.IsDevelopment()));
         builder.Services.AddSingleton(sp => new EmailOtpSender(
             sp.GetRequiredService<IEmailQueue>(),
             sp.GetRequiredService<ILogger<EmailOtpSender>>(),
             builder.Environment.IsDevelopment()));
-        builder.Services.AddSingleton<ConsoleOtpSender>();
+        builder.Services.AddSingleton(new ConsoleOtpSender(builder.Environment.IsDevelopment()));
         builder.Services.AddSingleton<IOtpSender, ChannelOtpSender>();
         builder.Services.AddHostedService<EmailDispatchWorker>();
         builder.Services.AddHostedService<Sms.Api.Workers.TransportOfflineSweepWorker>();
@@ -208,17 +210,6 @@ public static class ServiceCollectionExtensions
                     IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtOptions.SigningKey)),
                     ValidateIssuer = true, ValidateAudience = true, ValidateLifetime = true,
                     RoleClaimType = "role", NameClaimType = "sub"
-                };
-                o.Events = new JwtBearerEvents
-                {
-                    OnMessageReceived = context =>
-                    {
-                        var accessToken = context.Request.Query["access_token"];
-                        var path = context.HttpContext.Request.Path;
-                        if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs"))
-                            context.Token = accessToken;
-                        return Task.CompletedTask;
-                    }
                 };
                 o.Events = new JwtBearerEvents
                 {
