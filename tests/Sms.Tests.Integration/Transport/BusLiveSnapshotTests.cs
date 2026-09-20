@@ -56,6 +56,8 @@ public class BusLiveSnapshotTests(SqlServerFixture fx)
         var snapshot = await repo.GetLiveSnapshotAsync(busId, default);
 
         snapshot.Status.Should().Be("moving");
+        snapshot.TrackingStatus.Should().Be("LIVE");
+        snapshot.Motion.Should().Be("moving");
         snapshot.Lat.Should().Be(12.1);
         snapshot.SpeedKmh.Should().Be(25);
     }

@@ -41,3 +41,29 @@ public sealed class UtcDateTimeJsonConverter : JsonConverter<DateTime>
         writer.WriteStringValue(utc.ToString(Format, CultureInfo.InvariantCulture));
     }
 }
+
+/// <summary>
+/// Same UTC/<c>Z</c> rules for nullable timestamps (<c>last_at</c>, receipts, etc.).
+/// System.Text.Json does not apply <see cref="UtcDateTimeJsonConverter"/> to <see cref="DateTime"/>?.
+/// </summary>
+public sealed class UtcNullableDateTimeJsonConverter : JsonConverter<DateTime?>
+{
+    private static readonly UtcDateTimeJsonConverter Inner = new();
+
+    public override DateTime? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Null)
+            return null;
+        return Inner.Read(ref reader, typeof(DateTime), options);
+    }
+
+    public override void Write(Utf8JsonWriter writer, DateTime? value, JsonSerializerOptions options)
+    {
+        if (value is null)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+        Inner.Write(writer, value.Value, options);
+    }
+}

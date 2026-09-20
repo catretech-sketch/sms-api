@@ -69,6 +69,8 @@ public static class ServiceCollectionExtensions
             o.SerializerOptions.PropertyNamingPolicy = new SnakeCaseNamingPolicy();
             o.SerializerOptions.DictionaryKeyPolicy = new SnakeCaseNamingPolicy();
             o.SerializerOptions.PropertyNameCaseInsensitive = true;
+            o.SerializerOptions.Converters.Add(new UtcDateTimeJsonConverter());
+            o.SerializerOptions.Converters.Add(new UtcNullableDateTimeJsonConverter());
         });
 
         builder.Services.AddControllers()
@@ -78,6 +80,10 @@ public static class ServiceCollectionExtensions
                 o.JsonSerializerOptions.DictionaryKeyPolicy = new SnakeCaseNamingPolicy();
                 // Accept both snake_case and PascalCase from clients (e.g. Status vs status).
                 o.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
+                // Chat LastAt/SentAt (and all other DateTimes) as UTC with Z — clients must not
+                // treat naive ISO as local wall time (inbox showed ~5.5h early in IST).
+                o.JsonSerializerOptions.Converters.Add(new UtcDateTimeJsonConverter());
+                o.JsonSerializerOptions.Converters.Add(new UtcNullableDateTimeJsonConverter());
             });
 
         // Keep invalid-body responses in the same {error:{code,message}} envelope as before controllers.
@@ -250,6 +256,8 @@ public static class ServiceCollectionExtensions
         {
             o.PayloadSerializerOptions.PropertyNamingPolicy = new SnakeCaseNamingPolicy();
             o.PayloadSerializerOptions.PropertyNameCaseInsensitive = true;
+            o.PayloadSerializerOptions.Converters.Add(new UtcDateTimeJsonConverter());
+            o.PayloadSerializerOptions.Converters.Add(new UtcNullableDateTimeJsonConverter());
         });
         builder.Services.AddScoped<ILiveBroadcaster, SignalRLiveBroadcaster>();
         builder.Services.AddScoped<ITransportFleetBroadcaster, TransportFleetBroadcaster>();

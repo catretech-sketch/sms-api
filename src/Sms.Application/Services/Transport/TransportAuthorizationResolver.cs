@@ -56,6 +56,8 @@ public sealed class TransportAuthorizationResolver(
 
         if (callerRoles.Contains(Policies.StudentOrParent) || callerRoles.Contains("parent") || callerRoles.Contains("student"))
         {
+            if (await studentBus.HasLinkedChildOnBusAsync(callerUserId, busId, ct))
+                return true;
             var me = await users.GetByIdAsync(callerUserId, ct);
             if (me?.StudentId is { Length: > 0 } admissionNo && await studentBus.HasChildOnBusAsync(admissionNo, busId, ct))
                 return true;
@@ -87,6 +89,21 @@ public sealed class TransportAuthorizationResolver(
         foreach (var busId in busIds)
             if (await CanViewBusAsync(callerUserId, callerTenantId, callerRoles, busId, ct))
                 return true;
+
+        // A student's own StudentBusAssignments.RouteId can diverge from their assigned
+        // bus's Buses.RouteId (the bus-side column is a separate, sometimes-stale value),
+        // so a caller's OWN route assignment must be checked directly rather than only
+        // via the bus-by-bus loop above — otherwise a route id sourced from the caller's
+        // own assignment record (e.g. from /v1/me/children/bus) can be denied even though
+        // it genuinely is their child's assigned route.
+        if (callerRoles.Contains(Policies.StudentOrParent) || callerRoles.Contains("parent") || callerRoles.Contains("student"))
+        {
+            if (await studentBus.HasLinkedChildOnRouteAsync(callerUserId, routeId, ct))
+                return true;
+            var me = await users.GetByIdAsync(callerUserId, ct);
+            if (me?.StudentId is { Length: > 0 } admissionNo && await studentBus.HasChildOnRouteAsync(admissionNo, routeId, ct))
+                return true;
+        }
 
         return false;
     }

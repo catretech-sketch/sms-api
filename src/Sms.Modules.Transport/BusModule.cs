@@ -14,6 +14,9 @@ public sealed record BusLiveSnapshotResponse(
     public Guid? CurrentStopId { get; init; }
     public bool WithinArrivalRadius { get; init; }
     public Guid? NextStopId { get; init; }
+    /// Canonical LIVE/DELAYED/OFFLINE — additive so existing moving/stopped/offline clients stay valid.
+    public string? TrackingStatus { get; init; }
+    public string? Motion { get; init; }
 }
 public sealed record BusResponse(
     Guid Id, string BusNo, string? RouteName, string? Driver, string? DriverPhone, IReadOnlyList<BusStopResponse> Stops);
@@ -30,7 +33,7 @@ public sealed record FleetBusResponse(
     int StopCount, int StudentsRiding, string Status,
     double? Lat, double? Lng, double? SpeedKmh, string? NextStopName, DateTime? LastPingAt,
     Guid? TeacherUserId = null, string? TeacherName = null, Guid? ConductorStaffId = null, int? Capacity = null,
-    double? Heading = null, int? EtaMinutes = null);
+    string? TrackingStatus = null, double? Heading = null, int? EtaMinutes = null);
 
 public sealed record TransportRouteListItem(Guid Id, string Name, int Stops);
 public sealed record RouteBusCandidate(Guid BusId, int? Capacity, int Occupied);
@@ -162,6 +165,14 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
             "SELECT Id, Name, Time, Seq, Lat, Lng FROM dbo.BusStops WHERE BusId = @busId ORDER BY Seq",
             new { busId }, ct);
     }
+
+    public Task<IReadOnlyList<BusStopResponse>> ListStopsForBusAsync(Guid busId, CancellationToken ct = default) =>
+        QueryStopsForBusAsync(busId, ct);
+
+    public Task<IReadOnlyList<BusStopResponse>> ListStopsForRouteAsync(Guid routeId, CancellationToken ct = default) =>
+        QueryInlineAsync<BusStopResponse>(
+            "SELECT Id, Name, CAST(NULL AS nvarchar(10)) AS Time, Seq, Lat, Lng FROM dbo.RouteStops WHERE RouteId = @routeId ORDER BY Seq",
+            new { routeId }, ct);
 
     public async Task<Guid?> GetLiveTripIdForBusAsync(Guid busId, CancellationToken ct = default) =>
         await CurrentTripIdAsync(busId, ct);
@@ -522,9 +533,16 @@ public sealed class BusRepository(IDbConnectionFactory factory) : BaseRepository
             status = ageSeconds > 60 ? "offline" : ping.SpeedKmh > 3 ? "moving" : "stopped";
         }
 
+        var derived = BusTrackingStatusRules.Derive(
+            DateTime.UtcNow, ping?.At, ping?.SpeedKmh, tripId is not null, gpsAllowed: true);
+
         return new BusLiveSnapshotResponse(
             busId, tripId, ping?.Lat, ping?.Lng, ping?.SpeedKmh ?? 0, ping?.Heading ?? 0,
-            status, ping?.At, position.EtaMinutes, position.NextStopName, ping?.Accuracy);
+            status, ping?.At, position.EtaMinutes, position.NextStopName, ping?.Accuracy)
+        {
+            TrackingStatus = derived.Tracking,
+            Motion = derived.Motion,
+        };
     }
 
     private static double Haversine(double lat1, double lng1, double lat2, double lng2)

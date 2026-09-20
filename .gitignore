@@ -10,3 +10,12 @@ TestResults/
 
 # subagent-driven-development scratch workspace
 .superpowers
+
+# local build artifacts and scratch files — never source
+artifacts/
+body.txt
+children-body.txt
+
+# ASP.NET Core Data Protection key rings — local secrets, never committed
+keys/
+src/Sms.Api/keys/

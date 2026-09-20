@@ -45,7 +45,8 @@ public interface IBusService
 }
 
 public sealed class BusService(
-    BusRepository repo, TripRepository trips, ITenantContext tenant, ITenantFeatureSet features, IClock clock,
+    BusRepository repo, ITripService tripService,
+    ITenantContext tenant, ITenantFeatureSet features, IClock clock,
     FleetSnapshotBuilder fleet, ITransportFleetBroadcaster fleetBroadcaster, ILiveBroadcaster live) : IBusService
 {
     private bool GpsAllowed => FeatureGate.Allowed(tenant, features, FeatureCatalog.TransportGps);
@@ -339,33 +340,26 @@ public sealed class BusService(
     public async Task<ApiResult<TripResponse>> StartBusTripAsync(Guid busId, string direction, CancellationToken ct = default)
     {
         if (!GpsAllowed) return FeatureGate.Locked<TripResponse>(FeatureCatalog.TransportGps);
-        if (tenant.TenantId is not { } tid || tenant.UserId is not { } uid)
+        if (tenant.TenantId is not { } || tenant.UserId is not { })
             return ApiResult<TripResponse>.Fail(new Error("forbidden", "no tenant/user context"), 403);
         var ctx = await repo.GetBusTripContextAsync(busId, ct);
         if (ctx is null)
             return ApiResult<TripResponse>.Fail(new Error("not_found", "bus not found"), 404);
         var dir = string.IsNullOrWhiteSpace(direction) ? "pickup" : direction.Trim();
-        var trip = await trips.StartAsync(tid, uid, new StartTripRequest(ctx.RouteId, ctx.BusNo, dir), ct);
-        if (trip is null)
-            return ApiResult<TripResponse>.Fail(new Error("server_error", "could not start trip"), 500);
-        await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
-        await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
-        return ApiResult<TripResponse>.Ok(trip, 201);
+        // Reuse TripService.StartAsync so trip_started + parent alerts match the driver path.
+        return await tripService.StartAsync(new StartTripRequest(ctx.RouteId, ctx.BusNo, dir), ct);
     }
 
     public async Task<ApiResult> IngestBusTripPingsAsync(Guid busId, BulkPingRequest req, CancellationToken ct = default)
     {
         if (!GpsAllowed) return FeatureGate.Locked(FeatureCatalog.TransportGps);
-        if (tenant.TenantId is not { } tid)
+        if (tenant.TenantId is not { })
             return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
         if (req.Pings.Count == 0) return ApiResult.NoContent();
         var tripId = await repo.GetLiveTripIdForBusAsync(busId, ct);
         if (tripId is null)
             return ApiResult.Fail(new Error("no_active_trip", "no live trip for this bus"), 409);
-        await trips.IngestPingsAsync(tid, tripId.Value, req.Pings, ct);
-        await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
-        await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
-        return ApiResult.NoContent();
+        return await tripService.IngestOperatorPingsAsync(tripId.Value, req, ct);
     }
 
     public async Task<ApiResult<TripSummaryResponse>> EndBusTripAsync(Guid busId, CancellationToken ct = default)
@@ -374,13 +368,7 @@ public sealed class BusService(
         var tripId = await repo.GetLiveTripIdForBusAsync(busId, ct);
         if (tripId is null)
             return ApiResult<TripSummaryResponse>.Fail(new Error("no_active_trip", "no live trip for this bus"), 409);
-        var summary = await trips.EndAsync(tripId.Value, ct);
-        if (tenant.TenantId is { } tid)
-        {
-            await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
-            await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
-        }
-        return ApiResult<TripSummaryResponse>.Ok(summary);
+        return await tripService.EndAsOperatorAsync(tripId.Value, ct);
     }
 
     public async Task<ApiResult> UpsertBoardingAsync(Guid busId, BusBoardingRequest req, CancellationToken ct = default)

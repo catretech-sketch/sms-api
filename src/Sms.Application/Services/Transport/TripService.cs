@@ -15,7 +15,11 @@ public interface ITripService
     Task<ApiResult<StaffTripAssignmentResponse>> GetAssignmentAsync(CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<StaffRosterStudentResponse>>> GetRosterAsync(Guid tripId, CancellationToken ct = default);
     Task<ApiResult> IngestPingsAsync(Guid tripId, BulkPingRequest req, CancellationToken ct = default);
+    /// Admin/CRM operator path: same broadcast + heartbeat as driver ingest, without trip-participant check.
+    Task<ApiResult> IngestOperatorPingsAsync(Guid tripId, BulkPingRequest req, CancellationToken ct = default);
     Task<ApiResult<TripSummaryResponse>> EndAsync(Guid tripId, CancellationToken ct = default);
+    /// Admin/CRM operator path: end trip + trip_ended broadcast without participant check.
+    Task<ApiResult<TripSummaryResponse>> EndAsOperatorAsync(Guid tripId, CancellationToken ct = default);
     Task<ApiResult<IReadOnlyList<BoardingResponse>>> ListBoardingAsync(Guid tripId, CancellationToken ct = default);
     Task<ApiResult> UpsertBoardingAsync(Guid tripId, BoardingRequest req, CancellationToken ct = default);
     Task<ApiResult> ConfirmStopArrivalAsync(Guid tripId, Guid stopId, CancellationToken ct = default);
@@ -29,7 +33,7 @@ public interface ITripService
 public sealed class TripService(
     TripRepository repo, BusRepository buses, ITenantContext tenant,
     ITransportFleetBroadcaster fleetBroadcaster, ILiveBroadcaster live, IClock clock,
-    IConfiguration config) : ITripService
+    IConfiguration config, IBusParentAlertService parentAlerts) : ITripService
 {
     // Matches TransportOfflineSweepWorker's Math.Clamp-on-read convention for a config value
     // with a sane default and hard bounds, rather than trusting an unbounded/negative config
@@ -51,7 +55,10 @@ public sealed class TripService(
         await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
         await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
         if (await repo.GetBusIdAsync(trip.Id, ct) is { } busId)
+        {
             await fleetBroadcaster.BroadcastTripStartedAsync(busId, trip.Id, trip.DriverId, trip.ConductorId, trip.Direction, trip.StartedAt ?? clock.UtcNow, ct);
+            await parentAlerts.NotifyTripStartedAsync(tid, busId, trip.Id, ct);
+        }
         return ApiResult<TripResponse>.Ok(WithActiveBroadcaster(trip), 201);
     }
 
@@ -70,8 +77,22 @@ public sealed class TripService(
         var role = await repo.GetParticipantRoleAsync(tripId, uid, ct);
         if (role is null)
             return ApiResult.Fail(new Error("forbidden", "not your trip"), 403);
+        return await IngestPingsCoreAsync(tid, tripId, req, heartbeatRole: role, ct);
+    }
+
+    public async Task<ApiResult> IngestOperatorPingsAsync(Guid tripId, BulkPingRequest req, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult.Fail(new Error("forbidden", "no tenant context"), 403);
+        // Heartbeat column: treat CRM/admin ingest as driver ping so offline sweep stays correct.
+        return await IngestPingsCoreAsync(tid, tripId, req, heartbeatRole: "driver", ct);
+    }
+
+    private async Task<ApiResult> IngestPingsCoreAsync(
+        Guid tid, Guid tripId, BulkPingRequest req, string heartbeatRole, CancellationToken ct)
+    {
         await repo.IngestPingsAsync(tid, tripId, req.Pings, ct);
-        await repo.MarkPingAsync(tripId, role, ct);
+        await repo.MarkPingAsync(tripId, heartbeatRole, ct);
         await fleetBroadcaster.BroadcastFleetAsync(tid, ct);
         await live.PublishAsync(tid, LiveEventTypes.Transport, ct: ct);
         if (await repo.GetBusIdAsync(tripId, ct) is { } busId)
@@ -94,6 +115,8 @@ public sealed class TripService(
                 snapshot = snapshot with { CurrentStopId = currentStopId };
             }
             await fleetBroadcaster.BroadcastPositionAsync(busId, snapshot, ct);
+            if (snapshot.Lat is { } pingLat && snapshot.Lng is { } pingLng)
+                await parentAlerts.NotifyApproachingStopsAsync(tid, busId, tripId, pingLat, pingLng, ct);
         }
         return ApiResult.NoContent();
     }
@@ -104,6 +127,18 @@ public sealed class TripService(
             return ApiResult<TripSummaryResponse>.Fail(new Error("forbidden", "no tenant/user context"), 403);
         if (await repo.GetParticipantRoleAsync(tripId, uid, ct) is null)
             return ApiResult<TripSummaryResponse>.Fail(new Error("forbidden", "not your trip"), 403);
+        return await EndCoreAsync(tid, tripId, ct);
+    }
+
+    public async Task<ApiResult<TripSummaryResponse>> EndAsOperatorAsync(Guid tripId, CancellationToken ct = default)
+    {
+        if (tenant.TenantId is not { } tid)
+            return ApiResult<TripSummaryResponse>.Fail(new Error("forbidden", "no tenant context"), 403);
+        return await EndCoreAsync(tid, tripId, ct);
+    }
+
+    private async Task<ApiResult<TripSummaryResponse>> EndCoreAsync(Guid tid, Guid tripId, CancellationToken ct)
+    {
         var busId = await repo.GetBusIdAsync(tripId, ct);
         var summary = await repo.EndAsync(tripId, ct);
         await fleetBroadcaster.BroadcastFleetAsync(tid, ct);

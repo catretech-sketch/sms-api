@@ -1,12 +1,17 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.SignalR;
 using Sms.Application.Services.Transport;
+using Sms.Modules.Transport;
 using Sms.Shared.Kernel.Authz;
+using Sms.Shared.Kernel.Tenancy;
 
 namespace Sms.Api.Hubs;
 
 [Authorize]
-public sealed class TransportFleetHub(ITransportAuthorizationResolver authz) : Hub
+public sealed class TransportFleetHub(
+    ITransportAuthorizationResolver authz,
+    StudentBusRepository studentBuses,
+    ITenantContext tenant) : Hub
 {
     public override async Task OnConnectedAsync()
     {
@@ -33,6 +38,29 @@ public sealed class TransportFleetHub(ITransportAuthorizationResolver authz) : H
             return false;
         await Groups.AddToGroupAsync(Context.ConnectionId, BusGroup(busId));
         return true;
+    }
+
+    /// Parent helper: resolve every bus assigned to the caller's children, join each
+    /// authorized group once, and return the joined bus IDs (deduped).
+    public async Task<IReadOnlyList<Guid>> JoinMyChildrenBuses()
+    {
+        var (userId, tenantId, roles) = CallerClaims();
+        if (userId is null || tenantId is null) return [];
+
+        // Hub invocations skip HTTP middleware — stamp RLS session context before repo reads
+        // (same pattern as TransportAuthorizationResolver.CanViewBusAsync).
+        tenant.Set(tenantId.Value, userId.Value, isPlatform: false);
+
+        var busIds = await studentBuses.ListDistinctBusIdsForParentAsync(userId.Value, Context.ConnectionAborted);
+        var joined = new List<Guid>();
+        foreach (var busId in busIds)
+        {
+            if (!await authz.CanViewBusAsync(userId.Value, tenantId.Value, roles, busId, Context.ConnectionAborted))
+                continue;
+            await Groups.AddToGroupAsync(Context.ConnectionId, BusGroup(busId));
+            joined.Add(busId);
+        }
+        return joined;
     }
 
     public Task LeaveBus(Guid busId) =>

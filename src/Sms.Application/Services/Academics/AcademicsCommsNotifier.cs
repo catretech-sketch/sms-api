@@ -1,5 +1,7 @@
+using Sms.Application.Services.Attendance;
 using Sms.Application.Services.Comms;
 using Sms.Application.Services.Realtime;
+using Sms.Modules.Academics.Contracts;
 using Sms.Modules.Comms;
 using Sms.Modules.Sis.Data;
 
@@ -105,6 +107,41 @@ public sealed class AcademicsCommsNotifier(
             Body: $"{clsLabel} · {slotLabel} with bell times — open Schedule to refresh."), ct);
         await live.PublishAsync(tenantId, LiveEventTypes.Timetable, ct: ct);
         await live.PublishAsync(tenantId, LiveEventTypes.Notification, ct: ct);
+    }
+
+    public async Task NotifyAbsenceMarksAsync(
+        Guid tenantId,
+        DateTime date,
+        IReadOnlyList<AttendanceUpsertRow> records,
+        string? subject = null,
+        int? period = null,
+        CancellationToken ct = default)
+    {
+        var absentIds = AttendanceParentNotice.AbsentStudentIds(
+            (records ?? []).Select(r => (r.StudentId, (string?)r.Status)));
+        if (absentIds.Count == 0) return;
+
+        var notified = false;
+        foreach (var studentId in absentIds)
+        {
+            var student = await students.GetAsync(studentId, ct);
+            var name = (student?.Name ?? "").Trim();
+            if (name.Length == 0) name = "Your child";
+            var parents = await students.ListParentUserIdsAsync(studentId, student?.AdmissionNo ?? "", ct);
+            foreach (var parentId in parents)
+            {
+                await comms.CreateNotificationAsync(tenantId, new CreateNotificationRequest(
+                    Icon: "alert",
+                    Tone: "warn",
+                    Title: AttendanceParentNotice.Title(name),
+                    Body: AttendanceParentNotice.Body(date, subject, period),
+                    UserId: parentId), ct);
+                notified = true;
+            }
+        }
+
+        if (notified)
+            await live.PublishAsync(tenantId, LiveEventTypes.Notification, ct: ct);
     }
 
     private static void AddEmail(List<string> list, string? email)

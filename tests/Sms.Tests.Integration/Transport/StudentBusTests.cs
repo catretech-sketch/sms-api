@@ -42,6 +42,9 @@ public class StudentBusTests(SqlServerFixture fx)
     private static HttpClient ParentClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId) =>
         Client(app, tenantId, userId, Policies.StudentOrParent);
 
+    private static HttpClient StudentClient(WebApplicationFactory<Program> app, Guid tenantId, Guid userId) =>
+        Client(app, tenantId, userId, "student");
+
     private static async Task<JsonElement> Data(HttpResponseMessage res, HttpStatusCode expected)
     {
         res.StatusCode.Should().Be(expected);
@@ -215,10 +218,61 @@ public class StudentBusTests(SqlServerFixture fx)
     }
 
     [Fact]
-    public async Task Parent_gets_empty_when_child_has_no_bus()
+    public async Task Parent_live_bus_includes_assigned_student_stop_and_route_stops()
     {
         await using var app = App();
         var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var parentUserId = Guid.NewGuid();
+        var studentId = Guid.NewGuid();
+        var routeId = Guid.NewGuid();
+        var stopA = Guid.NewGuid();
+        var stopB = Guid.NewGuid();
+        string busNo = "";
+
+        await Seed(fx.ConnectionString, tenantId, async conn =>
+        {
+            var (busId, no) = await SeedLiveBus(conn, tenantId, "Morning Route", 12.97, 77.59);
+            busNo = no;
+            await conn.ExecuteAsync(
+                "INSERT dbo.TransportRoutes (Id, TenantId, Name) VALUES (@Id, @TenantId, @Name)",
+                new { Id = routeId, TenantId = tenantId, Name = "Morning Route" });
+            await conn.ExecuteAsync(
+                "UPDATE dbo.Buses SET RouteId = @RouteId WHERE Id = @BusId",
+                new { RouteId = routeId, BusId = busId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.RouteStops (Id, TenantId, RouteId, Name, Seq, Lat, Lng) VALUES (@Id, @TenantId, @RouteId, @Name, @Seq, @Lat, @Lng)",
+                new { Id = stopA, TenantId = tenantId, RouteId = routeId, Name = "Oak Gate", Seq = 1, Lat = 12.96, Lng = 77.58 });
+            await conn.ExecuteAsync(
+                "INSERT dbo.RouteStops (Id, TenantId, RouteId, Name, Seq, Lat, Lng) VALUES (@Id, @TenantId, @RouteId, @Name, @Seq, @Lat, @Lng)",
+                new { Id = stopB, TenantId = tenantId, RouteId = routeId, Name = "Maple Stop", Seq = 2, Lat = 12.971, Lng = 77.591 });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name) VALUES (@Id, @TenantId, @A, @N)",
+                new { Id = studentId, TenantId = tenantId, A = "ADM-STOP", N = "Rahul Sharma" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.StudentBusAssignments (Id, TenantId, StudentId, BusId, RouteId, StopId) VALUES (@Id, @TenantId, @S, @B, @R, @Stop)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, S = studentId, B = busId, R = routeId, Stop = stopB });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, StudentId, IsPlatform, Status) VALUES (@Id, @TenantId, @Adm, 0, 'active')",
+                new { Id = parentUserId, TenantId = tenantId, Adm = "ADM-STOP" });
+        });
+
+        var parent = ParentClient(app, tenantId, parentUserId);
+        var data = await Data(await parent.GetAsync("/v1/me/children/bus"), HttpStatusCode.OK);
+        data.GetArrayLength().Should().Be(1);
+        data[0].GetProperty("bus_no").GetString().Should().Be(busNo);
+        data[0].GetProperty("student_stop_id").GetGuid().Should().Be(stopB);
+        data[0].GetProperty("student_stop_name").GetString().Should().Be("Maple Stop");
+        data[0].GetProperty("route_stops").GetArrayLength().Should().Be(2);
+        data[0].GetProperty("route_stops")[1].GetProperty("name").GetString().Should().Be("Maple Stop");
+    }
+
+    [Fact]
+    public async Task Parent_gets_unassigned_row_when_child_has_no_bus()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
         var parentUserId = Guid.NewGuid();
 
         await Seed(fx.ConnectionString, tenantId, async conn =>
@@ -232,7 +286,159 @@ public class StudentBusTests(SqlServerFixture fx)
         });
 
         var parent = ParentClient(app, tenantId, parentUserId);
-        (await Data(await parent.GetAsync("/v1/me/children/bus"), HttpStatusCode.OK))
-            .GetArrayLength().Should().Be(0);
+        var data = await Data(await parent.GetAsync("/v1/me/children/bus"), HttpStatusCode.OK);
+        data.GetArrayLength().Should().Be(1);
+        data[0].GetProperty("student_name").GetString().Should().Be("Lonely Child");
+        data[0].GetProperty("assignment").GetString().Should().Be("none");
+        data[0].GetProperty("tracking_status").GetString().Should().Be("OFFLINE");
+        data[0].GetProperty("bus_id").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task Parent_with_ParentStudentLinks_sees_each_childs_own_bus()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var parentUserId = Guid.NewGuid();
+        var childA = Guid.NewGuid();
+        var childB = Guid.NewGuid();
+        string busNoA = "", busNoB = "";
+
+        await Seed(fx.ConnectionString, tenantId, async conn =>
+        {
+            var (busA, noA) = await SeedLiveBus(conn, tenantId, "Route A", 12.97, 77.59);
+            var (busB, noB) = await SeedLiveBus(conn, tenantId, "Route B", 13.01, 77.61);
+            busNoA = noA;
+            busNoB = noB;
+            await conn.ExecuteAsync(
+                "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name, Grade, Section) VALUES (@Id, @TenantId, @A, @N, @G, @S)",
+                new { Id = childA, TenantId = tenantId, A = "ADM-A", N = "Aarav Sharma", G = "I", S = "A" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name, Grade, Section) VALUES (@Id, @TenantId, @A, @N, @G, @S)",
+                new { Id = childB, TenantId = tenantId, A = "ADM-B", N = "Ananya Sharma", G = "VI", S = "B" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.StudentBusAssignments (Id, TenantId, StudentId, BusId) VALUES (@Id, @TenantId, @S, @B)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, S = childA, B = busA });
+            await conn.ExecuteAsync(
+                "INSERT dbo.StudentBusAssignments (Id, TenantId, StudentId, BusId) VALUES (@Id, @TenantId, @S, @B)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, S = childB, B = busB });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, Email, IsPlatform, Status) VALUES (@Id, @TenantId, @Email, 0, 'active')",
+                new { Id = parentUserId, TenantId = tenantId, Email = $"p-{parentUserId:N}@test.local" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.ParentStudentLinks (ParentUserId, StudentId, TenantId) VALUES (@P, @S, @T)",
+                new { P = parentUserId, S = childA, T = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.ParentStudentLinks (ParentUserId, StudentId, TenantId) VALUES (@P, @S, @T)",
+                new { P = parentUserId, S = childB, T = tenantId });
+            await conn.ExecuteAsync("UPDATE dbo.Buses SET Driver = N'Raj Kumar' WHERE Id = @Id", new { Id = busA });
+        });
+
+        var parent = ParentClient(app, tenantId, parentUserId);
+        var data = await Data(await parent.GetAsync("/v1/me/children/bus"), HttpStatusCode.OK);
+        data.GetArrayLength().Should().Be(2);
+        var aarav = Enumerable.Range(0, 2).Select(i => data[i])
+            .First(r => r.GetProperty("student_name").GetString() == "Aarav Sharma");
+        var ananya = Enumerable.Range(0, 2).Select(i => data[i])
+            .First(r => r.GetProperty("student_name").GetString() == "Ananya Sharma");
+        aarav.GetProperty("bus_no").GetString().Should().Be(busNoA);
+        ananya.GetProperty("bus_no").GetString().Should().Be(busNoB);
+        aarav.GetProperty("bus_no").GetString().Should().NotBe(ananya.GetProperty("bus_no").GetString());
+        aarav.GetProperty("tracking_status").GetString().Should().Be("LIVE");
+        aarav.GetProperty("driver").GetString().Should().Be("Raj Kumar");
+        aarav.GetProperty("grade").GetString().Should().Be("I");
+        aarav.GetProperty("assignment").GetString().Should().Be("assigned");
+    }
+
+    [Fact]
+    public async Task Parent_cannot_read_another_parents_child_bus_by_tampering()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var parentA = Guid.NewGuid();
+        var parentB = Guid.NewGuid();
+        var childB = Guid.NewGuid();
+
+        await Seed(fx.ConnectionString, tenantId, async conn =>
+        {
+            var (busId, _) = await SeedLiveBus(conn, tenantId, "Secret Route", 12.9, 77.5);
+            await conn.ExecuteAsync(
+                "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name) VALUES (@Id, @TenantId, @A, @N)",
+                new { Id = childB, TenantId = tenantId, A = "ADM-B-ONLY", N = "Other Kid" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.StudentBusAssignments (Id, TenantId, StudentId, BusId) VALUES (@Id, @TenantId, @S, @B)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, S = childB, B = busId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, Email, IsPlatform, Status) VALUES (@Id, @TenantId, @Email, 0, 'active')",
+                new { Id = parentA, TenantId = tenantId, Email = $"a-{parentA:N}@test.local" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, Email, IsPlatform, Status) VALUES (@Id, @TenantId, @Email, 0, 'active')",
+                new { Id = parentB, TenantId = tenantId, Email = $"b-{parentB:N}@test.local" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.ParentStudentLinks (ParentUserId, StudentId, TenantId) VALUES (@P, @S, @T)",
+                new { P = parentB, S = childB, T = tenantId });
+        });
+
+        var caller = ParentClient(app, tenantId, parentA);
+        var data = await Data(await caller.GetAsync("/v1/me/children/bus"), HttpStatusCode.OK);
+        data.GetArrayLength().Should().Be(0);
+        (await caller.GetAsync($"/v1/bus/{Guid.NewGuid()}/position")).StatusCode.Should().Be(HttpStatusCode.Forbidden);
+    }
+
+    [Fact]
+    public async Task Student_sees_only_own_bus_not_a_siblings()
+    {
+        await using var app = App();
+        var tenantId = Guid.NewGuid();
+        await TestTenancy.EnsureTenantAsync(fx.ConnectionString, tenantId, tier: "platinum");
+        var studentUserId = Guid.NewGuid();
+        var parentUserId = Guid.NewGuid();
+        var me = Guid.NewGuid();
+        var sibling = Guid.NewGuid();
+        string myBusNo = "";
+
+        await Seed(fx.ConnectionString, tenantId, async conn =>
+        {
+            var (myBus, no) = await SeedLiveBus(conn, tenantId, "My Route", 12.97, 77.59);
+            var (sibBus, _) = await SeedLiveBus(conn, tenantId, "Sibling Route", 13.01, 77.61);
+            myBusNo = no;
+            await conn.ExecuteAsync(
+                "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name) VALUES (@Id, @TenantId, @A, @N)",
+                new { Id = me, TenantId = tenantId, A = "STU-ME", N = "Cube" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Students (Id, TenantId, AdmissionNo, Name) VALUES (@Id, @TenantId, @A, @N)",
+                new { Id = sibling, TenantId = tenantId, A = "STU-SIB", N = "Sibling" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.StudentBusAssignments (Id, TenantId, StudentId, BusId) VALUES (@Id, @TenantId, @S, @B)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, S = me, B = myBus });
+            await conn.ExecuteAsync(
+                "INSERT dbo.StudentBusAssignments (Id, TenantId, StudentId, BusId) VALUES (@Id, @TenantId, @S, @B)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, S = sibling, B = sibBus });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, StudentId, Email, IsPlatform, Status) VALUES (@Id, @TenantId, @Adm, @Email, 0, 'active')",
+                new { Id = studentUserId, TenantId = tenantId, Adm = "STU-ME", Email = $"stu-{studentUserId:N}@test.local" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.Users (Id, TenantId, Email, IsPlatform, Status) VALUES (@Id, @TenantId, @Email, 0, 'active')",
+                new { Id = parentUserId, TenantId = tenantId, Email = $"p-{parentUserId:N}@test.local" });
+            await conn.ExecuteAsync(
+                "INSERT dbo.ParentStudentLinks (ParentUserId, StudentId, TenantId) VALUES (@P, @S, @T)",
+                new { P = parentUserId, S = me, T = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT dbo.ParentStudentLinks (ParentUserId, StudentId, TenantId) VALUES (@P, @S, @T)",
+                new { P = parentUserId, S = sibling, T = tenantId });
+            // Even if this student user id is wrongly linked to a sibling, selfOnly must pin to STU-ME.
+            await conn.ExecuteAsync(
+                "INSERT dbo.ParentStudentLinks (ParentUserId, StudentId, TenantId) VALUES (@P, @S, @T)",
+                new { P = studentUserId, S = sibling, T = tenantId });
+        });
+
+        var student = StudentClient(app, tenantId, studentUserId);
+        var data = await Data(await student.GetAsync("/v1/me/children/bus"), HttpStatusCode.OK);
+        data.GetArrayLength().Should().Be(1);
+        data[0].GetProperty("student_name").GetString().Should().Be("Cube");
+        data[0].GetProperty("bus_no").GetString().Should().Be(myBusNo);
+        data[0].GetProperty("admission_no").GetString().Should().Be("STU-ME");
     }
 }

@@ -176,6 +176,44 @@ public class TransportAuthorizationResolverTests(SqlServerFixture fx)
     }
 
     [Fact]
+    public async Task Parent_linked_only_via_ParentStudentLinks_can_view_childs_bus()
+    {
+        var tenantId = Guid.NewGuid();
+        var busId = Guid.NewGuid();
+        var otherBusId = Guid.NewGuid();
+        var parentId = Guid.NewGuid();
+        var studentId = Guid.NewGuid();
+
+        await using (var conn = new SqlConnection(fx.ConnectionString))
+        {
+            await conn.OpenAsync();
+            await conn.ExecuteAsync("EXEC sp_set_session_context @key=N'TenantId', @value=@t", new { t = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Buses (Id, TenantId, BusNo) VALUES (@Id, @TenantId, 'BUS-1'), (@OtherId, @TenantId, 'BUS-2')",
+                new { Id = busId, OtherId = otherBusId, TenantId = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Students (Id, TenantId, Name, AdmissionNo) VALUES (@Id, @TenantId, 'Kid', 'ADM-LINK-001')",
+                new { Id = studentId, TenantId = tenantId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.StudentBusAssignments (Id, TenantId, StudentId, BusId) VALUES (@Id, @TenantId, @StudentId, @BusId)",
+                new { Id = Guid.NewGuid(), TenantId = tenantId, StudentId = studentId, BusId = busId });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.Users (Id, TenantId, Email) VALUES (@Id, @TenantId, @Email)",
+                new { Id = parentId, TenantId = tenantId, Email = $"link-parent-{parentId}@test.local" });
+            await conn.ExecuteAsync(
+                "INSERT INTO dbo.ParentStudentLinks (ParentUserId, StudentId, TenantId) VALUES (@ParentUserId, @StudentId, @TenantId)",
+                new { ParentUserId = parentId, StudentId = studentId, TenantId = tenantId });
+        }
+
+        await using var app = App();
+        using var scope = app.Services.CreateScope();
+        var resolver = scope.ServiceProvider.GetRequiredService<ITransportAuthorizationResolver>();
+
+        (await resolver.CanViewBusAsync(parentId, tenantId, [Policies.StudentOrParent], busId, default)).Should().BeTrue();
+        (await resolver.CanViewBusAsync(parentId, tenantId, [Policies.StudentOrParent], otherBusId, default)).Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Staff_role_holder_is_granted_or_denied_based_on_duty_teacher_and_active_driver_checks()
     {
         // The real staff auto-provisioning flow (Staff_EnsureLogin.sql) inserts exactly one role

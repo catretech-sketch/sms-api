@@ -246,6 +246,14 @@ public sealed class AcademicsService(
 
         await attendance.BulkUpsertAsync(tid, classId, req.Date, tenant.UserId, req.Records, ct);
         await live.PublishAsync(tid, LiveEventTypes.Attendance, ct: ct);
+        try
+        {
+            await academicsNotifier.NotifyAbsenceMarksAsync(tid, req.Date, req.Records, ct: ct);
+        }
+        catch
+        {
+            // Parent notice is best-effort; the roll is already saved.
+        }
         return ApiResult.NoContent();
     }
 
@@ -620,6 +628,15 @@ public sealed class AcademicsService(
             tenant.UserId, role, req.Records, ct,
             req.GeoFenceStatus, req.GeoDistanceMeters, req.GeoCapturedAt);
         await live.PublishAsync(tid, LiveEventTypes.Attendance, ct: ct);
+        try
+        {
+            await academicsNotifier.NotifyAbsenceMarksAsync(
+                tid, req.Date, req.Records, subj, req.Period, ct);
+        }
+        catch
+        {
+            // Parent notice is best-effort; the period mark is already saved.
+        }
         return ApiResult.NoContent();
     }
 
